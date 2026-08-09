@@ -31,8 +31,10 @@ func newConsumerConfig(cfg KafkaConfig) (*sarama.Config, error) {
 		sarama.NewBalanceStrategyRange(),
 	}
 
-	if err := configureConsumerTLS(sc, cfg.TLSCACert); err != nil {
-		return nil, err
+	if cfg.TLSEnabled {
+		if err := configureConsumerTLS(sc, cfg.TLSCACert); err != nil {
+			return nil, err
+		}
 	}
 	if cfg.SASLUser != "" {
 		if err := configureConsumerSASL(sc, cfg.SASLUser, cfg.SASLPassFile); err != nil {
