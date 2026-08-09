@@ -11,7 +11,11 @@ GOLANGCI_LINT_VERSION ?= v2.12.1
 LOCALBIN ?= $(shell pwd)/bin
 GOLANGCI_LINT ?= $(LOCALBIN)/golangci-lint
 
-.PHONY: test lint clean
+.PHONY: build-echo-adapter test lint clean
+
+build-echo-adapter:
+	@mkdir -p bin
+	go build -o bin/echo-adapter ./cmd/echo-adapter
 
 test:
 	$(GINKGO) run .
