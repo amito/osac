@@ -123,7 +123,7 @@ Deployed via Helm with `echoAdapter.enabled: true` (disabled by default; enabled
 - Error classification: 4xx → non-retryable (except 408/429), 5xx → retryable
 - TLS enabled by default, configurable API version (default `v1`)
 - `GET /healthz` — liveness probe (always 200)
-- `GET /readyz` — readiness probe (M360 connectivity check)
+- `GET /readyz` — readiness probe (TCP/TLS reachability check to M360 base URL)
 - `GET /metrics` — Prometheus metrics
 
 Deployed via Helm with `m360Adapter.enabled: true` (disabled by default).
