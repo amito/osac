@@ -88,11 +88,6 @@ func main() {
 
 	metricsAddr := envutil.EnvOrDefault("METRICS_ADDR", ":2112")
 
-	// TLS defaults to true (!= "false") — safer for production.
-	// Note: echo-adapter uses == "true" (defaults off) since it runs in
-	// development/CI where Kafka may not have TLS configured.
-	tlsEnabled := os.Getenv("KAFKA_TLS_ENABLED") != "false"
-
 	logger := stdr.New(log.New(os.Stderr, "", log.LstdFlags))
 
 	client := newM360Client(m360URL, apiVersion, apiKey)
@@ -104,12 +99,7 @@ func main() {
 		ConsumerGroup: group,
 		Topics:        topics,
 		FlushInterval: flushInterval,
-		Kafka: adapters.KafkaConfig{
-			TLSEnabled:   tlsEnabled,
-			TLSCACert:    os.Getenv("KAFKA_TLS_CA_CERT"),
-			SASLUser:     os.Getenv("KAFKA_SASL_USERNAME"),
-			SASLPassFile: os.Getenv("KAFKA_SASL_PASSWORD_FILE"),
-		},
+		Kafka:         adapters.KafkaConfigFromEnv(),
 	}, logger)
 
 	mux := http.NewServeMux()

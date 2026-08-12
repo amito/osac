@@ -21,9 +21,12 @@ in compliance with the License. You may obtain a copy of the License at
 //	export KAFKA_BROKERS="localhost:9092"
 //	go run ./cmd/echo-adapter/
 //
+// TLS is enabled by default. For local development without TLS:
+//
+//	export KAFKA_TLS_ENABLED="false"
+//
 // Optional TLS/SASL (for cluster-deployed Kafka):
 //
-//	export KAFKA_TLS_ENABLED="true"
 //	export KAFKA_TLS_CA_CERT="/path/to/ca.crt"
 //	export KAFKA_SASL_USERNAME="metering-user"
 //	export KAFKA_SASL_PASSWORD_FILE="/path/to/password"
@@ -120,12 +123,7 @@ func main() {
 		ConsumerGroup: group,
 		Topics:        adapters.AllTopics,
 		FlushInterval: flushInterval,
-		Kafka: adapters.KafkaConfig{
-			TLSEnabled:   os.Getenv("KAFKA_TLS_ENABLED") == "true",
-			TLSCACert:    os.Getenv("KAFKA_TLS_CA_CERT"),
-			SASLUser:     os.Getenv("KAFKA_SASL_USERNAME"),
-			SASLPassFile: os.Getenv("KAFKA_SASL_PASSWORD_FILE"),
-		},
+		Kafka:         adapters.KafkaConfigFromEnv(),
 	}, logger)
 
 	// Serve metrics, health, and event query endpoints.
