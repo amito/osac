@@ -45,6 +45,7 @@ import (
 	"github.com/go-logr/stdr"
 
 	"github.com/osac-project/osac-metering/adapters"
+	"github.com/osac-project/osac-metering/adapters/envutil"
 )
 
 // echoAdapter logs every event to stdout, stores it in a ring buffer
@@ -86,15 +87,9 @@ func (a *echoAdapter) Close() error {
 }
 
 func main() {
-	brokers := os.Getenv("KAFKA_BROKERS")
-	if brokers == "" {
-		log.Fatal("KAFKA_BROKERS is required (comma-separated broker list)")
-	}
+	brokers := envutil.RequireEnv("KAFKA_BROKERS")
 
-	group := os.Getenv("KAFKA_CONSUMER_GROUP")
-	if group == "" {
-		group = "echo-adapter-smoke-test"
-	}
+	group := envutil.EnvOrDefault("KAFKA_CONSUMER_GROUP", "echo-adapter-smoke-test")
 
 	flushInterval := 5 * time.Second
 	if v := os.Getenv("FLUSH_INTERVAL"); v != "" {
@@ -105,10 +100,7 @@ func main() {
 		flushInterval = d
 	}
 
-	metricsAddr := os.Getenv("METRICS_ADDR")
-	if metricsAddr == "" {
-		metricsAddr = ":2112"
-	}
+	metricsAddr := envutil.EnvOrDefault("METRICS_ADDR", ":2112")
 
 	bufferSize := defaultMaxEvents
 	if v := os.Getenv("ECHO_BUFFER_SIZE"); v != "" {
