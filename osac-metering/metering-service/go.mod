@@ -2,6 +2,8 @@ module github.com/osac-project/osac-metering
 
 go 1.26.3
 
+require github.com/osac-project/osac-metering/schema v0.0.0
+
 require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.11-20260709200747-435963d16310.1
 	github.com/IBM/sarama v1.60.0
@@ -69,3 +71,5 @@ require (
 	golang.org/x/tools v0.47.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 )
+
+replace github.com/osac-project/osac-metering/schema => ../schema

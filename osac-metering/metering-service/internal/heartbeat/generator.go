@@ -22,6 +22,7 @@ import (
 	"github.com/osac-project/osac-metering/internal/events"
 	kafkapub "github.com/osac-project/osac-metering/internal/kafka"
 	"github.com/osac-project/osac-metering/internal/projection"
+	"github.com/osac-project/osac-metering/schema"
 )
 
 var (
@@ -167,7 +168,7 @@ func (g *Generator) buildHeartbeatEvent(state *projection.ResourceState, eventID
 		CurrentState:      state.CurrentState,
 		DurationSeconds:   durationSeconds,
 		BillingDimensions: dims,
-		SchemaVersion:     "v1",
+		SchemaVersion:     schema.SchemaVersion,
 	}
 	if err := ce.SetData(cloudevents.ApplicationJSON, data); err != nil {
 		return ce, fmt.Errorf("setting heartbeat CloudEvent data: %w", err)

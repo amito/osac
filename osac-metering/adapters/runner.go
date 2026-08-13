@@ -21,6 +21,8 @@ import (
 	"github.com/IBM/sarama"
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 	"github.com/go-logr/logr"
+
+	"github.com/osac-project/osac-metering/schema"
 )
 
 const (
@@ -319,7 +321,7 @@ func (r *Runner) trackOffset(msg *sarama.ConsumerMessage) {
 }
 
 func (r *Runner) checkOutOfOrder(ce cloudevents.Event, provider string) {
-	resourceID, ok := ce.Extensions()["osacresourceid"]
+	resourceID, ok := ce.Extensions()[schema.ExtResourceID]
 	if !ok {
 		return
 	}

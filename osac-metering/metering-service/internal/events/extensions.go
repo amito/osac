@@ -9,16 +9,20 @@ in compliance with the License. You may obtain a copy of the License at
 
 package events
 
-import cloudevents "github.com/cloudevents/sdk-go/v2"
+import (
+	cloudevents "github.com/cloudevents/sdk-go/v2"
+
+	"github.com/osac-project/osac-metering/schema"
+)
 
 // SetOSACExtensions sets the standard OSAC CloudEvent extension attributes
 // on the given event: osacresourceid, osacresourcetype, osactenant, and
 // optionally osacproject.
 func SetOSACExtensions(ce *cloudevents.Event, resourceID, resourceType, tenantID, projectID string) {
-	ce.SetExtension("osacresourceid", resourceID)
-	ce.SetExtension("osacresourcetype", resourceType)
-	ce.SetExtension("osactenant", tenantID)
+	ce.SetExtension(schema.ExtResourceID, resourceID)
+	ce.SetExtension(schema.ExtResourceType, resourceType)
+	ce.SetExtension(schema.ExtTenant, tenantID)
 	if projectID != "" {
-		ce.SetExtension("osacproject", projectID)
+		ce.SetExtension(schema.ExtProject, projectID)
 	}
 }

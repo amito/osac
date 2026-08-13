@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/osac-project/osac-metering/internal/events"
+	"github.com/osac-project/osac-metering/schema"
 )
 
 type CorrectionReason string
@@ -140,7 +141,7 @@ func buildCorrectionEvent(
 		ActualStateFromSource:   events.NilIfEmpty(sourceState),
 		BillingDimensions:       billingDimensions,
 		AffectedInterval:        interval,
-		SchemaVersion:           "v1",
+		SchemaVersion:           schema.SchemaVersion,
 	}
 	if err := ce.SetData(cloudevents.ApplicationJSON, data); err != nil {
 		return ce, fmt.Errorf("setting correction CloudEvent data: %w", err)

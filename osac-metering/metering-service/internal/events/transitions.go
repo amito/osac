@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	privatev1 "github.com/osac-project/osac-metering/internal/api/osac/private/v1"
+	"github.com/osac-project/osac-metering/schema"
 )
 
 var (
@@ -48,10 +49,11 @@ const (
 // first). MapWatchEvent resolves this marker via StateContext.EverBillable.
 const eventBillableStart = "internal.billable-boundary-crossed"
 
-// Resource type constants.
+// Resource type constants — re-exported from the shared schema module for
+// convenience within this package.
 const (
-	ResourceTypeComputeInstance = "compute_instance"
-	ResourceTypeClusterOrder    = "cluster_order"
+	ResourceTypeComputeInstance = schema.ResourceTypeComputeInstance
+	ResourceTypeClusterOrder    = schema.ResourceTypeClusterOrder
 )
 
 // StateEmpty is the empty previous state for initial transitions.

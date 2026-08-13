@@ -26,6 +26,7 @@ import (
 	"github.com/osac-project/osac-metering/internal/events"
 	kafkapub "github.com/osac-project/osac-metering/internal/kafka"
 	"github.com/osac-project/osac-metering/internal/projection"
+	"github.com/osac-project/osac-metering/schema"
 )
 
 const defaultPageSize = 500
@@ -527,7 +528,7 @@ func buildSingleSyntheticHeartbeat(ps projection.ResourceState, billingDims map[
 		"current_state":      ps.CurrentState,
 		"duration_seconds":   durationSeconds,
 		"billing_dimensions": billingDims,
-		"schema_version":     "v1",
+		"schema_version":     schema.SchemaVersion,
 	}
 	if err := ce.SetData(cloudevents.ApplicationJSON, data); err != nil {
 		return ce, fmt.Errorf("setting synthetic heartbeat CloudEvent data: %w", err)

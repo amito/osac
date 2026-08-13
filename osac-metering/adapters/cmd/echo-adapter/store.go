@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/osac-project/osac-metering/adapters"
+	"github.com/osac-project/osac-metering/schema"
 )
 
 const defaultMaxEvents = 1000
@@ -89,7 +90,7 @@ func (s *eventStore) add(event adapters.MeteringEvent) {
 	}
 
 	var resourceID string
-	if v, ok := ce.Extensions()["osacresourceid"]; ok {
+	if v, ok := ce.Extensions()[schema.ExtResourceID]; ok {
 		resourceID = fmt.Sprintf("%v", v)
 	}
 

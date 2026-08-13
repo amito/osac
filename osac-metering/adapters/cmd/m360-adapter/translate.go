@@ -15,14 +15,16 @@ import (
 	"fmt"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
+
 	"github.com/osac-project/osac-metering/adapters"
+	"github.com/osac-project/osac-metering/schema"
 )
 
 // resourceTypeEndpoints maps OSAC resource types to M360 API endpoints.
 var resourceTypeEndpoints = map[string]string{
-	"compute_instance": "/vmaas/event",
-	"cluster_order":    "/caas/event",
-	"maas_inference":   "/maas/event",
+	schema.ResourceTypeComputeInstance: "/vmaas/event",
+	schema.ResourceTypeClusterOrder:    "/caas/event",
+	"maas_inference":                   "/maas/event",
 }
 
 // spaceString is the M360 convention for non-applicable fields.
@@ -67,13 +69,8 @@ func translateEvent(ce cloudevents.Event) (string, map[string]any, error) {
 		"event_id":        ce.ID(),
 	}
 
-	// Copy data fields to top level.
-	dataFields := []string{
-		"resource_id", "resource_type", "tenant_id", "project_id",
-		"catalog_item_id", "template_id", "previous_state", "current_state",
-		"transition_time", "duration_seconds", "schema_version",
-	}
-	for _, key := range dataFields {
+	// Copy lifecycle data fields to top level.
+	for _, key := range schema.LifecycleDataFields() {
 		payload[key] = nullToSpace(data[key])
 	}
 

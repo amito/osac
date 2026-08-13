@@ -2,6 +2,8 @@ module github.com/osac-project/osac-metering/adapters
 
 go 1.26.3
 
+require github.com/osac-project/osac-metering/schema v0.0.0
+
 require (
 	github.com/IBM/sarama v1.60.1
 	github.com/cloudevents/sdk-go/v2 v2.16.2
@@ -54,3 +56,5 @@ require (
 	golang.org/x/tools v0.47.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
+
+replace github.com/osac-project/osac-metering/schema => ../schema

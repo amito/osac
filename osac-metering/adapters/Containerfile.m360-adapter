@@ -3,12 +3,13 @@ ARG TARGETOS
 ARG TARGETARCH
 
 WORKDIR /opt/app-root/src
-COPY --chown=1001:0 go.mod go.sum ./
-RUN go mod download
+COPY --chown=1001:0 schema/ schema/
+COPY --chown=1001:0 adapters/go.mod adapters/go.sum adapters/
+RUN cd adapters && go mod download
 
-COPY . ./
+COPY --chown=1001:0 adapters/ adapters/
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -buildvcs=false -a -o m360-adapter ./cmd/m360-adapter
+RUN cd adapters && CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -buildvcs=false -a -o /opt/app-root/src/m360-adapter ./cmd/m360-adapter
 
 FROM registry.access.redhat.com/ubi10-minimal:10.2
 WORKDIR /

@@ -19,6 +19,8 @@ import (
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	"github.com/osac-project/osac-metering/schema"
 )
 
 var (
@@ -81,7 +83,7 @@ func TopicFor(eventType string) (string, error) {
 }
 
 // Publish serializes a CloudEvent as JSON and sends it to the appropriate Kafka
-// topic. The osacresourceid extension is used as the partition key to ensure
+// topic. The "osacresourceid" extension is used as the partition key to ensure
 // per-resource ordering.
 func (p *Publisher) Publish(ctx context.Context, event cloudevents.Event) error {
 	if err := ctx.Err(); err != nil {
@@ -101,10 +103,10 @@ func (p *Publisher) Publish(ctx context.Context, event cloudevents.Event) error 
 	}
 
 	extensions := event.Extensions()
-	resourceID, ok := extensions["osacresourceid"]
+	resourceID, ok := extensions[schema.ExtResourceID]
 	if !ok {
 		publishErrors.WithLabelValues(topic, "missing_key").Inc()
-		return fmt.Errorf("missing osacresourceid extension")
+		return fmt.Errorf("missing %s extension", schema.ExtResourceID)
 	}
 
 	msg := &sarama.ProducerMessage{
@@ -129,7 +131,7 @@ func (p *Publisher) Publish(ctx context.Context, event cloudevents.Event) error 
 	}
 
 	resourceType := ""
-	if rt, ok := extensions["osacresourcetype"]; ok {
+	if rt, ok := extensions[schema.ExtResourceType]; ok {
 		resourceType = fmt.Sprintf("%v", rt)
 	}
 	eventsPublished.WithLabelValues(topic, event.Type(), resourceType).Inc()

@@ -8,14 +8,21 @@ Metering pipeline for OSAC — collects resource usage events from the fulfillme
 
 ## Build Instructions
 
-Two independent Go modules — run commands from the appropriate subdirectory:
+Three Go modules — run commands from the appropriate subdirectory:
 
 ```bash
+# schema (shared types — no build step, test + lint only)
+cd schema
+make test                      # Run unit tests
+make lint                      # Run golangci-lint
+cd ..
+
 # metering-service (producer)
 cd metering-service
 make build                     # Build the metering-service binary
 make test                      # Run unit tests
 make lint                      # Run golangci-lint
+cd ..
 
 # adapters (consumer framework)
 cd adapters

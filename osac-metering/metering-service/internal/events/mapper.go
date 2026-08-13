@@ -8,6 +8,7 @@ import (
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 
 	privatev1 "github.com/osac-project/osac-metering/internal/api/osac/private/v1"
+	"github.com/osac-project/osac-metering/schema"
 )
 
 var ErrDataQuality = errors.New("data quality")
@@ -116,24 +117,9 @@ func mapperForEvent(event *privatev1.Event) (ResourceMapper, error) {
 	return nil, fmt.Errorf("unsupported event payload type for event %s", event.GetId())
 }
 
-// LifecycleData is the shared JSON payload for lifecycle and scaling events
-// across all resource types. Exported and built exclusively through
-// BuildLifecycleData so every producer (MapWatchEvent, and the Watch
-// Consumer's scaling-event builder) emits the identical shape.
-type LifecycleData struct {
-	ResourceID        string         `json:"resource_id"`
-	ResourceType      string         `json:"resource_type"`
-	TenantID          string         `json:"tenant_id"`
-	ProjectID         *string        `json:"project_id"`
-	CatalogItemID     *string        `json:"catalog_item_id"`
-	TemplateID        *string        `json:"template_id"`
-	PreviousState     *string        `json:"previous_state"`
-	CurrentState      string         `json:"current_state"`
-	TransitionTime    string         `json:"transition_time"`
-	DurationSeconds   *float64       `json:"duration_seconds"`
-	BillingDimensions map[string]any `json:"billing_dimensions"`
-	SchemaVersion     string         `json:"schema_version"`
-}
+// LifecycleData is a type alias for the shared schema type, kept for
+// backward compatibility within this package.
+type LifecycleData = schema.LifecycleData
 
 // BuildLifecycleData constructs the shared lifecycle/scaling event payload
 // from a resource mapper.
@@ -154,7 +140,7 @@ func BuildLifecycleData(mapper ResourceMapper, billingDims map[string]any, previ
 		TransitionTime:    transitionTime.Format(time.RFC3339Nano),
 		DurationSeconds:   durationSeconds,
 		BillingDimensions: billingDims,
-		SchemaVersion:     "v1",
+		SchemaVersion:     schema.SchemaVersion,
 	}
 }
 

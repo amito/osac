@@ -24,6 +24,7 @@ import (
 	"github.com/osac-project/osac-metering/internal/events"
 	kafkapub "github.com/osac-project/osac-metering/internal/kafka"
 	"github.com/osac-project/osac-metering/internal/projection"
+	"github.com/osac-project/osac-metering/schema"
 )
 
 var (
@@ -493,8 +494,8 @@ func (c *Consumer) buildStateContext(existing *projection.ResourceState, nowBill
 }
 
 func (c *Consumer) logPublished(ce *cloudevents.Event) {
-	resourceID, _ := ce.Context.GetExtension("osacresourceid")
-	tenantID, _ := ce.Context.GetExtension("osactenant")
+	resourceID, _ := ce.Context.GetExtension(schema.ExtResourceID)
+	tenantID, _ := ce.Context.GetExtension(schema.ExtTenant)
 	c.logger.Info("published metering event",
 		"event_id", ce.ID(),
 		"type", ce.Type(),

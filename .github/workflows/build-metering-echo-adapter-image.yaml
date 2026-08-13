@@ -5,7 +5,9 @@ on:
   pull_request:
     paths:
       - 'osac-metering/adapters/**'
+      - 'osac-metering/schema/**'
       - '!osac-metering/adapters/**/*.md'
+      - '!osac-metering/schema/**/*.md'
   push:
     branches:
     - main
@@ -70,7 +72,7 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
         with:
-          context: osac-metering/adapters
+          context: osac-metering
           file: osac-metering/adapters/Containerfile.echo-adapter
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}

@@ -13,13 +13,16 @@ helm-lint:
 	helm lint charts/osac-metering/
 
 test:
+	$(MAKE) -C schema test
 	$(MAKE) -C metering-service test
 	$(MAKE) -C adapters test
 
 lint: helm-lint
+	$(MAKE) -C schema lint
 	$(MAKE) -C metering-service lint
 	$(MAKE) -C adapters lint
 
 clean:
+	$(MAKE) -C schema clean
 	$(MAKE) -C metering-service clean
 	$(MAKE) -C adapters clean

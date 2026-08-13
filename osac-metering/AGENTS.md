@@ -4,7 +4,7 @@ Metering pipeline for OSAC — collects resource usage events from the fulfillme
 
 ## Critical Rules
 
-- **Two Go modules** — `metering-service/` (producer) and `adapters/` (consumer framework) have independent `go.mod`, `Makefile`, and lint configs
+- **Three Go modules** — `schema/` (shared types), `metering-service/` (producer), and `adapters/` (consumer framework) have independent `go.mod`; both `metering-service` and `adapters` depend on `schema` via `replace` directives
 - **Always `make test`** in the module you changed before committing
 - **Always `make helm-lint`** from `osac-metering/` before committing chart changes
 - **Kafka cluster required** — metering subsystem needs AMQ Streams and Kafka (deployed via osac-installer phases 1-2)
@@ -42,6 +42,7 @@ make clean                     # Clean build artifacts
 
 | Directory | Purpose |
 |-----------|---------|
+| `schema/` | Shared event schema — resource type constants, CloudEvent extension names, `LifecycleData` struct |
 | `metering-service/` | Producer — watches fulfillment-service gRPC Watch stream, publishes CloudEvents to Kafka |
 | `adapters/` | Consumer framework — Kafka-to-provider bridge with `ProviderAdapter` interface and `Runner` |
 | `charts/osac-metering/` | Helm chart for deploying metering-service, echo-adapter, and m360-adapter |
