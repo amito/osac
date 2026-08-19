@@ -45,8 +45,7 @@ var _ = BeforeSuite(func() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	err = dbContainer.Start(ctx)
-	Expect(err).ToNot(HaveOccurred())
+	Expect(dbContainer.Start(ctx)).To(Succeed())
 })
 
 var _ = AfterSuite(func() {
