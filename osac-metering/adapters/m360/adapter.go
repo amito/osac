@@ -12,6 +12,7 @@ package m360
 import (
 	"context"
 
+	"github.com/IBM/sarama"
 	"github.com/go-logr/logr"
 
 	"github.com/osac-project/osac-metering/adapters"
@@ -24,6 +25,16 @@ type m360Adapter struct {
 // NewAdapter creates an M360 provider adapter for the given API configuration.
 func NewAdapter(baseURL, apiVersion, apiKey string, logger logr.Logger) adapters.ProviderAdapter {
 	return &m360Adapter{sub: newRESTSubmitter(baseURL, apiVersion, apiKey, logger)}
+}
+
+// NewKafkaAdapter creates an M360 provider adapter that publishes to Kafka.
+func NewKafkaAdapter(
+	producer sarama.SyncProducer,
+	client sarama.Client,
+	topics map[string]string,
+	logger logr.Logger,
+) adapters.ProviderAdapter {
+	return &m360Adapter{sub: newKafkaSubmitter(producer, client, topics, logger)}
 }
 
 func (a *m360Adapter) Name() string { return "m360" }
