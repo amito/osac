@@ -157,6 +157,12 @@ func (r *Reconciler) reconcileFulfillmentResources(ctx context.Context, fulfillm
 	for id, fs := range fulfillmentState {
 		ps, exists := projMap[id]
 		if !exists {
+			if isTransientForType(fs.resourceType, fs.state) {
+				r.logger.V(1).Info("fulfillment reports transient state for unknown resource, skipping",
+					"resource_id", id,
+					"fulfillment_state", fs.state)
+				continue
+			}
 			if err := r.publishCorrections(ctx, id, fs.resourceType, fs.tenantID, fs.projectID,
 				MissedCreation, "", fs.state, fs.billingDimensions, now); err != nil {
 				return corrections, err
@@ -388,6 +394,8 @@ var transientCheckers = map[string]func(string) bool{
 	events.ResourceTypeComputeInstance: events.IsTransientComputeInstanceState,
 }
 
+// Returns bool (not (bool, error) like isBillableForType) because unknown resource types
+// have no transient states — returning false is correct, not an error.
 func isTransientForType(resourceType, state string) bool {
 	checker, ok := transientCheckers[resourceType]
 	if !ok {

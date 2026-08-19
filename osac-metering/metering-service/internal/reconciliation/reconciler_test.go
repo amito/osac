@@ -609,12 +609,57 @@ var _ = Describe("Reconciler", func() {
 			Expect(pub.published).To(BeEmpty())
 		})
 
+		It("skips transient state STARTING when no projection exists", func() {
+			client := &mockComputeClient{
+				items: []*privatev1.ComputeInstance{
+					makeCI("vm-new-transient", "tenant-1", "STARTING", 1),
+				},
+			}
+			store := newMockStore()
+			pub := &mockPublisher{}
+			recon := reconciliation.NewReconciler(client, nil, store, pub, logr.Discard(), 60*time.Second)
+
+			Expect(recon.Reconcile(ctx)).To(Succeed())
+
+			pub.mu.Lock()
+			defer pub.mu.Unlock()
+			Expect(pub.published).To(BeEmpty(), "no correction events for transient state with no projection")
+
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			Expect(store.states).ToNot(HaveKey("vm-new-transient"),
+				"must not create projection for transient state")
+		})
+
+		It("skips transient state STOPPING when no projection exists", func() {
+			client := &mockComputeClient{
+				items: []*privatev1.ComputeInstance{
+					makeCI("vm-new-stopping", "tenant-1", "STOPPING", 1),
+				},
+			}
+			store := newMockStore()
+			pub := &mockPublisher{}
+			recon := reconciliation.NewReconciler(client, nil, store, pub, logr.Discard(), 60*time.Second)
+
+			Expect(recon.Reconcile(ctx)).To(Succeed())
+
+			pub.mu.Lock()
+			defer pub.mu.Unlock()
+			Expect(pub.published).To(BeEmpty(), "no correction events for transient state with no projection")
+
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			Expect(store.states).ToNot(HaveKey("vm-new-stopping"),
+				"must not create projection for transient state")
+		})
+
 		It("skips transient state STARTING and preserves projection CurrentState", func() {
 			client := &mockComputeClient{
 				items: []*privatev1.ComputeInstance{
 					makeCI("vm-transient", "tenant-1", "STARTING", 5),
 				},
 			}
+			beforeReconcile := time.Now().UTC().Add(-time.Second)
 			store := newMockStore()
 			store.states["vm-transient"] = projection.ResourceState{
 				ResourceID:         "vm-transient",
@@ -640,6 +685,7 @@ var _ = Describe("Reconciler", func() {
 			Expect(updated.PreviousState).To(BeEmpty(), "PreviousState must not be set")
 			Expect(updated.IsBillable).To(BeFalse(), "billability must not change")
 			Expect(updated.FulfillmentVersion).To(Equal(int32(5)), "FulfillmentVersion must advance")
+			Expect(updated.TransitionTime).To(BeTemporally(">=", beforeReconcile), "TransitionTime must advance")
 		})
 
 		It("skips transient state STOPPING and preserves projection CurrentState", func() {
@@ -649,6 +695,7 @@ var _ = Describe("Reconciler", func() {
 				},
 			}
 			billStart := time.Now().Add(-1 * time.Hour).UTC().Truncate(time.Microsecond)
+			beforeReconcile := time.Now().UTC().Add(-time.Second)
 			store := newMockStore()
 			store.states["vm-stopping"] = projection.ResourceState{
 				ResourceID:         "vm-stopping",
@@ -679,6 +726,7 @@ var _ = Describe("Reconciler", func() {
 			Expect(updated.BillableSince).ToNot(BeNil(), "BillableSince must be preserved")
 			Expect(*updated.BillableSince).To(Equal(billStart), "BillableSince timestamp must not change")
 			Expect(updated.FulfillmentVersion).To(Equal(int32(4)), "FulfillmentVersion must advance")
+			Expect(updated.TransitionTime).To(BeTemporally(">=", beforeReconcile), "TransitionTime must advance")
 		})
 
 		It("continues reconciliation when upsert returns ErrStaleVersion", func() {
