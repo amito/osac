@@ -224,7 +224,6 @@ func (r *Reconciler) reconcileFulfillmentResources(ctx context.Context, fulfillm
 					"projection_state", ps.CurrentState,
 					"fulfillment_state", fs.state)
 				ps.FulfillmentVersion = fs.version
-				ps.TransitionTime = now
 				if err := r.store.Upsert(ctx, ps); err != nil && !errors.Is(err, projection.ErrStaleVersion) {
 					return corrections, fmt.Errorf("advancing version for transient state %s: %w", id, err)
 				}

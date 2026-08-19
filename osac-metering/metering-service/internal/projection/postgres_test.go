@@ -41,15 +41,12 @@ var _ = BeforeSuite(func() {
 	logger = zapr.NewLogger(zapLog)
 
 	dbContainer, err = database.NewContainer(logger)
-	if err != nil {
-		Skip("container runtime unavailable: " + err.Error())
-	}
+	Expect(err).ToNot(HaveOccurred())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	if err := dbContainer.Start(ctx); err != nil {
-		Skip("database container failed to start: " + err.Error())
-	}
+	err = dbContainer.Start(ctx)
+	Expect(err).ToNot(HaveOccurred())
 })
 
 var _ = AfterSuite(func() {

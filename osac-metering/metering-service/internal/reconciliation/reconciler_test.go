@@ -659,7 +659,7 @@ var _ = Describe("Reconciler", func() {
 					makeCI("vm-transient", "tenant-1", "STARTING", 5),
 				},
 			}
-			beforeReconcile := time.Now().UTC().Add(-time.Second)
+			origTransition := time.Now().Add(-10 * time.Minute).UTC().Truncate(time.Microsecond)
 			store := newMockStore()
 			store.states["vm-transient"] = projection.ResourceState{
 				ResourceID:         "vm-transient",
@@ -668,6 +668,7 @@ var _ = Describe("Reconciler", func() {
 				CurrentState:       "STOPPED",
 				IsBillable:         false,
 				FulfillmentVersion: 3,
+				TransitionTime:     origTransition,
 			}
 			pub := &mockPublisher{}
 			recon := reconciliation.NewReconciler(client, nil, store, pub, logr.Discard(), 60*time.Second)
@@ -685,7 +686,7 @@ var _ = Describe("Reconciler", func() {
 			Expect(updated.PreviousState).To(BeEmpty(), "PreviousState must not be set")
 			Expect(updated.IsBillable).To(BeFalse(), "billability must not change")
 			Expect(updated.FulfillmentVersion).To(Equal(int32(5)), "FulfillmentVersion must advance")
-			Expect(updated.TransitionTime).To(BeTemporally(">=", beforeReconcile), "TransitionTime must advance")
+			Expect(updated.TransitionTime).To(Equal(origTransition), "TransitionTime must not change — no state transition occurred")
 		})
 
 		It("skips transient state STOPPING and preserves projection CurrentState", func() {
@@ -695,7 +696,7 @@ var _ = Describe("Reconciler", func() {
 				},
 			}
 			billStart := time.Now().Add(-1 * time.Hour).UTC().Truncate(time.Microsecond)
-			beforeReconcile := time.Now().UTC().Add(-time.Second)
+			origTransition := time.Now().Add(-10 * time.Minute).UTC().Truncate(time.Microsecond)
 			store := newMockStore()
 			store.states["vm-stopping"] = projection.ResourceState{
 				ResourceID:         "vm-stopping",
@@ -705,6 +706,7 @@ var _ = Describe("Reconciler", func() {
 				IsBillable:         true,
 				BillableSince:      &billStart,
 				FulfillmentVersion: 2,
+				TransitionTime:     origTransition,
 			}
 			pub := &mockPublisher{}
 			recon := reconciliation.NewReconciler(client, nil, store, pub, logr.Discard(), 60*time.Second)
@@ -726,7 +728,7 @@ var _ = Describe("Reconciler", func() {
 			Expect(updated.BillableSince).ToNot(BeNil(), "BillableSince must be preserved")
 			Expect(*updated.BillableSince).To(Equal(billStart), "BillableSince timestamp must not change")
 			Expect(updated.FulfillmentVersion).To(Equal(int32(4)), "FulfillmentVersion must advance")
-			Expect(updated.TransitionTime).To(BeTemporally(">=", beforeReconcile), "TransitionTime must advance")
+			Expect(updated.TransitionTime).To(Equal(origTransition), "TransitionTime must not change — no state transition occurred")
 		})
 
 		It("skips write for transient state when fulfillment version equals projection version", func() {
