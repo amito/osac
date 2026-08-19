@@ -211,6 +211,19 @@ func (r *Reconciler) reconcileFulfillmentResources(ctx context.Context, fulfillm
 			continue
 		}
 
+		if isTransientForType(fs.resourceType, fs.state) {
+			r.logger.V(1).Info("fulfillment reports transient state, advancing version only",
+				"resource_id", id,
+				"projection_state", ps.CurrentState,
+				"fulfillment_state", fs.state)
+			ps.FulfillmentVersion = fs.version
+			ps.TransitionTime = now
+			if err := r.store.Upsert(ctx, ps); err != nil && !errors.Is(err, projection.ErrStaleVersion) {
+				return corrections, fmt.Errorf("advancing version for transient state %s: %w", id, err)
+			}
+			continue
+		}
+
 		if ps.CurrentState != fs.state {
 			if err := r.publishCorrections(ctx, id, fs.resourceType, fs.tenantID, fs.projectID,
 				StateDrift, ps.CurrentState, fs.state, fs.billingDimensions, now); err != nil {
@@ -369,6 +382,18 @@ type fulfillmentResource struct {
 var billabilityCheckers = map[string]func(string) bool{
 	events.ResourceTypeComputeInstance: events.IsBillableState,
 	events.ResourceTypeClusterOrder:    events.IsClusterBillableState,
+}
+
+var transientCheckers = map[string]func(string) bool{
+	events.ResourceTypeComputeInstance: events.IsTransientComputeInstanceState,
+}
+
+func isTransientForType(resourceType, state string) bool {
+	checker, ok := transientCheckers[resourceType]
+	if !ok {
+		return false
+	}
+	return checker(state)
 }
 
 func isBillableForType(resourceType, state string) (bool, error) {

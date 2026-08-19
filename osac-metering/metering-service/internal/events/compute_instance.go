@@ -169,6 +169,13 @@ func IsBillableState(state string) bool {
 	return state == ComputeInstanceStateRunning
 }
 
+// IsTransientComputeInstanceState returns whether a ComputeInstance state is
+// transient (STARTING/STOPPING). Transient states must not be persisted as
+// CurrentState — only FulfillmentVersion and TransitionTime should advance.
+func IsTransientComputeInstanceState(state string) bool {
+	return state == ComputeInstanceStateStarting || state == ComputeInstanceStateStopping
+}
+
 func (m *computeInstanceMapper) TenantID() string {
 	if md := m.ci.GetMetadata(); md != nil {
 		return md.GetTenant()
