@@ -391,11 +391,13 @@ var billabilityCheckers = map[string]func(string) bool{
 }
 
 var transientCheckers = map[string]func(string) bool{
-	events.ResourceTypeComputeInstance: events.IsTransientComputeInstanceState,
+	events.ResourceTypeComputeInstance: events.IsTransientState,
 }
 
-// Returns bool (not (bool, error) like isBillableForType) because unknown resource types
-// have no transient states — returning false is correct, not an error.
+// isTransientForType reports whether the given state is transient for the
+// resource type. Returns bool (not (bool, error) like isBillableForType)
+// because unknown resource types have no transient states — returning false
+// is correct, not an error.
 func isTransientForType(resourceType, state string) bool {
 	checker, ok := transientCheckers[resourceType]
 	if !ok {

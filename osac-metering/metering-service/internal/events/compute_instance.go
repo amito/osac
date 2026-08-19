@@ -169,10 +169,10 @@ func IsBillableState(state string) bool {
 	return state == ComputeInstanceStateRunning
 }
 
-// IsTransientComputeInstanceState returns whether a ComputeInstance state is
-// transient (STARTING/STOPPING). Transient states must not be persisted as
-// CurrentState — only FulfillmentVersion and TransitionTime should advance.
-func IsTransientComputeInstanceState(state string) bool {
+// IsTransientState returns whether a ComputeInstance state is transient
+// (STARTING/STOPPING). Transient states must not be persisted as CurrentState
+// — only FulfillmentVersion and TransitionTime should advance.
+func IsTransientState(state string) bool {
 	return state == ComputeInstanceStateStarting || state == ComputeInstanceStateStopping
 }
 
