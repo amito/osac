@@ -392,6 +392,7 @@ var billabilityCheckers = map[string]func(string) bool{
 
 var transientCheckers = map[string]func(string) bool{
 	events.ResourceTypeComputeInstance: events.IsTransientState,
+	events.ResourceTypeClusterOrder:    events.IsClusterTransientState,
 }
 
 // isTransientForType reports whether the given state is transient for the

@@ -153,6 +153,15 @@ func TestBuildCorrectionEventsSameDimensionsGetSameID(t *testing.T) {
 	}
 }
 
+func TestTransientCheckersCoversAllBillabilityCheckerKeys(t *testing.T) {
+	for resourceType := range billabilityCheckers {
+		if _, ok := transientCheckers[resourceType]; !ok {
+			t.Errorf("billabilityCheckers has resource type %q but transientCheckers does not — "+
+				"transient states for this type will silently pass through as CurrentState", resourceType)
+		}
+	}
+}
+
 func TestBuildSyntheticHeartbeatsFallsBackToBillableSinceWhenNeverHeartbeated(t *testing.T) {
 	billableSince := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
 	ps := projection.ResourceState{

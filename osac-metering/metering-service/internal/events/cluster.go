@@ -178,6 +178,12 @@ func IsClusterBillableState(state string) bool {
 	return state == ClusterStateProgressing || state == ClusterStateReady
 }
 
+// IsClusterTransientState returns whether a ClusterOrder state is transient.
+// Cluster states have no transient states — this always returns false.
+func IsClusterTransientState(_ string) bool {
+	return false
+}
+
 // ClusterBillingDimensions extracts billing dimensions from a Cluster proto,
 // including the full component breakdown needed for N+1 decomposition.
 // Node sets come from spec (desired state the tenant is billed for), not status.
