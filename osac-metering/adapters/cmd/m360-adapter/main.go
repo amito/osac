@@ -33,17 +33,17 @@ import (
 )
 
 type m360Adapter struct {
-	client *m360Client
+	sub submitter
 }
 
 func (a *m360Adapter) Name() string { return "m360" }
 
 func (a *m360Adapter) Submit(ctx context.Context, event adapters.MeteringEvent) error {
-	endpoint, payload, err := translateEvent(event.CloudEvent)
+	route, payload, err := translateEvent(event.CloudEvent)
 	if err != nil {
 		return err
 	}
-	return a.client.post(ctx, endpoint, payload)
+	return a.sub.submit(ctx, route, payload)
 }
 
 func (a *m360Adapter) Flush(_ context.Context) (adapters.SubmitResult, error) {
@@ -51,10 +51,10 @@ func (a *m360Adapter) Flush(_ context.Context) (adapters.SubmitResult, error) {
 }
 
 func (a *m360Adapter) HealthCheck(ctx context.Context) error {
-	return a.client.healthCheck(ctx)
+	return a.sub.healthCheck(ctx)
 }
 
-func (a *m360Adapter) Close() error { return nil }
+func (a *m360Adapter) Close() error { return a.sub.close() }
 
 func main() {
 	brokers := envutil.RequireEnv("KAFKA_BROKERS")
@@ -90,10 +90,9 @@ func main() {
 
 	logger := stdr.New(log.New(os.Stderr, "", log.LstdFlags))
 
-	client := newM360Client(m360URL, apiVersion, apiKey)
-	client.logger = logger
+	sub := newRESTSubmitter(m360URL, apiVersion, apiKey, logger)
 
-	adapter := &m360Adapter{client: client}
+	adapter := &m360Adapter{sub: sub}
 	runner := adapters.NewRunner(adapter, adapters.RunnerConfig{
 		Brokers:       brokers,
 		ConsumerGroup: group,
