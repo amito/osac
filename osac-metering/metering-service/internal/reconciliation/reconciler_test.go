@@ -729,6 +729,40 @@ var _ = Describe("Reconciler", func() {
 			Expect(updated.TransitionTime).To(BeTemporally(">=", beforeReconcile), "TransitionTime must advance")
 		})
 
+		It("skips write for transient state when fulfillment version equals projection version", func() {
+			origTransition := time.Now().Add(-10 * time.Minute).UTC().Truncate(time.Microsecond)
+			client := &mockComputeClient{
+				items: []*privatev1.ComputeInstance{
+					makeCI("vm-same-ver", "tenant-1", "STARTING", 3),
+				},
+			}
+			store := newMockStore()
+			store.states["vm-same-ver"] = projection.ResourceState{
+				ResourceID:         "vm-same-ver",
+				ResourceType:       events.ResourceTypeComputeInstance,
+				TenantID:           "tenant-1",
+				CurrentState:       "STOPPED",
+				IsBillable:         false,
+				FulfillmentVersion: 3,
+				TransitionTime:     origTransition,
+			}
+			pub := &mockPublisher{}
+			recon := reconciliation.NewReconciler(client, nil, store, pub, logr.Discard(), 60*time.Second)
+
+			Expect(recon.Reconcile(ctx)).To(Succeed())
+
+			pub.mu.Lock()
+			defer pub.mu.Unlock()
+			Expect(pub.published).To(BeEmpty(), "no correction events for same-version transient state")
+
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			updated := store.states["vm-same-ver"]
+			Expect(updated.CurrentState).To(Equal("STOPPED"), "CurrentState must not change to transient STARTING")
+			Expect(updated.FulfillmentVersion).To(Equal(int32(3)), "FulfillmentVersion must not change")
+			Expect(updated.TransitionTime).To(Equal(origTransition), "TransitionTime must not change — no write should occur")
+		})
+
 		It("continues reconciliation when upsert returns ErrStaleVersion", func() {
 			client := &mockComputeClient{
 				items: []*privatev1.ComputeInstance{
