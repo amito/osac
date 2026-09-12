@@ -27,7 +27,6 @@ import (
 	"github.com/osac-project/osac/fulfillment-service/internal/auth"
 	"github.com/osac-project/osac/fulfillment-service/internal/database/dao"
 	"github.com/osac-project/osac/fulfillment-service/internal/events"
-	"github.com/osac-project/osac/fulfillment-service/internal/uuid"
 	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
 )
 
@@ -103,18 +102,18 @@ func makeNotifyCallback[O dao.Object](notifier events.Notifier) dao.EventCallbac
 		}
 	}
 	return func(ctx context.Context, e dao.Event) error {
-		event := &privatev1.Event{}
-		event.SetId(uuid.New())
+		var eventType privatev1.EventType
 		switch e.Type {
 		case dao.EventTypeCreated:
-			event.SetType(privatev1.EventType_EVENT_TYPE_OBJECT_CREATED)
+			eventType = privatev1.EventType_EVENT_TYPE_OBJECT_CREATED
 		case dao.EventTypeUpdated:
-			event.SetType(privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED)
+			eventType = privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED
 		case dao.EventTypeDeleted:
-			event.SetType(privatev1.EventType_EVENT_TYPE_OBJECT_DELETED)
+			eventType = privatev1.EventType_EVENT_TYPE_OBJECT_DELETED
 		default:
 			return fmt.Errorf("unknown event type '%s'", e.Type)
 		}
+		event := newEvent(eventType)
 		if payloadField != nil {
 			event.ProtoReflect().Set(payloadField, protoreflect.ValueOfMessage(e.Object.ProtoReflect()))
 		}

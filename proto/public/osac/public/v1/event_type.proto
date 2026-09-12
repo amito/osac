@@ -15,6 +15,7 @@ syntax = "proto3";
 
 package osac.public.v1;
 
+import "google/protobuf/timestamp.proto";
 import "osac/public/v1/baremetal_instance_type.proto";
 import "osac/public/v1/cluster_template_type.proto";
 import "osac/public/v1/cluster_version_type.proto";
@@ -37,6 +38,13 @@ message Event {
 
   // Type of event.
   EventType type = 2;
+
+  // Time at which the event was generated.
+  //
+  // For EVENT_TYPE_OBJECT_DELETED, this is the authoritative deletion boundary: the time at which the object had no
+  // remaining finalizers and the deletion event was generated. It is distinct from Metadata.deletion_timestamp, which
+  // records when deletion was requested.
+  google.protobuf.Timestamp timestamp = 36;
 
   // Payload of the event.
   oneof payload {

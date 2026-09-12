@@ -31,6 +31,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/auth"
 	"github.com/osac-project/osac/fulfillment-service/internal/collections"
@@ -1007,10 +1008,7 @@ func (s *GenericServer[O]) Signal(ctx context.Context, request any, response any
 
 	// Send the signal event:
 	if s.notifier != nil {
-		event := privatev1.Event_builder{
-			Id:   uuid.New(),
-			Type: privatev1.EventType_EVENT_TYPE_OBJECT_SIGNALED,
-		}.Build()
+		event := newEvent(privatev1.EventType_EVENT_TYPE_OBJECT_SIGNALED)
 		err = s.setPayload(event, object)
 		if err != nil {
 			return err
@@ -1035,23 +1033,32 @@ func (s *GenericServer[O]) Signal(ctx context.Context, request any, response any
 
 // notifyEvent converts the DAO event into an API event and publishes it using the PostgreSQL NOTIFY command.
 func (s *GenericServer[O]) notifyEvent(ctx context.Context, e dao.Event) error {
-	event := &privatev1.Event{}
-	event.SetId(uuid.New())
+	var eventType privatev1.EventType
 	switch e.Type {
 	case dao.EventTypeCreated:
-		event.SetType(privatev1.EventType_EVENT_TYPE_OBJECT_CREATED)
+		eventType = privatev1.EventType_EVENT_TYPE_OBJECT_CREATED
 	case dao.EventTypeUpdated:
-		event.SetType(privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED)
+		eventType = privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED
 	case dao.EventTypeDeleted:
-		event.SetType(privatev1.EventType_EVENT_TYPE_OBJECT_DELETED)
+		eventType = privatev1.EventType_EVENT_TYPE_OBJECT_DELETED
 	default:
 		return fmt.Errorf("unknown event kind '%s'", e.Type)
 	}
+	event := newEvent(eventType)
 	err := s.setPayload(event, e.Object)
 	if err != nil {
 		return err
 	}
 	return s.notifier.Notify(ctx, event)
+}
+
+// newEvent creates an event with the identity and generation timestamp shared by all event producers.
+func newEvent(eventType privatev1.EventType) *privatev1.Event {
+	return privatev1.Event_builder{
+		Id:        uuid.New(),
+		Type:      eventType,
+		Timestamp: timestamppb.Now(),
+	}.Build()
 }
 
 // setPayload sets the payload of the event message. If the payload field is not found the event is left unchanged. If a

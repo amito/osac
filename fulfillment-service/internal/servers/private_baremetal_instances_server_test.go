@@ -14,6 +14,7 @@ language governing permissions and limitations under the License.
 package servers
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"go.uber.org/mock/gomock"
 
 	grpccodes "google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -32,6 +34,7 @@ import (
 
 	"github.com/osac-project/osac/fulfillment-service/internal/auth"
 	"github.com/osac-project/osac/fulfillment-service/internal/database/dao"
+	"github.com/osac-project/osac/fulfillment-service/internal/events"
 	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
 )
 
@@ -81,13 +84,24 @@ var _ = Describe("Private bare metal instances server", func() {
 
 	Describe("Behaviour", func() {
 		var (
-			server        *PrivateBareMetalInstancesServer
-			catalogServer *PrivateBareMetalInstanceCatalogItemsServer
-			catalogItemID string
+			server         *PrivateBareMetalInstancesServer
+			catalogServer  *PrivateBareMetalInstanceCatalogItemsServer
+			catalogItemID  string
+			notifiedEvents []*privatev1.Event
 		)
 
 		BeforeEach(func() {
 			var err error
+			notifiedEvents = nil
+			ctrl := gomock.NewController(GinkgoT())
+			DeferCleanup(ctrl.Finish)
+			notifier := events.NewMockNotifier(ctrl)
+			notifier.EXPECT().
+				Notify(gomock.Any(), gomock.Any()).
+				Do(func(ctx context.Context, payload proto.Message) {
+					notifiedEvents = append(notifiedEvents, payload.(*privatev1.Event))
+				}).
+				AnyTimes()
 
 			catalogServer, err = NewPrivateBareMetalInstanceCatalogItemsServer().
 				SetLogger(logger).
@@ -100,6 +114,7 @@ var _ = Describe("Private bare metal instances server", func() {
 				SetLogger(logger).
 				SetAttributionLogic(attribution).
 				SetTenancyLogic(tenancy).
+				SetNotifier(notifier).
 				Build()
 			Expect(err).ToNot(HaveOccurred())
 
@@ -1580,6 +1595,18 @@ var _ = Describe("Private bare metal instances server", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(attList.GetItems()).To(HaveLen(1))
 			Expect(attList.GetItems()[0].GetSpec().GetBaremetalInstance().GetId()).To(Equal(bmiID))
+
+			var externalIPEvents []*privatev1.Event
+			for _, event := range notifiedEvents {
+				if event.GetExternalIp() != nil || event.GetExternalIpAttachment() != nil {
+					externalIPEvents = append(externalIPEvents, event)
+				}
+			}
+			Expect(externalIPEvents).To(HaveLen(2))
+			for _, event := range externalIPEvents {
+				Expect(event.GetType()).To(Equal(privatev1.EventType_EVENT_TYPE_OBJECT_CREATED))
+				Expect(event.GetTimestamp()).ToNot(BeNil())
+			}
 		})
 
 		It("Rejects PATCH that changes auto_external_ip_attachment", func() {

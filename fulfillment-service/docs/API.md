@@ -431,6 +431,14 @@ appear in the public API.
 In general, services should not have any additional ad-hoc methods beyond those listed above. There
 are some existing exceptions, and the project will work to remove them over time.
 
+### Events
+
+The `Events.Watch` stream delivers an `Event` for each generated object change. The `timestamp`
+field records when the event was generated. For `EVENT_TYPE_OBJECT_DELETED`, it is the authoritative
+deletion boundary: the object had no remaining finalizers when the event was generated. This is
+distinct from `Metadata.deletion_timestamp`, which records when deletion was requested. Clients
+must preserve the event timestamp when forwarding or storing events.
+
 ## Request and response messages
 
 Request and response messages are named after the service, following the pattern

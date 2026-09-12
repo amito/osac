@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/osac-project/osac/fulfillment-service/internal/database/dao"
 	"github.com/osac-project/osac/fulfillment-service/internal/events"
 	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
 )
@@ -77,11 +78,49 @@ var _ = Describe("Generic server", func() {
 		// Verify the event:
 		Expect(event).ToNot(BeNil())
 		Expect(event.GetType()).To(Equal(privatev1.EventType_EVENT_TYPE_OBJECT_CREATED))
+		Expect(event.GetTimestamp()).ToNot(BeNil())
 		object := event.GetHostType()
 		Expect(object).ToNot(BeNil())
 		metadata := object.GetMetadata()
 		Expect(metadata).ToNot(BeNil())
 		Expect(metadata.GetName()).To(Equal("my-object"))
+	})
+
+	It("Adds a timestamp to every database event type", func() {
+		notifier := events.NewMockNotifier(ctrl)
+		notifier.EXPECT().
+			Notify(gomock.Any(), gomock.Any()).
+			DoAndReturn(
+				func(ctx context.Context, payload proto.Message) error {
+					event := payload.(*privatev1.Event)
+					field := event.ProtoReflect().Descriptor().Fields().ByName("timestamp")
+					Expect(field).ToNot(BeNil())
+					Expect(event.ProtoReflect().Has(field)).To(BeTrue())
+					return nil
+				},
+			).
+			Times(3)
+
+		server, err := NewGenericServer[*privatev1.HostType]().
+			SetLogger(logger).
+			SetService(privatev1.HostTypes_ServiceDesc.ServiceName).
+			SetAttributionLogic(attribution).
+			SetTenancyLogic(tenancy).
+			SetNotifier(notifier).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		object := privatev1.HostType_builder{
+			Metadata: privatev1.Metadata_builder{Name: "event-timestamp"}.Build(),
+		}.Build()
+		for _, eventType := range []dao.EventType{
+			dao.EventTypeCreated,
+			dao.EventTypeUpdated,
+			dao.EventTypeDeleted,
+		} {
+			err = server.notifyEvent(ctx, dao.Event{Type: eventType, Object: object})
+			Expect(err).ToNot(HaveOccurred())
+		}
 	})
 
 	It("Redacts the payload", func() {

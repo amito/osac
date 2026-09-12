@@ -16,6 +16,7 @@ syntax = "proto3";
 package osac.private.v1;
 
 import "cleanapi/cleanapi.proto";
+import "google/protobuf/timestamp.proto";
 import "osac/private/v1/baremetal_instance_catalog_item_type.proto";
 import "osac/private/v1/baremetal_instance_template_type.proto";
 import "osac/private/v1/baremetal_instance_type.proto";
@@ -60,6 +61,13 @@ message Event {
   // Type of event.
   EventType type = 2;
 
+  // Time at which the event was generated.
+  //
+  // For EVENT_TYPE_OBJECT_DELETED, this is the authoritative deletion boundary: the time at which the object had no
+  // remaining finalizers and the deletion event was generated. It is distinct from Metadata.deletion_timestamp, which
+  // records when deletion was requested.
+  google.protobuf.Timestamp timestamp = 36;
+
   // Payload of the event.
   oneof payload {
     BareMetalInstance bare_metal_instance = 3;
@@ -96,6 +104,7 @@ message Event {
     StorageTier storage_tier = 34 [(cleanapi.field).private = true];
     Volume volume = 35 [(cleanapi.field).private = true];
   }
+
 }
 
 enum EventType {

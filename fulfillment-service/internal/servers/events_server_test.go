@@ -29,6 +29,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/auth"
 	"github.com/osac-project/osac/fulfillment-service/internal/events"
@@ -200,10 +201,12 @@ var _ = Describe("Events server visibility", func() {
 		server, client := startServer(makeTenancy("tenant-a"))
 		collector, cancel := startWatch(server, client)
 		defer cancel()
+		timestamp := timestamppb.New(time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC))
 		sendEvent(
 			privatev1.Event_builder{
-				Id:   uuid.New(),
-				Type: privatev1.EventType_EVENT_TYPE_OBJECT_CREATED,
+				Id:        uuid.New(),
+				Type:      privatev1.EventType_EVENT_TYPE_OBJECT_CREATED,
+				Timestamp: timestamp,
 				Cluster: privatev1.Cluster_builder{
 					Id: uuid.New(),
 					Metadata: privatev1.Metadata_builder{
@@ -218,6 +221,7 @@ var _ = Describe("Events server visibility", func() {
 
 		// Verify that the event is for the visible tenant:
 		Expect(collector.Events()[0].GetCluster().GetMetadata().GetTenant()).To(Equal("tenant-a"))
+		Expect(collector.Events()[0].GetTimestamp().AsTime()).To(Equal(timestamp.AsTime()))
 	})
 
 	It("Filters out events when tenant is not visible", func() {
