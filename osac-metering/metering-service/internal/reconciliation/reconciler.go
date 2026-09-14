@@ -133,6 +133,8 @@ type Reconciler struct {
 	unavailableTypes     map[string]struct{}
 	bmaasHolds           map[string]struct{}
 	bmaasHoldMetrics     map[string]struct{}
+	bmaasSkipped         map[string]struct{}
+	bmaasPresence        *heartbeat.BMaaSPresence
 }
 
 var correctionResourceTypes = map[string]struct{}{
@@ -146,6 +148,10 @@ var correctionResourceTypes = map[string]struct{}{
 
 func isUnavailable(err error) bool {
 	return status.Code(err) == codes.Unavailable
+}
+
+func (r *Reconciler) SetBMaaSPresence(presence *heartbeat.BMaaSPresence) {
+	r.bmaasPresence = presence
 }
 
 func NewReconciler(
@@ -1484,6 +1490,7 @@ func (r *Reconciler) loadVolumes(ctx context.Context, result map[string]fulfillm
 
 func (r *Reconciler) loadBareMetalInstances(ctx context.Context, result map[string]fulfillmentResource) error {
 	var offset int32
+	var listedIDs []string
 	for {
 		limit := int32(defaultPageSize)
 		resp, err := r.bareMetalClient.List(ctx, &privatev1.BareMetalInstancesListRequest{
@@ -1527,12 +1534,16 @@ func (r *Reconciler) loadBareMetalInstances(ctx context.Context, result map[stri
 				billingDimensions: dimensions,
 				transitionTime:    transitionTime,
 			}
+			listedIDs = append(listedIDs, bmi.GetId())
 		}
 
 		if len(items) < defaultPageSize {
 			break
 		}
 		offset += int32(len(items))
+	}
+	if r.bmaasPresence != nil {
+		r.bmaasPresence.Replace(listedIDs)
 	}
 	return nil
 }

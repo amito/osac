@@ -233,6 +233,7 @@ func run(ctx context.Context, logger logr.Logger, cfg *config) error {
 		bareMetalClient = privatev1.NewBareMetalInstancesClient(grpcConn)
 	}
 	replaySource := reconciliation.NewUnavailableBMaaSReplaySource()
+	bmaasPresence := heartbeat.NewBMaaSPresence()
 	reconciler := reconciliation.NewReconciler(
 		computeClient,
 		clusterClient,
@@ -252,6 +253,7 @@ func run(ctx context.Context, logger logr.Logger, cfg *config) error {
 	if err != nil {
 		return fmt.Errorf("loading external IP pool families: %w", err)
 	}
+	reconciler.SetBMaaSPresence(bmaasPresence)
 	mapperFactory, err := watch.NewMapperFactory(externalIPPoolClient, cfg.deploymentID, pools)
 	if err != nil {
 		return fmt.Errorf("creating Watch mapper factory: %w", err)
@@ -268,6 +270,8 @@ func run(ctx context.Context, logger logr.Logger, cfg *config) error {
 	logger.Info("service ready")
 
 	hbGen := heartbeat.NewGenerator(store, publisher, logger, cfg.heartbeatInterval)
+	hbGen.SetBMaaSPresence(bmaasPresence)
+	hbGen.SetBMaaSPresence(bmaasPresence)
 
 	var wg sync.WaitGroup
 
