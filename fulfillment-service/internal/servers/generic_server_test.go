@@ -123,6 +123,44 @@ var _ = Describe("Generic server", func() {
 		}
 	})
 
+	It("Adds a timestamp to signal events", func() {
+		var signalEvent *privatev1.Event
+		notifier := events.NewMockNotifier(ctrl)
+		notifier.EXPECT().
+			Notify(gomock.Any(), gomock.Any()).
+			Do(func(ctx context.Context, payload proto.Message) {
+				event := payload.(*privatev1.Event)
+				if event.GetType() == privatev1.EventType_EVENT_TYPE_OBJECT_SIGNALED {
+					signalEvent = event
+				}
+			}).
+			AnyTimes()
+
+		server, err := NewGenericServer[*privatev1.HostType]().
+			SetLogger(logger).
+			SetService(privatev1.HostTypes_ServiceDesc.ServiceName).
+			SetAttributionLogic(attribution).
+			SetTenancyLogic(tenancy).
+			SetNotifier(notifier).
+			Build()
+		Expect(err).ToNot(HaveOccurred())
+
+		response := &privatev1.HostTypesCreateResponse{}
+		err = server.Create(ctx, privatev1.HostTypesCreateRequest_builder{
+			Object: privatev1.HostType_builder{
+				Metadata: privatev1.Metadata_builder{Name: "signal-timestamp"}.Build(),
+			}.Build(),
+		}.Build(), &response)
+		Expect(err).ToNot(HaveOccurred())
+
+		objectID := response.GetObject().GetId()
+		signalResponse := &privatev1.HostTypesSignalResponse{}
+		err = server.Signal(ctx, privatev1.HostTypesSignalRequest_builder{Id: objectID}.Build(), &signalResponse)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(signalEvent).ToNot(BeNil())
+		Expect(signalEvent.GetTimestamp()).ToNot(BeNil())
+	})
+
 	It("Redacts the payload", func() {
 		// Create a mock notifier that captures the event:
 		var event *privatev1.Event

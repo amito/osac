@@ -221,10 +221,10 @@ func (m *computeInstanceMapper) CloudEventType(eventType privatev1.EventType, pr
 	return ResolveCloudEventType(computeInstanceTransitions, eventType, previousState, m.CurrentState())
 }
 
-func (m *computeInstanceMapper) TransitionTime(eventType privatev1.EventType) (time.Time, error) {
-	return ResolveTransitionTime(eventType,
+func (m *computeInstanceMapper) TransitionTime(event *privatev1.Event) (time.Time, error) {
+	return ResolveTransitionTime(event.GetType(),
+		event.GetTimestamp(),
 		m.ci.GetMetadata().GetCreationTimestamp(),
-		m.ci.GetMetadata().GetDeletionTimestamp(),
 		m.ci.GetStatus().GetStateTransitionTime(),
 		m.ci.GetId())
 }

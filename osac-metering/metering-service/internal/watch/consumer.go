@@ -157,7 +157,7 @@ func (c *Consumer) handleEvent(ctx context.Context, event *privatev1.Event) erro
 		return fmt.Errorf("reading projection for %s: %w", resourceID, err)
 	}
 
-	transitionTime, err := mapper.TransitionTime(event.GetType())
+	transitionTime, err := mapper.TransitionTime(event)
 	if err != nil {
 		if errors.Is(err, events.ErrUnsupportedEvent) {
 			eventsSkipped.WithLabelValues("unsupported_event_type").Inc()

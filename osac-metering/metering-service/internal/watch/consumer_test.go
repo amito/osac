@@ -710,9 +710,10 @@ var _ = Describe("Consumer", func() {
 			ci.Metadata.Version = 2
 			ci.Metadata.DeletionTimestamp = timestamppb.Now()
 			event := &privatev1.Event{
-				Id:      "vm-del",
-				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_DELETED,
-				Payload: &privatev1.Event_ComputeInstance{ComputeInstance: ci},
+				Id:        "vm-del",
+				Type:      privatev1.EventType_EVENT_TYPE_OBJECT_DELETED,
+				Timestamp: timestamppb.Now(),
+				Payload:   &privatev1.Event_ComputeInstance{ComputeInstance: ci},
 			}
 
 			stream := &mockWatchStream{
@@ -1240,9 +1241,10 @@ var _ = Describe("Consumer", func() {
 			cl := makeCluster("cl-flat-del", "tenant-1", privatev1.ClusterState_CLUSTER_STATE_DELETING, defaultNodeSets())
 			cl.Metadata.DeletionTimestamp = timestamppb.Now()
 			event := &privatev1.Event{
-				Id:      "evt-flat-del",
-				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_DELETED,
-				Payload: &privatev1.Event_Cluster{Cluster: cl},
+				Id:        "evt-flat-del",
+				Type:      privatev1.EventType_EVENT_TYPE_OBJECT_DELETED,
+				Timestamp: timestamppb.Now(),
+				Payload:   &privatev1.Event_Cluster{Cluster: cl},
 			}
 
 			stream := &mockWatchStream{
@@ -1832,9 +1834,10 @@ var _ = Describe("Consumer", func() {
 			cl := makeCluster("cl-del", "tenant-1", privatev1.ClusterState_CLUSTER_STATE_DELETING, defaultNodeSets())
 			cl.Metadata.DeletionTimestamp = timestamppb.Now()
 			event := &privatev1.Event{
-				Id:      "evt-del",
-				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_DELETED,
-				Payload: &privatev1.Event_Cluster{Cluster: cl},
+				Id:        "evt-del",
+				Type:      privatev1.EventType_EVENT_TYPE_OBJECT_DELETED,
+				Timestamp: timestamppb.Now(),
+				Payload:   &privatev1.Event_Cluster{Cluster: cl},
 			}
 
 			stream := &mockWatchStream{

@@ -215,9 +215,10 @@ var _ = Describe("CaaS Cluster Mapper", func() {
 			cl.Metadata.DeletionTimestamp = timestamppb.Now()
 
 			event := &privatev1.Event{
-				Id:      "evt-delete",
-				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_DELETED,
-				Payload: &privatev1.Event_Cluster{Cluster: cl},
+				Id:        "evt-delete",
+				Type:      privatev1.EventType_EVENT_TYPE_OBJECT_DELETED,
+				Timestamp: timestamppb.Now(),
+				Payload:   &privatev1.Event_Cluster{Cluster: cl},
 			}
 
 			ce, err := mapEvent(event, &events.StateContext{})

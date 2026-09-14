@@ -163,10 +163,10 @@ func (m *clusterMapper) CloudEventType(eventType privatev1.EventType, previousSt
 	return ResolveCloudEventType(clusterTransitions, eventType, previousState, m.CurrentState())
 }
 
-func (m *clusterMapper) TransitionTime(eventType privatev1.EventType) (time.Time, error) {
-	return ResolveTransitionTime(eventType,
+func (m *clusterMapper) TransitionTime(event *privatev1.Event) (time.Time, error) {
+	return ResolveTransitionTime(event.GetType(),
+		event.GetTimestamp(),
 		m.cl.GetMetadata().GetCreationTimestamp(),
-		m.cl.GetMetadata().GetDeletionTimestamp(),
 		m.cl.GetStatus().GetStateTransitionTime(),
 		m.cl.GetId())
 }

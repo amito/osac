@@ -116,10 +116,12 @@ func ResolveCloudEventType(table TransitionTable, eventType privatev1.EventType,
 }
 
 // ResolveTransitionTime selects the appropriate timestamp for a given event type.
-func ResolveTransitionTime(eventType privatev1.EventType, creation, deletion, stateTransition *timestamppb.Timestamp, resourceID string) (time.Time, error) {
+// Deleted events use the top-level event timestamp because it marks the final
+// deletion boundary, after all finalizers have completed.
+func ResolveTransitionTime(eventType privatev1.EventType, eventTimestamp, creation, stateTransition *timestamppb.Timestamp, resourceID string) (time.Time, error) {
 	timestamps := map[privatev1.EventType]*timestamppb.Timestamp{
 		privatev1.EventType_EVENT_TYPE_OBJECT_CREATED: creation,
-		privatev1.EventType_EVENT_TYPE_OBJECT_DELETED: deletion,
+		privatev1.EventType_EVENT_TYPE_OBJECT_DELETED: eventTimestamp,
 		privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED: stateTransition,
 	}
 

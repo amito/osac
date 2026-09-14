@@ -372,9 +372,10 @@ var _ = Describe("MapWatchEvent", func() {
 			ci.Metadata.DeletionTimestamp = timestamppb.Now()
 
 			event := &privatev1.Event{
-				Id:      "evt-3",
-				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_DELETED,
-				Payload: &privatev1.Event_ComputeInstance{ComputeInstance: ci},
+				Id:        "evt-3",
+				Type:      privatev1.EventType_EVENT_TYPE_OBJECT_DELETED,
+				Timestamp: timestamppb.Now(),
+				Payload:   &privatev1.Event_ComputeInstance{ComputeInstance: ci},
 			}
 
 			ce, err := mapEvent(event, &events.StateContext{})
@@ -838,23 +839,25 @@ var _ = Describe("MapWatchEvent", func() {
 			Expect(errors.Is(err, events.ErrDataQuality)).To(BeTrue())
 		})
 
-		It("uses deletion_timestamp for DELETED events", func() {
-			deleteTime := timestamppb.New(time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC))
-			ci.Metadata.DeletionTimestamp = deleteTime
+		It("uses the event timestamp for DELETED events", func() {
+			requestedDeletionTime := timestamppb.New(time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC))
+			finalDeletionTime := timestamppb.New(time.Date(2026, 7, 28, 12, 15, 0, 0, time.UTC))
+			ci.Metadata.DeletionTimestamp = requestedDeletionTime
 
 			event := &privatev1.Event{
-				Id:      "evt-1",
-				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_DELETED,
-				Payload: &privatev1.Event_ComputeInstance{ComputeInstance: ci},
+				Id:        "evt-1",
+				Type:      privatev1.EventType_EVENT_TYPE_OBJECT_DELETED,
+				Timestamp: finalDeletionTime,
+				Payload:   &privatev1.Event_ComputeInstance{ComputeInstance: ci},
 			}
 
 			ce, err := mapEvent(event, &events.StateContext{})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(ce.Time()).To(Equal(deleteTime.AsTime()))
+			Expect(ce.Time()).To(Equal(finalDeletionTime.AsTime()))
 		})
 
-		It("rejects DELETED events without deletion_timestamp", func() {
-			ci.Metadata.DeletionTimestamp = nil
+		It("rejects DELETED events without an event timestamp", func() {
+			ci.Metadata.DeletionTimestamp = timestamppb.New(time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC))
 
 			event := &privatev1.Event{
 				Id:      "evt-1",

@@ -26,7 +26,7 @@ type ResourceMapper interface {
 	FulfillmentVersion() int32
 	IsBillable() bool
 	BillingDimensionsMap() map[string]any
-	TransitionTime(eventType privatev1.EventType) (time.Time, error)
+	TransitionTime(event *privatev1.Event) (time.Time, error)
 	CloudEventType(eventType privatev1.EventType, previousState string) (string, error)
 }
 
@@ -74,7 +74,7 @@ func MapWatchEvent(event *privatev1.Event, mapper ResourceMapper, stateCtx *Stat
 		return nil, fmt.Errorf("%w: resource %s has no tenant_id", ErrDataQuality, mapper.ResourceID())
 	}
 
-	transitionTime, err := mapper.TransitionTime(event.GetType())
+	transitionTime, err := mapper.TransitionTime(event)
 	if err != nil {
 		return nil, err
 	}

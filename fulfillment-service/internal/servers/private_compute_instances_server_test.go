@@ -3395,6 +3395,7 @@ var _ = Describe("Private compute instances server", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(poolResp.GetObject().GetStatus().GetAvailable()).To(Equal(int64(4)))
 			Expect(poolResp.GetObject().GetStatus().GetAllocated()).To(Equal(int64(1)))
+
 		})
 
 		It("Does not auto-provision when auto_external_ip_attachment is false", func() {
@@ -3462,6 +3463,7 @@ var _ = Describe("Private compute instances server", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(poolResp.GetObject().GetStatus().GetAvailable()).To(Equal(int64(5)))
 			Expect(poolResp.GetObject().GetStatus().GetAllocated()).To(Equal(int64(0)))
+
 		})
 
 		It("Rejects update to auto_external_ip_attachment", func() {
