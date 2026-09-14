@@ -56,7 +56,7 @@ func (m *bmaasTestMapper) BillingDimensionsMap() (map[string]any, error) {
 		"catalog_item":     "bmi-gpu-workstation",
 	}, nil
 }
-func (m *bmaasTestMapper) TransitionTime(*privatev1.Event) (time.Time, error) {
+func (m *bmaasTestMapper) TransitionTime(_ *privatev1.Event, _ string) (time.Time, error) {
 	return time.Time{}, nil
 }
 func (m *bmaasTestMapper) CloudEventType(privatev1.EventType, string) (string, error) {
