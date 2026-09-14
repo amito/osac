@@ -3,8 +3,11 @@ package reconciliation_test
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
+	cloudevents "github.com/cloudevents/sdk-go/v2"
+	"github.com/go-logr/logr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"google.golang.org/grpc"
@@ -15,6 +18,71 @@ import (
 	"github.com/osac-project/osac-metering/internal/reconciliation"
 	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
 )
+
+type networkMockStore struct {
+	mu     sync.Mutex
+	states map[string]projection.ResourceState
+}
+
+func newNetworkMockStore() *networkMockStore {
+	return &networkMockStore{states: map[string]projection.ResourceState{}}
+}
+
+func (s *networkMockStore) Get(_ context.Context, id string) (*projection.ResourceState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, ok := s.states[id]
+	if !ok {
+		return nil, nil
+	}
+	return &state, nil
+}
+
+func (s *networkMockStore) Upsert(_ context.Context, state projection.ResourceState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.states[state.ResourceID] = state
+	return nil
+}
+
+func (s *networkMockStore) Delete(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.states, id)
+	return nil
+}
+
+func (s *networkMockStore) ListBillable(_ context.Context) ([]projection.ResourceState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var states []projection.ResourceState
+	for _, state := range s.states {
+		if state.IsBillable {
+			states = append(states, state)
+		}
+	}
+	return states, nil
+}
+
+func (s *networkMockStore) ListAll(_ context.Context) ([]projection.ResourceState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	states := make([]projection.ResourceState, 0, len(s.states))
+	for _, state := range s.states {
+		states = append(states, state)
+	}
+	return states, nil
+}
+
+func (s *networkMockStore) UpdateLastHeartbeat(context.Context, []string, time.Time) error {
+	return nil
+}
+
+type networkMockPublisher struct{}
+
+func (networkMockPublisher) Publish(context.Context, cloudevents.Event) error {
+	return nil
+}
 
 type networkPoolClient struct {
 	response *privatev1.ExternalIPPoolsListResponse
@@ -219,7 +287,7 @@ var _ = Describe("ExternalIP pool loader", func() {
 	})
 
 	It("fails reconciliation for a billable ExternalIP without a timestamp", func() {
-		store := newMockStore()
+		store := newNetworkMockStore()
 		store.states["ip-billable"] = projection.ResourceState{
 			ResourceID: "ip-billable",
 			IsBillable: true,
@@ -364,7 +432,7 @@ var _ = Describe("ExternalIP pool loader", func() {
 			},
 		}
 		billableSince := stateTime.Add(-time.Hour)
-		store := newMockStore()
+		store := newNetworkMockStore()
 		store.states["ip-1"] = projection.ResourceState{
 			ResourceID:         "ip-1",
 			ResourceType:       events.ResourceTypeExternalIP,
