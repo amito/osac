@@ -29,8 +29,10 @@ type mockStore struct {
 func (s *mockStore) Get(_ context.Context, _ string) (*projection.ResourceState, error) {
 	return nil, nil
 }
-func (s *mockStore) Upsert(_ context.Context, _ projection.ResourceState) error    { return nil }
-func (s *mockStore) Delete(_ context.Context, _ string) error                      { return nil }
+func (s *mockStore) Upsert(_ context.Context, _ projection.ResourceState) error { return nil }
+func (s *mockStore) DeleteIfVersion(_ context.Context, _ string, _ int32) (bool, error) {
+	return true, nil
+}
 func (s *mockStore) ListAll(_ context.Context) ([]projection.ResourceState, error) { return nil, nil }
 
 func (s *mockStore) ListBillable(_ context.Context) ([]projection.ResourceState, error) {

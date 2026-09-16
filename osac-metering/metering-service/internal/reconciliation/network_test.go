@@ -41,15 +41,31 @@ func (s *networkMockStore) Get(_ context.Context, id string) (*projection.Resour
 func (s *networkMockStore) Upsert(_ context.Context, state projection.ResourceState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if existing, ok := s.states[state.ResourceID]; ok &&
+		(existing.FulfillmentVersion > state.FulfillmentVersion ||
+			(existing.Deleted && existing.FulfillmentVersion >= state.FulfillmentVersion)) {
+		return projection.ErrStaleVersion
+	}
 	s.states[state.ResourceID] = state
 	return nil
 }
 
-func (s *networkMockStore) Delete(_ context.Context, id string) error {
+func (s *networkMockStore) DeleteIfVersion(_ context.Context, id string, version int32) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.states, id)
-	return nil
+	state, ok := s.states[id]
+	if !ok || state.Deleted || state.FulfillmentVersion > version {
+		return false, nil
+	}
+	state.Deleted = true
+	if state.FulfillmentVersion < version {
+		state.FulfillmentVersion = version
+	}
+	state.IsBillable = false
+	state.BillableSince = nil
+	state.ComponentBillableSince = nil
+	s.states[id] = state
+	return true, nil
 }
 
 func (s *networkMockStore) ListBillable(_ context.Context) ([]projection.ResourceState, error) {
@@ -57,7 +73,7 @@ func (s *networkMockStore) ListBillable(_ context.Context) ([]projection.Resourc
 	defer s.mu.Unlock()
 	var states []projection.ResourceState
 	for _, state := range s.states {
-		if state.IsBillable {
+		if state.IsBillable && !state.Deleted {
 			states = append(states, state)
 		}
 	}
@@ -69,7 +85,9 @@ func (s *networkMockStore) ListAll(_ context.Context) ([]projection.ResourceStat
 	defer s.mu.Unlock()
 	states := make([]projection.ResourceState, 0, len(s.states))
 	for _, state := range s.states {
-		states = append(states, state)
+		if !state.Deleted {
+			states = append(states, state)
+		}
 	}
 	return states, nil
 }

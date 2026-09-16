@@ -234,21 +234,37 @@ func (s *mockStore) Upsert(_ context.Context, st projection.ResourceState) error
 			return err
 		}
 	}
+	if existing, ok := s.states[st.ResourceID]; ok &&
+		(existing.FulfillmentVersion > st.FulfillmentVersion ||
+			(existing.Deleted && existing.FulfillmentVersion >= st.FulfillmentVersion)) {
+		return projection.ErrStaleVersion
+	}
 	s.states[st.ResourceID] = st
 	return nil
 }
-func (s *mockStore) Delete(_ context.Context, id string) error {
+func (s *mockStore) DeleteIfVersion(_ context.Context, id string, version int32) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.states, id)
-	return nil
+	state, ok := s.states[id]
+	if !ok || state.Deleted || state.FulfillmentVersion > version {
+		return false, nil
+	}
+	state.Deleted = true
+	if state.FulfillmentVersion < version {
+		state.FulfillmentVersion = version
+	}
+	state.IsBillable = false
+	state.BillableSince = nil
+	state.ComponentBillableSince = nil
+	s.states[id] = state
+	return true, nil
 }
 func (s *mockStore) ListBillable(_ context.Context) ([]projection.ResourceState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var result []projection.ResourceState
 	for _, st := range s.states {
-		if st.IsBillable {
+		if st.IsBillable && !st.Deleted {
 			result = append(result, st)
 		}
 	}
@@ -259,7 +275,9 @@ func (s *mockStore) ListAll(_ context.Context) ([]projection.ResourceState, erro
 	defer s.mu.Unlock()
 	var result []projection.ResourceState
 	for _, st := range s.states {
-		result = append(result, st)
+		if !st.Deleted {
+			result = append(result, st)
+		}
 	}
 	return result, nil
 }
@@ -403,7 +421,8 @@ var _ = Describe("Reconciler", func() {
 
 			store.mu.Lock()
 			defer store.mu.Unlock()
-			Expect(store.states).ToNot(HaveKey("vm-gone"))
+			Expect(store.states).To(HaveKey("vm-gone"))
+			Expect(store.states["vm-gone"].Deleted).To(BeTrue())
 		})
 
 		It("does not delete BMaaS projections without a BMI List client", func() {
@@ -1802,7 +1821,7 @@ var _ = Describe("Reconciler", func() {
 			Expect(stored.ComponentBillableSince).To(HaveKeyWithValue(events.BMaaSMeterConsumption, transitionTime))
 		})
 
-		It("emits meter-specific missed-deletion corrections before removing the projection", func() {
+		It("emits meter-specific missed-deletion corrections before tombstoning the projection", func() {
 			allocationSince := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
 			consumptionSince := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
 			deletionTime := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
@@ -1843,7 +1862,8 @@ var _ = Describe("Reconciler", func() {
 			Expect(pub.published[1].ID()).To(HaveSuffix("/consumption"))
 			Expect(pub.published[0].Time()).To(Equal(deletionTime))
 			Expect(pub.published[1].Time()).To(Equal(deletionTime))
-			Expect(store.states).ToNot(HaveKey("bmi-deleted"))
+			Expect(store.states).To(HaveKey("bmi-deleted"))
+			Expect(store.states["bmi-deleted"].Deleted).To(BeTrue())
 		})
 
 		It("holds missed deletion when replay has no deletion event", func() {
@@ -2119,7 +2139,7 @@ var _ = Describe("Reconciler", func() {
 			Expect(store.states).To(HaveKey(invalid.GetId()))
 		})
 
-		It("closes active BMaaS meters and removes a projection missing from fulfillment", func() {
+		It("closes active BMaaS meters and tombstones a projection missing from fulfillment", func() {
 			client := &mockBareMetalInstancesClient{}
 			store := newMockStore()
 			allocationSince := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
@@ -2153,7 +2173,8 @@ var _ = Describe("Reconciler", func() {
 			Expect(pub.published[1].ID()).To(HaveSuffix("/consumption"))
 			store.mu.Lock()
 			defer store.mu.Unlock()
-			Expect(store.states).ToNot(HaveKey("bmi-missing"))
+			Expect(store.states).To(HaveKey("bmi-missing"))
+			Expect(store.states["bmi-missing"].Deleted).To(BeTrue())
 		})
 
 		It("does not synthesize or checkpoint heartbeats after missed-deletion closure", func() {
@@ -2188,7 +2209,8 @@ var _ = Describe("Reconciler", func() {
 			Expect(pub.published).To(HaveLen(2), "the deletion correction closes both active meters before stale heartbeat handling")
 			store.mu.Lock()
 			defer store.mu.Unlock()
-			Expect(store.states).ToNot(HaveKey("bmi-stale-missing"))
+			Expect(store.states).To(HaveKey("bmi-stale-missing"))
+			Expect(store.states["bmi-stale-missing"].Deleted).To(BeTrue())
 			Expect(store.lastHeartbeatUpdateIDs).To(BeEmpty(), "a deleted resource must not checkpoint a synthetic heartbeat")
 		})
 
@@ -2451,7 +2473,8 @@ var _ = Describe("Reconciler", func() {
 
 			store.mu.Lock()
 			defer store.mu.Unlock()
-			Expect(store.states).ToNot(HaveKey("cl-gone"))
+			Expect(store.states).To(HaveKey("cl-gone"))
+			Expect(store.states["cl-gone"].Deleted).To(BeTrue())
 		})
 
 		It("skips cluster missed_deletion when clusterClient is nil", func() {
