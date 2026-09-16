@@ -34,7 +34,7 @@ const resourceStateSelect = `
 	SELECT r.resource_id, r.resource_type, r.tenant_id, r.project_id,
 	       r.current_state, r.previous_state, r.is_billable, r.ever_billable, r.billable_since,
 	       r.last_heartbeat_at, r.transition_time, r.fulfillment_version,
-	       r.billing_dimensions, r.component_billable_since,
+	       r.billing_dimensions, r.component_billable_since, r.deleted_at,
 	       allocation.active_since, allocation.first_started_at,
 	       consumption.active_since, consumption.first_started_at
 	FROM metering_resource_state AS r
@@ -74,12 +74,13 @@ func (s *PostgresStore) Upsert(ctx context.Context, state ResourceState) error {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var storedVersion *int32
+	var storedDeletedAt *time.Time
 	err = tx.QueryRow(ctx, `
-		SELECT fulfillment_version
+		SELECT fulfillment_version, deleted_at
 		FROM metering_resource_state
 		WHERE resource_id = $1
 		FOR UPDATE`,
-		state.ResourceID).Scan(&storedVersion)
+		state.ResourceID).Scan(&storedVersion, &storedDeletedAt)
 
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("locking resource state %s: %w", state.ResourceID, err)
@@ -88,7 +89,8 @@ func (s *PostgresStore) Upsert(ctx context.Context, state ResourceState) error {
 	// Reject strictly older versions. Same-version upserts are allowed so that
 	// a replayed event (e.g. after publish failure) can re-process without being
 	// silently dropped — the projection write is idempotent for the same version.
-	if storedVersion != nil && *storedVersion > state.FulfillmentVersion {
+	if storedVersion != nil && (*storedVersion > state.FulfillmentVersion ||
+		(storedDeletedAt != nil && *storedVersion >= state.FulfillmentVersion)) {
 		return ErrStaleVersion
 	}
 
@@ -116,6 +118,7 @@ func (s *PostgresStore) Upsert(ctx context.Context, state ResourceState) error {
 			fulfillment_version = EXCLUDED.fulfillment_version,
 			billing_dimensions = EXCLUDED.billing_dimensions,
 			component_billable_since = EXCLUDED.component_billable_since,
+			deleted_at = NULL,
 			updated_at = NOW()
 		WHERE metering_resource_state.fulfillment_version <= EXCLUDED.fulfillment_version`,
 		state.ResourceID,
@@ -162,20 +165,23 @@ func (s *PostgresStore) Upsert(ctx context.Context, state ResourceState) error {
 	return tx.Commit(ctx)
 }
 
-func (s *PostgresStore) Delete(ctx context.Context, resourceID string) error {
-	_, err := s.pool.Exec(ctx, `
-		DELETE FROM metering_resource_state WHERE resource_id = $1`,
-		resourceID)
+func (s *PostgresStore) DeleteIfVersion(ctx context.Context, resourceID string, version int32) (bool, error) {
+	result, err := s.pool.Exec(ctx, `
+		UPDATE metering_resource_state
+		SET deleted_at = NOW(), fulfillment_version = GREATEST(fulfillment_version, $2),
+		    billable_since = NULL, component_billable_since = '{}'::JSONB, updated_at = NOW()
+		WHERE resource_id = $1 AND fulfillment_version <= $2 AND deleted_at IS NULL`,
+		resourceID, version)
 	if err != nil {
-		return fmt.Errorf("deleting resource state %s: %w", resourceID, err)
+		return false, fmt.Errorf("tombstoning resource state %s: %w", resourceID, err)
 	}
-	return nil
+	return result.RowsAffected() == 1, nil
 }
 
 func (s *PostgresStore) ListBillable(ctx context.Context) ([]ResourceState, error) {
 	rows, err := s.pool.Query(ctx, resourceStateSelect+`WHERE
-		(r.resource_type <> $1 AND r.is_billable = TRUE)
-		OR (r.resource_type = $1 AND allocation.active_since IS NOT NULL)`,
+		r.deleted_at IS NULL AND ((r.resource_type <> $1 AND r.is_billable = TRUE)
+		OR (r.resource_type = $1 AND allocation.active_since IS NOT NULL))`,
 		schema.ResourceTypeBareMetalInstance)
 	if err != nil {
 		return nil, fmt.Errorf("querying billable resources: %w", err)
@@ -197,7 +203,7 @@ func (s *PostgresStore) ListBillable(ctx context.Context) ([]ResourceState, erro
 }
 
 func (s *PostgresStore) ListAll(ctx context.Context) ([]ResourceState, error) {
-	rows, err := s.pool.Query(ctx, resourceStateSelect)
+	rows, err := s.pool.Query(ctx, resourceStateSelect+`WHERE r.deleted_at IS NULL`)
 	if err != nil {
 		return nil, fmt.Errorf("querying all resources: %w", err)
 	}
@@ -235,6 +241,7 @@ func scanResourceState(row rowScanner) (*ResourceState, error) {
 		projectID          *string
 		billableSince      *time.Time
 		lastHeartbeat      *time.Time
+		deletedAt          *time.Time
 		dimensionsJSON     []byte
 		componentSinceJSON []byte
 		allocationActive   *time.Time
@@ -258,6 +265,7 @@ func scanResourceState(row rowScanner) (*ResourceState, error) {
 		&state.FulfillmentVersion,
 		&dimensionsJSON,
 		&componentSinceJSON,
+		&deletedAt,
 		&allocationActive,
 		&allocationFirst,
 		&consumptionActive,
@@ -275,6 +283,7 @@ func scanResourceState(row rowScanner) (*ResourceState, error) {
 	}
 	state.BillableSince = billableSince
 	state.LastHeartbeatAt = lastHeartbeat
+	state.Deleted = deletedAt != nil
 
 	if len(dimensionsJSON) > 0 {
 		if err := json.Unmarshal(dimensionsJSON, &state.BillingDimensions); err != nil {

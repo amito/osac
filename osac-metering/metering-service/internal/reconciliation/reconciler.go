@@ -980,8 +980,13 @@ func (r *Reconciler) reconcileMissedDeletions(ctx context.Context, fulfillmentSt
 					return corrections, err
 				}
 				corrections += boolToInt(published)
-				if err := r.store.Delete(ctx, id); err != nil {
+				deleted, err := r.store.DeleteIfVersion(ctx, id, ps.FulfillmentVersion)
+				if err != nil {
 					return corrections, fmt.Errorf("deleting missed deletion for %s: %w", id, err)
+				}
+				if !deleted {
+					r.logger.Info("skipping stale missed deletion after projection changed",
+						"resource_id", id, "projection_version", ps.FulfillmentVersion)
 				}
 				continue
 			}
@@ -1017,8 +1022,13 @@ func (r *Reconciler) reconcileMissedDeletions(ctx context.Context, fulfillmentSt
 			}
 			corrections++
 
-			if err := r.store.Delete(ctx, id); err != nil {
+			deleted, err := r.store.DeleteIfVersion(ctx, id, ps.FulfillmentVersion)
+			if err != nil {
 				return corrections, fmt.Errorf("deleting missed deletion for %s: %w", id, err)
+			}
+			if !deleted {
+				r.logger.Info("skipping stale missed deletion after projection changed",
+					"resource_id", id, "projection_version", ps.FulfillmentVersion)
 			}
 		}
 	}
