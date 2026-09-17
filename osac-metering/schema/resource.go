@@ -11,8 +11,9 @@ package schema
 
 // Resource type constants identify OSAC resource types in CloudEvent payloads.
 const (
-	ResourceTypeComputeInstance = "compute_instance"
-	ResourceTypeClusterOrder    = "cluster_order"
-	ResourceTypeExternalIP      = "external_ip"
-	ResourceTypeNATGateway      = "nat_gateway"
+	ResourceTypeComputeInstance   = "compute_instance"
+	ResourceTypeClusterOrder      = "cluster_order"
+	ResourceTypeExternalIP        = "external_ip"
+	ResourceTypeNATGateway        = "nat_gateway"
+	ResourceTypeBareMetalInstance = "bare_metal_instance"
 )

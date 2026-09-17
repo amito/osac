@@ -113,7 +113,6 @@ func (c *config) enableAllIfNoneSet() {
 	if !c.enableCaaS && !c.enableVMaaS && !c.enableBMaaS && !c.enableMaaS {
 		c.enableCaaS = true
 		c.enableVMaaS = true
-		c.enableBMaaS = true
 		c.enableMaaS = true
 	}
 }
@@ -284,7 +283,7 @@ func run(ctx context.Context, logger logr.Logger, cfg *config) error {
 
 	eventsClient := privatev1.NewEventsClient(grpcConn)
 	consumer := watch.NewConsumer(eventsClient, publisher, store, logger)
-	consumer.Filter = watch.BuildFilter(cfg.enableVMaaS, cfg.enableCaaS)
+	consumer.Filter = watch.BuildFilter(cfg.enableVMaaS, cfg.enableCaaS, cfg.enableBMaaS)
 	consumer.DeploymentID = cfg.deploymentID
 	consumer.ExternalIPPoolClient = externalIPPoolClient
 	consumer.ExternalIPPools = pools

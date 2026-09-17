@@ -52,10 +52,11 @@ const eventBillableStart = "internal.billable-boundary-crossed"
 // Resource type constants — re-exported from the shared schema module for
 // convenience within this package.
 const (
-	ResourceTypeComputeInstance = schema.ResourceTypeComputeInstance
-	ResourceTypeClusterOrder    = schema.ResourceTypeClusterOrder
-	ResourceTypeExternalIP      = schema.ResourceTypeExternalIP
-	ResourceTypeNATGateway      = schema.ResourceTypeNATGateway
+	ResourceTypeComputeInstance   = schema.ResourceTypeComputeInstance
+	ResourceTypeClusterOrder      = schema.ResourceTypeClusterOrder
+	ResourceTypeExternalIP        = schema.ResourceTypeExternalIP
+	ResourceTypeNATGateway        = schema.ResourceTypeNATGateway
+	ResourceTypeBareMetalInstance = schema.ResourceTypeBareMetalInstance
 )
 
 // StateEmpty is the empty previous state for initial transitions.
@@ -151,11 +152,16 @@ func singleEvent(dims map[string]any, baseID string, buildFn EventBuilder) ([]cl
 	return []cloudevents.Event{ce}, nil
 }
 
+func unsupportedGenericDecomposition(_ map[string]any, _ string, _ EventBuilder) ([]cloudevents.Event, error) {
+	return nil, fmt.Errorf("unsupported resource type for generic event decomposition: %s", ResourceTypeBareMetalInstance)
+}
+
 var resourceDecomposers = map[string]EventDecomposer{
-	ResourceTypeComputeInstance: singleEvent,
-	ResourceTypeClusterOrder:    DecomposeClusterEvents,
-	ResourceTypeExternalIP:      singleEvent,
-	ResourceTypeNATGateway:      singleEvent,
+	ResourceTypeComputeInstance:   singleEvent,
+	ResourceTypeClusterOrder:      DecomposeClusterEvents,
+	ResourceTypeExternalIP:        singleEvent,
+	ResourceTypeNATGateway:        singleEvent,
+	ResourceTypeBareMetalInstance: unsupportedGenericDecomposition,
 }
 
 // BuildResourceEvents dispatches event building to the correct decomposer
