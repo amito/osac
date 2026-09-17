@@ -1057,13 +1057,13 @@ func (r *Reconciler) reconcileStaleHeartbeats(ctx context.Context, fulfillmentSt
 				r.logger.Info("holding stale bare metal instance heartbeat until meter-specific reconciliation is available", "resource_id", ps.ResourceID)
 				continue
 			}
-			if _, held := r.bmaasHolds[ps.ResourceID]; held {
-				r.logger.Info("holding stale bare metal instance heartbeat while BMaaS reconciliation is held", "resource_id", ps.ResourceID)
-				continue
-			}
 		}
 		if ps.LastHeartbeatAt == nil || now.Sub(*ps.LastHeartbeatAt) > 2*r.heartbeatInterval {
-			hbEvents, hbErr := buildSyntheticHeartbeats(*ps, now)
+			mute := heartbeat.BMaaSMeterMute{}
+			if ps.ResourceType == events.ResourceTypeBareMetalInstance && r.bmaasPresence != nil {
+				mute = r.bmaasPresence.MeterMute(ps.ResourceID)
+			}
+			hbEvents, hbErr := buildSyntheticHeartbeatsWithMutes(*ps, now, mute)
 			if hbErr != nil {
 				r.logger.Error(hbErr, "building synthetic heartbeat", "resource_id", ps.ResourceID)
 				continue
@@ -1422,6 +1422,7 @@ func (r *Reconciler) loadNATGateways(ctx context.Context, result map[string]fulf
 func (r *Reconciler) loadBareMetalInstances(ctx context.Context, result map[string]fulfillmentResource) error {
 	var offset int32
 	var listedIDs []string
+	var mutes map[string]heartbeat.BMaaSMeterMute
 	for {
 		limit := int32(defaultPageSize)
 		resp, err := r.bareMetalClient.List(ctx, &privatev1.BareMetalInstancesListRequest{
@@ -1470,6 +1471,15 @@ func (r *Reconciler) loadBareMetalInstances(ctx context.Context, result map[stri
 				transitionTime:    transitionTime,
 			}
 			listedIDs = append(listedIDs, bmi.GetId())
+			if r.bmaasPresence != nil {
+				if mutes == nil {
+					mutes = make(map[string]heartbeat.BMaaSMeterMute)
+				}
+				mutes[bmi.GetId()] = heartbeat.BMaaSMeterMute{
+					Allocation:  !events.IsAllocationBillableState(state),
+					Consumption: !events.IsConsumptionBillableState(state),
+				}
+			}
 		}
 
 		if len(items) < defaultPageSize {
@@ -1479,11 +1489,16 @@ func (r *Reconciler) loadBareMetalInstances(ctx context.Context, result map[stri
 	}
 	if r.bmaasPresence != nil {
 		r.bmaasPresence.Replace(listedIDs)
+		r.bmaasPresence.SetMeterMutes(mutes)
 	}
 	return nil
 }
 
 func buildSyntheticHeartbeats(ps projection.ResourceState, now time.Time) ([]cloudevents.Event, error) {
+	return buildSyntheticHeartbeatsWithMutes(ps, now, heartbeat.BMaaSMeterMute{})
+}
+
+func buildSyntheticHeartbeatsWithMutes(ps projection.ResourceState, now time.Time, mute heartbeat.BMaaSMeterMute) ([]cloudevents.Event, error) {
 	if err := events.ValidateBillingDimensions(ps.ResourceType, ps.BillingDimensions); err != nil {
 		return nil, err
 	}
@@ -1495,7 +1510,7 @@ func buildSyntheticHeartbeats(ps projection.ResourceState, now time.Time) ([]clo
 		}
 		baseID = fmt.Sprintf("%s/%s", baseID, identity)
 	}
-	return heartbeat.BuildHeartbeatEvents(&ps, baseID, now, "osac-metering/reconciler")
+	return heartbeat.BuildHeartbeatEventsWithMutes(&ps, baseID, now, "osac-metering/reconciler", mute)
 }
 
 func reconciliationTransitionTime(resource fulfillmentResource, now time.Time) (time.Time, error) {

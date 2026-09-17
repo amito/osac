@@ -20,6 +20,7 @@ import (
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 	"github.com/go-logr/logr"
 	"github.com/osac-project/osac-metering/internal/events"
+	"github.com/osac-project/osac-metering/internal/heartbeat"
 	"github.com/osac-project/osac-metering/internal/projection"
 )
 
@@ -374,6 +375,50 @@ func TestReconcileStaleBMaaSHeartbeatDoesNotCheckpointPartialFanout(t *testing.T
 	}
 	if len(store.lastHeartbeatUpdateIDs) != 1 {
 		t.Errorf("retry checkpoint batches = %d, want 1", len(store.lastHeartbeatUpdateIDs))
+	}
+}
+
+func TestReconcileStaleBMaaSHeartbeatMutesConsumptionForHeldHost(t *testing.T) {
+	allocationSince := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+	consumptionSince := time.Date(2026, 1, 1, 10, 30, 0, 0, time.UTC)
+	lastHeartbeat := time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC)
+	store := newMockStore()
+	store.states["bmi-stopped"] = projection.ResourceState{
+		ResourceID:      "bmi-stopped",
+		ResourceType:    events.ResourceTypeBareMetalInstance,
+		CurrentState:    "RUNNING",
+		IsBillable:      true,
+		BillableSince:   &allocationSince,
+		LastHeartbeatAt: &lastHeartbeat,
+		BMaaSMeterState: projection.BMaaSMeterState{
+			Allocation:  projection.MeterState{ActiveSince: &allocationSince},
+			Consumption: projection.MeterState{ActiveSince: &consumptionSince},
+		},
+		BillingDimensions: map[string]any{"bm_instance_type": "gpu-large"},
+	}
+	publisher := &mockPublisher{}
+	presence := heartbeat.NewBMaaSPresence()
+	presence.Replace([]string{"bmi-stopped"})
+	presence.SetMeterMutes(map[string]heartbeat.BMaaSMeterMute{
+		"bmi-stopped": {Consumption: true},
+	})
+	reconciler := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, NewUnavailableBMaaSReplaySource(), store, publisher, logr.Discard(), time.Minute)
+	reconciler.SetBMaaSPresence(presence)
+	reconciler.bmaasHolds = map[string]struct{}{"bmi-stopped": {}}
+
+	corrections, err := reconciler.reconcileStaleHeartbeats(
+		context.Background(), map[string]fulfillmentResource{"bmi-stopped": {}}, lastHeartbeat.Add(3*time.Minute))
+	if err != nil {
+		t.Fatalf("reconcileStaleHeartbeats() error = %v", err)
+	}
+	if corrections != 1 {
+		t.Fatalf("reconcileStaleHeartbeats() corrections = %d, want 1", corrections)
+	}
+	if len(publisher.published) != 1 || !strings.HasSuffix(publisher.published[0].ID(), "/allocation") {
+		t.Fatalf("published events = %v, want one allocation heartbeat", publisher.published)
+	}
+	if store.states["bmi-stopped"].CurrentState != "RUNNING" {
+		t.Fatalf("held projection state changed to %q", store.states["bmi-stopped"].CurrentState)
 	}
 }
 

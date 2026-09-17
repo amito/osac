@@ -17,7 +17,15 @@ import "sync"
 type BMaaSPresence struct {
 	mu     sync.RWMutex
 	ids    map[string]struct{}
+	mutes  map[string]BMaaSMeterMute
 	loaded bool
+}
+
+// BMaaSMeterMute describes which BMaaS meters must be suppressed for a
+// resource in the last successful fulfillment snapshot.
+type BMaaSMeterMute struct {
+	Allocation  bool
+	Consumption bool
 }
 
 func NewBMaaSPresence() *BMaaSPresence {
@@ -36,6 +44,27 @@ func (p *BMaaSPresence) Replace(ids []string) {
 	p.ids = current
 	p.loaded = true
 	p.mu.Unlock()
+}
+
+// SetMeterMutes replaces the meter mute snapshot. Callers should invoke this
+// alongside Replace after each successful full fulfillment List.
+func (p *BMaaSPresence) SetMeterMutes(mutes map[string]BMaaSMeterMute) {
+	current := make(map[string]BMaaSMeterMute, len(mutes))
+	for id, mute := range mutes {
+		current[id] = mute
+	}
+	p.mu.Lock()
+	p.mutes = current
+	p.mu.Unlock()
+}
+
+func (p *BMaaSPresence) MeterMute(id string) BMaaSMeterMute {
+	if p == nil {
+		return BMaaSMeterMute{}
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.mutes[id]
 }
 
 func (p *BMaaSPresence) Contains(id string) bool {
