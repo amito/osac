@@ -24,6 +24,7 @@ import (
 
 	"github.com/osac-project/osac-metering/internal/database"
 	"github.com/osac-project/osac-metering/internal/projection"
+	"github.com/osac-project/osac-metering/schema"
 )
 
 var (
@@ -83,6 +84,22 @@ func makeState(resourceID string, version int32) projection.ResourceState {
 			"boot_disk_size_gib": "50",
 		},
 	}
+}
+
+func expectTimeInstant(actual, expected *time.Time) {
+	if expected == nil {
+		Expect(actual).To(BeNil())
+		return
+	}
+	Expect(actual).ToNot(BeNil())
+	Expect(actual.Equal(*expected)).To(BeTrue(), "timestamps should represent the same instant")
+}
+
+func expectMeterStateEqual(actual, expected projection.BMaaSMeterState) {
+	expectTimeInstant(actual.Allocation.ActiveSince, expected.Allocation.ActiveSince)
+	expectTimeInstant(actual.Allocation.FirstStartedAt, expected.Allocation.FirstStartedAt)
+	expectTimeInstant(actual.Consumption.ActiveSince, expected.Consumption.ActiveSince)
+	expectTimeInstant(actual.Consumption.FirstStartedAt, expected.Consumption.FirstStartedAt)
 }
 
 var _ = Describe("PostgresStore", func() {
@@ -171,6 +188,113 @@ var _ = Describe("PostgresStore", func() {
 		})
 	})
 
+	Describe("BMaaS billable_since invariant", func() {
+		It("persists billable_since from allocation active_since", func() {
+			ctx := context.Background()
+			state := makeState("bmi-billable-since-diverge", 1)
+			state.ResourceType = schema.ResourceTypeBareMetalInstance
+			callerBillableSince := state.TransitionTime.Add(-2 * time.Hour)
+			allocationSince := state.TransitionTime.Add(-time.Hour)
+			state.BillableSince = &callerBillableSince
+			state.BMaaSMeterState.Allocation.ActiveSince = &allocationSince
+
+			Expect(store.Upsert(ctx, state)).To(Succeed())
+
+			var billableSince, allocationActiveSince *time.Time
+			var isBillable bool
+			err := pool.QueryRow(ctx, `
+				SELECT r.billable_since, r.is_billable, m.active_since
+				FROM metering_resource_state AS r
+				JOIN metering_resource_meter_state AS m
+				  ON m.resource_id = r.resource_id AND m.meter_type = 'allocation'
+				WHERE r.resource_id = $1`, state.ResourceID).
+				Scan(&billableSince, &isBillable, &allocationActiveSince)
+			Expect(err).ToNot(HaveOccurred())
+			expectTimeInstant(billableSince, &allocationSince)
+			expectTimeInstant(allocationActiveSince, &allocationSince)
+			Expect(isBillable).To(Equal(allocationActiveSince != nil))
+		})
+
+		It("clears billable_since when allocation is inactive", func() {
+			ctx := context.Background()
+			state := makeState("bmi-parent-only", 1)
+			state.ResourceType = schema.ResourceTypeBareMetalInstance
+			state.IsBillable = true
+
+			Expect(store.Upsert(ctx, state)).To(Succeed())
+
+			var billableSince, allocationActiveSince *time.Time
+			var isBillable bool
+			err := pool.QueryRow(ctx, `
+				SELECT r.billable_since, r.is_billable, m.active_since
+				FROM metering_resource_state AS r
+				JOIN metering_resource_meter_state AS m
+				  ON m.resource_id = r.resource_id AND m.meter_type = 'allocation'
+				WHERE r.resource_id = $1`, state.ResourceID).
+				Scan(&billableSince, &isBillable, &allocationActiveSince)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(billableSince).To(BeNil())
+			Expect(allocationActiveSince).To(BeNil())
+			Expect(isBillable).To(BeFalse())
+
+			results, err := store.ListBillable(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(results).To(BeEmpty())
+		})
+	})
+
+	It("round-trips independent meter first-use state", func() {
+		ctx := context.Background()
+		state := makeState("bmi-meter-state", 1)
+		state.ResourceType = schema.ResourceTypeBareMetalInstance
+		allocationSince := state.TransitionTime.Add(-time.Hour)
+		allocationFirstStarted := state.TransitionTime.Add(-2 * time.Hour)
+		consumptionSince := state.TransitionTime.Add(-30 * time.Minute)
+		consumptionFirstStarted := state.TransitionTime.Add(-90 * time.Minute)
+		state.BMaaSMeterState = projection.BMaaSMeterState{
+			Allocation: projection.MeterState{
+				ActiveSince:    &allocationSince,
+				FirstStartedAt: &allocationFirstStarted,
+			},
+			Consumption: projection.MeterState{
+				ActiveSince:    &consumptionSince,
+				FirstStartedAt: &consumptionFirstStarted,
+			},
+		}
+		state.BillableSince = &allocationSince
+
+		Expect(store.Upsert(ctx, state)).To(Succeed())
+
+		got, err := store.Get(ctx, state.ResourceID)
+		Expect(err).NotTo(HaveOccurred())
+		expectMeterStateEqual(got.BMaaSMeterState, state.BMaaSMeterState)
+	})
+
+	It("preserves first-started timestamps when a newer upsert omits one", func() {
+		ctx := context.Background()
+		state := makeState("bmi-ever-started-merge", 1)
+		state.ResourceType = schema.ResourceTypeBareMetalInstance
+		allocationFirstStarted := state.TransitionTime.Add(-time.Hour)
+		state.BMaaSMeterState = projection.BMaaSMeterState{
+			Allocation: projection.MeterState{FirstStartedAt: &allocationFirstStarted},
+		}
+		Expect(store.Upsert(ctx, state)).To(Succeed())
+
+		state.FulfillmentVersion = 2
+		consumptionFirstStarted := state.TransitionTime.Add(-30 * time.Minute)
+		state.BMaaSMeterState = projection.BMaaSMeterState{
+			Consumption: projection.MeterState{FirstStartedAt: &consumptionFirstStarted},
+		}
+		Expect(store.Upsert(ctx, state)).To(Succeed())
+
+		got, err := store.Get(ctx, state.ResourceID)
+		Expect(err).NotTo(HaveOccurred())
+		expectMeterStateEqual(got.BMaaSMeterState, projection.BMaaSMeterState{
+			Allocation:  projection.MeterState{FirstStartedAt: &allocationFirstStarted},
+			Consumption: projection.MeterState{FirstStartedAt: &consumptionFirstStarted},
+		})
+	})
+
 	Describe("Stale version rejection", func() {
 		It("Allows idempotent upsert with same version", func() {
 			ctx := context.Background()
@@ -218,6 +342,68 @@ var _ = Describe("PostgresStore", func() {
 	})
 
 	Describe("ListBillable", func() {
+		It("uses normalized allocation activity as the BMaaS billable source", func() {
+			ctx := context.Background()
+			active := makeState("bmi-active-allocation", 1)
+			active.ResourceType = schema.ResourceTypeBareMetalInstance
+			active.IsBillable = false
+			active.BillableSince = nil
+			allocationSince := active.TransitionTime.Add(-time.Hour)
+			active.BMaaSMeterState.Allocation.ActiveSince = &allocationSince
+			Expect(store.Upsert(ctx, active)).To(Succeed())
+
+			inactive := makeState("bmi-inactive-allocation", 1)
+			inactive.ResourceType = schema.ResourceTypeBareMetalInstance
+			inactive.BMaaSMeterState.Allocation.ActiveSince = nil
+			Expect(store.Upsert(ctx, inactive)).To(Succeed())
+
+			results, err := store.ListBillable(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].ResourceID).To(Equal("bmi-active-allocation"))
+		})
+
+		It("uses normalized allocation state and canonical lifecycle state for BMaaS", func() {
+			ctx := context.Background()
+
+			stoppedActive := makeState("bmi-stopped-active", 1)
+			stoppedActive.ResourceType = schema.ResourceTypeBareMetalInstance
+			stoppedActive.CurrentState = "BARE_METAL_INSTANCE_STATE_STOPPED"
+			stoppedActive.IsBillable = false
+			stoppedActive.BillableSince = nil
+			allocationSince := stoppedActive.TransitionTime.Add(-time.Hour)
+			stoppedActive.BMaaSMeterState.Allocation.ActiveSince = &allocationSince
+			Expect(store.Upsert(ctx, stoppedActive)).To(Succeed())
+
+			failedActive := makeState("bmi-failed-active", 1)
+			failedActive.ResourceType = schema.ResourceTypeBareMetalInstance
+			failedActive.CurrentState = "BARE_METAL_INSTANCE_STATE_FAILED"
+			failedActive.BMaaSMeterState.Allocation.ActiveSince = &allocationSince
+			Expect(store.Upsert(ctx, failedActive)).To(Succeed())
+
+			failedShortActive := makeState("bmi-failed-short-active", 1)
+			failedShortActive.ResourceType = schema.ResourceTypeBareMetalInstance
+			failedShortActive.CurrentState = "FAILED"
+			failedShortActive.BMaaSMeterState.Allocation.ActiveSince = &allocationSince
+			Expect(store.Upsert(ctx, failedShortActive)).To(Succeed())
+
+			parentOnly := makeState("bmi-parent-only", 1)
+			parentOnly.ResourceType = schema.ResourceTypeBareMetalInstance
+			parentOnly.BMaaSMeterState.Allocation.ActiveSince = nil
+			parentOnly.IsBillable = true
+			Expect(store.Upsert(ctx, parentOnly)).To(Succeed())
+
+			got, err := store.Get(ctx, stoppedActive.ResourceID)
+			Expect(err).ToNot(HaveOccurred())
+			expectTimeInstant(got.BillableSince, &allocationSince)
+			Expect(got.IsBillable).To(BeTrue())
+
+			results, err := store.ListBillable(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(results).To(HaveLen(1))
+			Expect(results[0].ResourceID).To(Equal(stoppedActive.ResourceID))
+		})
+
 		It("Returns only billable resources", func() {
 			ctx := context.Background()
 			billable := makeState("vm-bill", 1)

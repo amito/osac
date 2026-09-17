@@ -18,6 +18,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/osac-project/osac-metering/internal/events"
+	"github.com/osac-project/osac-metering/schema"
 )
 
 type PostgresStore struct {
@@ -28,14 +30,22 @@ func NewPostgresStore(pool *pgxpool.Pool) *PostgresStore {
 	return &PostgresStore{pool: pool}
 }
 
+const resourceStateSelect = `
+	SELECT r.resource_id, r.resource_type, r.tenant_id, r.project_id,
+	       r.current_state, r.previous_state, r.is_billable, r.ever_billable, r.billable_since,
+	       r.last_heartbeat_at, r.transition_time, r.fulfillment_version,
+	       r.billing_dimensions, r.component_billable_since,
+	       allocation.active_since, allocation.first_started_at,
+	       consumption.active_since, consumption.first_started_at
+	FROM metering_resource_state AS r
+	LEFT JOIN metering_resource_meter_state AS allocation
+	       ON allocation.resource_id = r.resource_id AND allocation.meter_type = 'allocation'
+	LEFT JOIN metering_resource_meter_state AS consumption
+	       ON consumption.resource_id = r.resource_id AND consumption.meter_type = 'consumption'
+`
+
 func (s *PostgresStore) Get(ctx context.Context, resourceID string) (*ResourceState, error) {
-	row := s.pool.QueryRow(ctx, `
-		SELECT resource_id, resource_type, tenant_id, project_id,
-		       current_state, previous_state, is_billable, ever_billable, billable_since,
-		       last_heartbeat_at, transition_time, fulfillment_version,
-		       billing_dimensions, component_billable_since
-		FROM metering_resource_state
-		WHERE resource_id = $1`,
+	row := s.pool.QueryRow(ctx, resourceStateSelect+`WHERE r.resource_id = $1`,
 		resourceID)
 
 	state, err := scanResourceState(row)
@@ -57,7 +67,6 @@ func (s *PostgresStore) Upsert(ctx context.Context, state ResourceState) error {
 	if err != nil {
 		return fmt.Errorf("marshaling component billable since: %w", err)
 	}
-
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
@@ -81,6 +90,10 @@ func (s *PostgresStore) Upsert(ctx context.Context, state ResourceState) error {
 	// silently dropped — the projection write is idempotent for the same version.
 	if storedVersion != nil && *storedVersion > state.FulfillmentVersion {
 		return ErrStaleVersion
+	}
+
+	if state.ResourceType == schema.ResourceTypeBareMetalInstance {
+		state.BillableSince = state.BMaaSMeterState.Allocation.ActiveSince
 	}
 
 	_, err = tx.Exec(ctx, `
@@ -122,6 +135,30 @@ func (s *PostgresStore) Upsert(ctx context.Context, state ResourceState) error {
 		return fmt.Errorf("upserting resource state %s: %w", state.ResourceID, err)
 	}
 
+	if state.ResourceType == schema.ResourceTypeBareMetalInstance {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO metering_resource_meter_state (
+				resource_id, meter_type, active_since, first_started_at
+			) VALUES
+				($1, 'allocation', $2, $3),
+				($1, 'consumption', $4, $5)
+			ON CONFLICT (resource_id, meter_type) DO UPDATE SET
+				active_since = EXCLUDED.active_since,
+				first_started_at = COALESCE(
+					metering_resource_meter_state.first_started_at,
+					EXCLUDED.first_started_at
+				)`,
+			state.ResourceID,
+			state.BMaaSMeterState.Allocation.ActiveSince,
+			state.BMaaSMeterState.Allocation.FirstStartedAt,
+			state.BMaaSMeterState.Consumption.ActiveSince,
+			state.BMaaSMeterState.Consumption.FirstStartedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("upserting BMaaS meter state %s: %w", state.ResourceID, err)
+		}
+	}
+
 	return tx.Commit(ctx)
 }
 
@@ -136,32 +173,40 @@ func (s *PostgresStore) Delete(ctx context.Context, resourceID string) error {
 }
 
 func (s *PostgresStore) ListBillable(ctx context.Context) ([]ResourceState, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT resource_id, resource_type, tenant_id, project_id,
-		       current_state, previous_state, is_billable, ever_billable, billable_since,
-		       last_heartbeat_at, transition_time, fulfillment_version,
-		       billing_dimensions, component_billable_since
-		FROM metering_resource_state
-		WHERE is_billable = TRUE`)
+	rows, err := s.pool.Query(ctx, resourceStateSelect+`WHERE
+		(r.resource_type <> $1 AND r.is_billable = TRUE)
+		OR (r.resource_type = $1 AND allocation.active_since IS NOT NULL)`,
+		schema.ResourceTypeBareMetalInstance)
 	if err != nil {
 		return nil, fmt.Errorf("querying billable resources: %w", err)
 	}
 	defer rows.Close()
-	return collectResourceStates(rows)
+	states, err := collectResourceStates(rows)
+	if err != nil {
+		return nil, err
+	}
+	billableStates := states[:0]
+	for _, state := range states {
+		if state.ResourceType == schema.ResourceTypeBareMetalInstance &&
+			!events.IsAllocationBillableState(state.CurrentState) {
+			continue
+		}
+		billableStates = append(billableStates, state)
+	}
+	return billableStates, nil
 }
 
 func (s *PostgresStore) ListAll(ctx context.Context) ([]ResourceState, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT resource_id, resource_type, tenant_id, project_id,
-		       current_state, previous_state, is_billable, ever_billable, billable_since,
-		       last_heartbeat_at, transition_time, fulfillment_version,
-		       billing_dimensions, component_billable_since
-		FROM metering_resource_state`)
+	rows, err := s.pool.Query(ctx, resourceStateSelect)
 	if err != nil {
 		return nil, fmt.Errorf("querying all resources: %w", err)
 	}
 	defer rows.Close()
-	return collectResourceStates(rows)
+	states, err := collectResourceStates(rows)
+	if err != nil {
+		return nil, err
+	}
+	return states, nil
 }
 
 func (s *PostgresStore) UpdateLastHeartbeat(ctx context.Context, resourceIDs []string, at time.Time) error {
@@ -179,7 +224,11 @@ func (s *PostgresStore) UpdateLastHeartbeat(ctx context.Context, resourceIDs []s
 	return nil
 }
 
-func scanResourceState(row pgx.Row) (*ResourceState, error) {
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanResourceState(row rowScanner) (*ResourceState, error) {
 	var (
 		state              ResourceState
 		previousState      *string
@@ -188,6 +237,10 @@ func scanResourceState(row pgx.Row) (*ResourceState, error) {
 		lastHeartbeat      *time.Time
 		dimensionsJSON     []byte
 		componentSinceJSON []byte
+		allocationActive   *time.Time
+		allocationFirst    *time.Time
+		consumptionActive  *time.Time
+		consumptionFirst   *time.Time
 	)
 
 	err := row.Scan(
@@ -205,6 +258,10 @@ func scanResourceState(row pgx.Row) (*ResourceState, error) {
 		&state.FulfillmentVersion,
 		&dimensionsJSON,
 		&componentSinceJSON,
+		&allocationActive,
+		&allocationFirst,
+		&consumptionActive,
+		&consumptionFirst,
 	)
 	if err != nil {
 		return nil, err
@@ -230,7 +287,20 @@ func scanResourceState(row pgx.Row) (*ResourceState, error) {
 			return nil, fmt.Errorf("unmarshaling component billable since: %w", err)
 		}
 	}
-
+	state.BMaaSMeterState = BMaaSMeterState{
+		Allocation: MeterState{
+			ActiveSince:    allocationActive,
+			FirstStartedAt: allocationFirst,
+		},
+		Consumption: MeterState{
+			ActiveSince:    consumptionActive,
+			FirstStartedAt: consumptionFirst,
+		},
+	}
+	if state.ResourceType == schema.ResourceTypeBareMetalInstance {
+		state.BillableSince = allocationActive
+		state.IsBillable = allocationActive != nil
+	}
 	return &state, nil
 }
 

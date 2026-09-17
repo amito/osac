@@ -43,6 +43,14 @@ CREATE TABLE IF NOT EXISTS metering_resource_state (
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS metering_resource_meter_state (
+    resource_id      TEXT        NOT NULL REFERENCES metering_resource_state(resource_id) ON DELETE CASCADE,
+    meter_type       TEXT        NOT NULL CHECK (meter_type IN ('allocation', 'consumption')),
+    active_since     TIMESTAMPTZ,
+    first_started_at TIMESTAMPTZ,
+    PRIMARY KEY (resource_id, meter_type)
+);
+
 CREATE INDEX IF NOT EXISTS idx_metering_resource_state_billable
     ON metering_resource_state (is_billable, last_heartbeat_at)
     WHERE is_billable = TRUE;

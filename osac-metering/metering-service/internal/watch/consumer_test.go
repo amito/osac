@@ -182,6 +182,29 @@ func makeComputeInstance(id, tenant string) *privatev1.ComputeInstance {
 	}
 }
 
+func makeBareMetalInstance(id, tenant string) *privatev1.BareMetalInstance {
+	return &privatev1.BareMetalInstance{
+		Id: id,
+		Metadata: &privatev1.Metadata{
+			Tenant:            tenant,
+			Project:           "project-alpha",
+			Version:           1,
+			CreationTimestamp: timestamppb.Now(),
+		},
+		Spec: &privatev1.BareMetalInstanceSpec{
+			CatalogItem: &privatev1.BareMetalInstanceCatalogItemReference{Name: "catalog-item-1"},
+			InstanceType: &privatev1.BareMetalInstanceTypeLocalReference{
+				Id:   "bmi-type-gpu-large",
+				Name: "GPU large",
+			},
+		},
+		Status: &privatev1.BareMetalInstanceStatus{
+			State:               privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_RUNNING,
+			StateTransitionTime: timestamppb.Now(),
+		},
+	}
+}
+
 func makeEvent(id string, eventType privatev1.EventType) *privatev1.Event {
 	return &privatev1.Event{
 		Id:      id,
@@ -474,7 +497,7 @@ var _ = Describe("Consumer", func() {
 			client.mu.Lock()
 			defer client.mu.Unlock()
 			Expect(client.calls).ToNot(BeEmpty())
-			Expect(client.calls[0].GetFilter()).To(Equal("has(event.compute_instance) || has(event.cluster) || has(event.external_ip) || has(event.nat_gateway)"))
+			Expect(client.calls[0].GetFilter()).To(Equal("has(event.compute_instance) || has(event.cluster) || has(event.bare_metal_instance) || has(event.external_ip) || has(event.nat_gateway)"))
 		})
 
 		It("fails fast on unknown payload type and reconnects", func() {
@@ -993,6 +1016,7 @@ var _ = Describe("Consumer", func() {
 
 			ci := makeComputeInstance("vm-dim-change", "tenant-1")
 			ci.Status.State = privatev1.ComputeInstanceState_COMPUTE_INSTANCE_STATE_RUNNING
+			ci.Status.StateTransitionTime = timestamppb.New(originalStart)
 			ci.Metadata.Version = 2
 			ci.Spec = &privatev1.ComputeInstanceSpec{InstanceType: &privatev1.InstanceTypeReference{Name: "m5.xlarge"}}
 
@@ -1010,8 +1034,14 @@ var _ = Describe("Consumer", func() {
 			pub := &mockPublisher{published: make([]cloudevents.Event, 0, 1), cancelFunc: cancel}
 			consumer := newConsumerWithStore(pub, store)
 
-			err := consumer.Run(ctx)
-			Expect(err).ToNot(HaveOccurred())
+			done := make(chan error, 1)
+			go func() { done <- consumer.Run(ctx) }()
+			Eventually(func() int {
+				pub.mu.Lock()
+				defer pub.mu.Unlock()
+				return len(pub.published)
+			}, time.Second).Should(Equal(1))
+			Eventually(done, time.Second).Should(Receive(BeNil()))
 
 			pub.mu.Lock()
 			defer pub.mu.Unlock()
@@ -1141,8 +1171,16 @@ var _ = Describe("Consumer", func() {
 			// as resumed.v1 -- not just that a hand-seeded EverBillable:true
 			// fixture produces resumed.v1 in isolation.
 			store := newMockStore()
+			baseTime := time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+			runningTime := baseTime.Add(time.Minute)
+			stoppedTime := baseTime.Add(2 * time.Hour)
+			restartedTime := baseTime.Add(3 * time.Hour)
+			testCtx, testCancel := context.WithTimeout(ctx, time.Second)
+			defer testCancel()
 
 			createCI := makeComputeInstance("vm-fresh", "tenant-1")
+			createCI.Metadata.CreationTimestamp = timestamppb.New(baseTime)
+			createCI.Status.StateTransitionTime = timestamppb.New(baseTime)
 			createCI.Status.State = privatev1.ComputeInstanceState_COMPUTE_INSTANCE_STATE_STARTING
 			createEvent := &privatev1.Event{
 				Id:      "evt-create",
@@ -1151,6 +1189,8 @@ var _ = Describe("Consumer", func() {
 			}
 
 			runningCI := makeComputeInstance("vm-fresh", "tenant-1")
+			runningCI.Metadata.CreationTimestamp = timestamppb.New(baseTime)
+			runningCI.Status.StateTransitionTime = timestamppb.New(runningTime)
 			runningCI.Status.State = privatev1.ComputeInstanceState_COMPUTE_INSTANCE_STATE_RUNNING
 			runningCI.Metadata.Version = 2
 			runningEvent := &privatev1.Event{
@@ -1160,6 +1200,8 @@ var _ = Describe("Consumer", func() {
 			}
 
 			stoppedCI := makeComputeInstance("vm-fresh", "tenant-1")
+			stoppedCI.Metadata.CreationTimestamp = timestamppb.New(baseTime)
+			stoppedCI.Status.StateTransitionTime = timestamppb.New(stoppedTime)
 			stoppedCI.Status.State = privatev1.ComputeInstanceState_COMPUTE_INSTANCE_STATE_STOPPED
 			stoppedCI.Metadata.Version = 3
 			stoppedEvent := &privatev1.Event{
@@ -1169,6 +1211,8 @@ var _ = Describe("Consumer", func() {
 			}
 
 			restartedCI := makeComputeInstance("vm-fresh", "tenant-1")
+			restartedCI.Metadata.CreationTimestamp = timestamppb.New(baseTime)
+			restartedCI.Status.StateTransitionTime = timestamppb.New(restartedTime)
 			restartedCI.Status.State = privatev1.ComputeInstanceState_COMPUTE_INSTANCE_STATE_RUNNING
 			restartedCI.Metadata.Version = 4
 			restartedEvent := &privatev1.Event{
@@ -1190,7 +1234,7 @@ var _ = Describe("Consumer", func() {
 			pub := &mockPublisher{published: make([]cloudevents.Event, 0, 4), cancelFunc: cancel}
 			consumer := newConsumerWithStore(pub, store)
 
-			err := consumer.Run(ctx)
+			err := consumer.Run(testCtx)
 			Expect(err).ToNot(HaveOccurred())
 
 			pub.mu.Lock()
@@ -1895,6 +1939,253 @@ var _ = Describe("Consumer", func() {
 				"version should be advanced even when event is skipped")
 		})
 
+		It("rejects a higher-version state change with an older transition time", func() {
+			store := newMockStore()
+			storedAt := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+			store.states["vm-monotonic"] = projection.ResourceState{
+				ResourceID:         "vm-monotonic",
+				ResourceType:       events.ResourceTypeComputeInstance,
+				TenantID:           "tenant-1",
+				CurrentState:       "RUNNING",
+				IsBillable:         true,
+				BillableSince:      &storedAt,
+				FulfillmentVersion: 5,
+				BillingDimensions:  map[string]any{},
+				TransitionTime:     storedAt,
+			}
+
+			ci := makeComputeInstance("vm-monotonic", "tenant-1")
+			ci.Metadata.Version = 6
+			ci.Status.State = privatev1.ComputeInstanceState_COMPUTE_INSTANCE_STATE_STOPPED
+			ci.Status.StateTransitionTime = timestamppb.New(storedAt.Add(-time.Minute))
+			event := &privatev1.Event{
+				Id:      "evt-monotonic",
+				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED,
+				Payload: &privatev1.Event_ComputeInstance{ComputeInstance: ci},
+			}
+			client.results = []mockStreamResult{{stream: &mockWatchStream{
+				ctx:       ctx,
+				responses: []*privatev1.EventsWatchResponse{makeResponse(event)},
+			}}}
+
+			pub := &mockPublisher{cancelFunc: cancel}
+			consumer := newConsumerWithStore(pub, store)
+			done := make(chan error, 1)
+			go func() { done <- consumer.Run(ctx) }()
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+			Eventually(done, time.Second).Should(Receive(BeNil()))
+
+			pub.mu.Lock()
+			Expect(pub.published).To(BeEmpty())
+			pub.mu.Unlock()
+			store.mu.Lock()
+			Expect(store.states["vm-monotonic"].CurrentState).To(Equal("RUNNING"))
+			Expect(store.states["vm-monotonic"].FulfillmentVersion).To(Equal(int32(5)))
+			Expect(store.states["vm-monotonic"].TransitionTime).To(Equal(storedAt))
+			store.mu.Unlock()
+		})
+
+		It("rejects a higher-version BMaaS metadata update with an older transition time", func() {
+			store := newMockStore()
+			storedAt := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+			store.states["bmi-monotonic-metadata"] = projection.ResourceState{
+				ResourceID:         "bmi-monotonic-metadata",
+				ResourceType:       events.ResourceTypeBareMetalInstance,
+				TenantID:           "tenant-1",
+				CurrentState:       "BARE_METAL_INSTANCE_STATE_RUNNING",
+				IsBillable:         true,
+				BillableSince:      &storedAt,
+				FulfillmentVersion: 5,
+				BillingDimensions:  map[string]any{"bm_instance_type": "bmi-type-gpu-large", "catalog_item": "catalog-item-1"},
+				TransitionTime:     storedAt,
+			}
+
+			bmi := makeBareMetalInstance("bmi-monotonic-metadata", "tenant-1")
+			bmi.Metadata.Version = 6
+			bmi.Status.StateTransitionTime = timestamppb.New(storedAt.Add(-time.Minute))
+			event := &privatev1.Event{
+				Id:      "evt-bmi-monotonic-metadata",
+				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED,
+				Payload: &privatev1.Event_BareMetalInstance{BareMetalInstance: bmi},
+			}
+			client.results = []mockStreamResult{{stream: &mockWatchStream{
+				ctx:       ctx,
+				responses: []*privatev1.EventsWatchResponse{makeResponse(event)},
+			}}}
+
+			pub := &mockPublisher{}
+			consumer := newConsumerWithStore(pub, store)
+			done := make(chan error, 1)
+			go func() { done <- consumer.Run(ctx) }()
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+			Eventually(done, time.Second).Should(Receive(BeNil()))
+
+			pub.mu.Lock()
+			Expect(pub.published).To(BeEmpty())
+			pub.mu.Unlock()
+			store.mu.Lock()
+			Expect(store.states["bmi-monotonic-metadata"].FulfillmentVersion).To(Equal(int32(5)))
+			Expect(store.states["bmi-monotonic-metadata"].TransitionTime).To(Equal(storedAt))
+			store.mu.Unlock()
+		})
+
+		It("rejects a higher-version BMaaS STOPPED transition with an older timestamp", func() {
+			store := newMockStore()
+			storedAt := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+			store.states["bmi-monotonic-stopped"] = projection.ResourceState{
+				ResourceID:    "bmi-monotonic-stopped",
+				ResourceType:  events.ResourceTypeBareMetalInstance,
+				TenantID:      "tenant-1",
+				CurrentState:  "BARE_METAL_INSTANCE_STATE_RUNNING",
+				IsBillable:    true,
+				BillableSince: &storedAt,
+				BMaaSMeterState: projection.BMaaSMeterState{
+					Allocation:  projection.MeterState{ActiveSince: &storedAt, FirstStartedAt: &storedAt},
+					Consumption: projection.MeterState{ActiveSince: &storedAt, FirstStartedAt: &storedAt},
+				},
+				FulfillmentVersion: 5,
+				BillingDimensions:  map[string]any{"bm_instance_type": "bmi-type-gpu-large", "catalog_item": "catalog-item-1"},
+				TransitionTime:     storedAt,
+			}
+
+			bmi := makeBareMetalInstance("bmi-monotonic-stopped", "tenant-1")
+			bmi.Metadata.Version = 6
+			bmi.Status.State = privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_STOPPED
+			bmi.Status.StateTransitionTime = timestamppb.New(storedAt.Add(-time.Minute))
+			event := &privatev1.Event{
+				Id:      "evt-bmi-monotonic-stopped",
+				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED,
+				Payload: &privatev1.Event_BareMetalInstance{BareMetalInstance: bmi},
+			}
+			client.results = []mockStreamResult{{stream: &mockWatchStream{
+				ctx:       ctx,
+				responses: []*privatev1.EventsWatchResponse{makeResponse(event)},
+			}}}
+
+			pub := &mockPublisher{}
+			consumer := newConsumerWithStore(pub, store)
+			done := make(chan error, 1)
+			go func() { done <- consumer.Run(ctx) }()
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+			Eventually(done, time.Second).Should(Receive(BeNil()))
+
+			pub.mu.Lock()
+			Expect(pub.published).To(BeEmpty(), "a stale STOPPED transition must not suspend consumption")
+			pub.mu.Unlock()
+			store.mu.Lock()
+			Expect(store.states["bmi-monotonic-stopped"].CurrentState).To(Equal("BARE_METAL_INSTANCE_STATE_RUNNING"))
+			Expect(store.states["bmi-monotonic-stopped"].FulfillmentVersion).To(Equal(int32(5)))
+			Expect(store.states["bmi-monotonic-stopped"].TransitionTime).To(Equal(storedAt))
+			store.mu.Unlock()
+		})
+
+		It("accepts a newer BMaaS STOPPED transition", func() {
+			store := newMockStore()
+			storedAt := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+			stoppedAt := storedAt.Add(time.Hour)
+			store.states["bmi-monotonic-newer"] = projection.ResourceState{
+				ResourceID:    "bmi-monotonic-newer",
+				ResourceType:  events.ResourceTypeBareMetalInstance,
+				TenantID:      "tenant-1",
+				CurrentState:  "BARE_METAL_INSTANCE_STATE_RUNNING",
+				IsBillable:    true,
+				BillableSince: &storedAt,
+				BMaaSMeterState: projection.BMaaSMeterState{
+					Allocation:  projection.MeterState{ActiveSince: &storedAt, FirstStartedAt: &storedAt},
+					Consumption: projection.MeterState{ActiveSince: &storedAt, FirstStartedAt: &storedAt},
+				},
+				FulfillmentVersion: 5,
+				BillingDimensions:  map[string]any{"bm_instance_type": "bmi-type-gpu-large", "catalog_item": "catalog-item-1"},
+				TransitionTime:     storedAt,
+			}
+
+			bmi := makeBareMetalInstance("bmi-monotonic-newer", "tenant-1")
+			bmi.Metadata.Version = 6
+			bmi.Status.State = privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_STOPPED
+			bmi.Status.StateTransitionTime = timestamppb.New(stoppedAt)
+			event := &privatev1.Event{
+				Id:      "evt-bmi-monotonic-newer",
+				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED,
+				Payload: &privatev1.Event_BareMetalInstance{BareMetalInstance: bmi},
+			}
+			client.results = []mockStreamResult{{stream: &mockWatchStream{
+				ctx:       ctx,
+				responses: []*privatev1.EventsWatchResponse{makeResponse(event)},
+			}}}
+
+			pub := &mockPublisher{published: make([]cloudevents.Event, 0, 1), cancelFunc: cancel}
+			consumer := newConsumerWithStore(pub, store)
+			done := make(chan error, 1)
+			go func() { done <- consumer.Run(ctx) }()
+			Eventually(func() int {
+				pub.mu.Lock()
+				defer pub.mu.Unlock()
+				return len(pub.published)
+			}, time.Second).Should(Equal(1))
+			Eventually(done, time.Second).Should(Receive(BeNil()))
+
+			pub.mu.Lock()
+			Expect(pub.published[0].Type()).To(Equal(events.EventSuspended))
+			pub.mu.Unlock()
+			store.mu.Lock()
+			Expect(store.states["bmi-monotonic-newer"].CurrentState).To(Equal("BARE_METAL_INSTANCE_STATE_STOPPED"))
+			Expect(store.states["bmi-monotonic-newer"].FulfillmentVersion).To(Equal(int32(6)))
+			Expect(store.states["bmi-monotonic-newer"].TransitionTime).To(Equal(stoppedAt))
+			Expect(store.states["bmi-monotonic-newer"].BMaaSMeterState.Consumption.ActiveSince).To(BeNil())
+			store.mu.Unlock()
+		})
+
+		It("rejects a higher-version BMaaS deletion with an older timestamp", func() {
+			store := newMockStore()
+			storedAt := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+			staleAt := storedAt.Add(-time.Minute)
+			store.states["bmi-monotonic-delete"] = projection.ResourceState{
+				ResourceID:         "bmi-monotonic-delete",
+				ResourceType:       events.ResourceTypeBareMetalInstance,
+				TenantID:           "tenant-1",
+				CurrentState:       "BARE_METAL_INSTANCE_STATE_RUNNING",
+				IsBillable:         true,
+				BillableSince:      &storedAt,
+				FulfillmentVersion: 5,
+				BillingDimensions:  map[string]any{"bm_instance_type": "bmi-type-gpu-large", "catalog_item": "catalog-item-1"},
+				TransitionTime:     storedAt,
+			}
+
+			bmi := makeBareMetalInstance("bmi-monotonic-delete", "tenant-1")
+			bmi.Metadata.Version = 6
+			bmi.Metadata.DeletionTimestamp = timestamppb.New(staleAt)
+			bmi.Status.State = privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_DELETING
+			event := &privatev1.Event{
+				Id:        "evt-bmi-monotonic-delete",
+				Type:      privatev1.EventType_EVENT_TYPE_OBJECT_DELETED,
+				Timestamp: timestamppb.New(staleAt),
+				Payload:   &privatev1.Event_BareMetalInstance{BareMetalInstance: bmi},
+			}
+			client.results = []mockStreamResult{{stream: &mockWatchStream{
+				ctx:       ctx,
+				responses: []*privatev1.EventsWatchResponse{makeResponse(event)},
+			}}}
+
+			pub := &mockPublisher{}
+			consumer := newConsumerWithStore(pub, store)
+			done := make(chan error, 1)
+			go func() { done <- consumer.Run(ctx) }()
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+			Eventually(done, time.Second).Should(Receive(BeNil()))
+
+			pub.mu.Lock()
+			Expect(pub.published).To(BeEmpty())
+			pub.mu.Unlock()
+			store.mu.Lock()
+			_, exists := store.states["bmi-monotonic-delete"]
+			Expect(exists).To(BeTrue(), "a stale deletion must not delete the projection")
+			store.mu.Unlock()
+		})
+
 		It("publishes exactly 1 event for cluster DELETED (not N+1)", func() {
 			store := newMockStore()
 			now := time.Now().UTC().Truncate(time.Microsecond)
@@ -1937,6 +2228,771 @@ var _ = Describe("Consumer", func() {
 			store.mu.Lock()
 			defer store.mu.Unlock()
 			Expect(store.states).ToNot(HaveKey("cl-del"))
+		})
+
+		It("publishes created.v1 and seeds a billable projection for a RUNNING BMaaS object", func() {
+			bmi := makeBareMetalInstance("bmi-1", "tenant-1")
+			event := &privatev1.Event{
+				Id:      "evt-bmi-created",
+				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_CREATED,
+				Payload: &privatev1.Event_BareMetalInstance{BareMetalInstance: bmi},
+			}
+			runCtx, runCancel := context.WithTimeout(ctx, 100*time.Millisecond)
+			defer runCancel()
+			client.results = []mockStreamResult{{stream: &mockWatchStream{
+				ctx:       runCtx,
+				responses: []*privatev1.EventsWatchResponse{makeResponse(event)},
+			}}}
+
+			pub := &mockPublisher{published: make([]cloudevents.Event, 0, 3), cancelFunc: runCancel}
+			store := newMockStore()
+			consumer := newConsumerWithStore(pub, store)
+
+			Expect(consumer.Run(runCtx)).To(Succeed())
+
+			pub.mu.Lock()
+			Expect(pub.published).To(HaveLen(3))
+			Expect(pub.published[0].Type()).To(Equal(events.EventCreated))
+			Expect(pub.published[0].Extensions()["osacresourcetype"]).To(Equal(events.ResourceTypeBareMetalInstance))
+			Expect(pub.published[1].ID()).To(Equal("evt-bmi-created/allocation"))
+			Expect(pub.published[1].Type()).To(Equal(events.EventStarted))
+			Expect(pub.published[2].ID()).To(Equal("evt-bmi-created/consumption"))
+			Expect(pub.published[2].Type()).To(Equal(events.EventStarted))
+
+			var data map[string]any
+			Expect(json.Unmarshal(pub.published[0].Data(), &data)).To(Succeed())
+			Expect(data["resource_id"]).To(Equal("bmi-1"))
+			Expect(data["tenant_id"]).To(Equal("tenant-1"))
+			Expect(data["project_id"]).To(Equal("project-alpha"))
+			Expect(data["current_state"]).To(Equal("BARE_METAL_INSTANCE_STATE_RUNNING"))
+			Expect(data["billing_dimensions"]).To(Equal(map[string]any{
+				"bm_instance_type": "bmi-type-gpu-large",
+				"catalog_item":     "catalog-item-1",
+			}))
+			pub.mu.Unlock()
+
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			state, ok := store.states["bmi-1"]
+			Expect(ok).To(BeTrue())
+			Expect(state.CurrentState).To(Equal("BARE_METAL_INSTANCE_STATE_RUNNING"))
+			Expect(state.IsBillable).To(BeTrue())
+			Expect(state.BillableSince).ToNot(BeNil())
+		})
+
+		It("skips a BMaaS deletion with a missing event timestamp without disrupting later Watch events", func() {
+			store := newMockStore()
+			startedAt := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
+			store.states["bmi-delete-missing-timestamp"] = projection.ResourceState{
+				ResourceID:    "bmi-delete-missing-timestamp",
+				ResourceType:  events.ResourceTypeBareMetalInstance,
+				TenantID:      "tenant-1",
+				CurrentState:  "BARE_METAL_INSTANCE_STATE_DELETING",
+				IsBillable:    true,
+				BillableSince: &startedAt,
+				BMaaSMeterState: projection.BMaaSMeterState{
+					Allocation: projection.MeterState{
+						ActiveSince: &startedAt, FirstStartedAt: &startedAt,
+					},
+					Consumption: projection.MeterState{
+						ActiveSince: &startedAt, FirstStartedAt: &startedAt,
+					},
+				},
+				FulfillmentVersion: 4,
+				BillingDimensions:  map[string]any{"bm_instance_type": "bmi-type-gpu-large"},
+			}
+
+			bmi := makeBareMetalInstance("bmi-delete-missing-timestamp", "tenant-1")
+			bmi.Metadata.Version = 5
+			bmi.Metadata.DeletionTimestamp = timestamppb.New(startedAt.Add(time.Minute))
+			bmi.Status.State = privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_DELETING
+			badDelete := &privatev1.Event{
+				Id:      "evt-bmi-delete-missing-timestamp",
+				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_DELETED,
+				Payload: &privatev1.Event_BareMetalInstance{BareMetalInstance: bmi},
+			}
+			goodEvent := makeEvent("evt-vm-after-delete", privatev1.EventType_EVENT_TYPE_OBJECT_CREATED)
+			client.results = []mockStreamResult{{stream: &mockWatchStream{
+				responses: []*privatev1.EventsWatchResponse{makeResponse(badDelete), makeResponse(goodEvent)},
+			}}}
+
+			pub := &mockPublisher{published: make([]cloudevents.Event, 0, 1), cancelFunc: cancel}
+			consumer := newConsumerWithStore(pub, store)
+			Expect(consumer.Run(ctx)).To(Succeed())
+			Expect(client.watchCallCount()).To(Equal(1))
+
+			pub.mu.Lock()
+			Expect(pub.published).To(HaveLen(1))
+			Expect(pub.published[0].ID()).To(Equal("evt-vm-after-delete"))
+			pub.mu.Unlock()
+			store.mu.Lock()
+			Expect(store.states).To(HaveKey("bmi-delete-missing-timestamp"))
+			store.mu.Unlock()
+		})
+
+		It("skips BMaaS data quality errors without disrupting later Watch events", func() {
+			bmi := makeBareMetalInstance("bmi-invalid", "tenant-1")
+			bmi.Spec.InstanceType.Id = ""
+			badEvent := &privatev1.Event{
+				Id:      "evt-bmi-invalid",
+				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_CREATED,
+				Payload: &privatev1.Event_BareMetalInstance{BareMetalInstance: bmi},
+			}
+			goodEvent := makeEvent("evt-vm-after-bmi", privatev1.EventType_EVENT_TYPE_OBJECT_CREATED)
+			client.results = []mockStreamResult{
+				{stream: &mockWatchStream{
+					responses: []*privatev1.EventsWatchResponse{makeResponse(badEvent), makeResponse(goodEvent)},
+				}},
+				{stream: &mockWatchStream{
+					responses: []*privatev1.EventsWatchResponse{makeResponse(goodEvent)},
+				}},
+			}
+			store := newMockStore()
+			pub := &mockPublisher{published: make([]cloudevents.Event, 0, 1), cancelFunc: cancel}
+			consumer := newConsumerWithStore(pub, store)
+
+			Expect(consumer.Run(ctx)).To(Succeed())
+			Expect(client.watchCallCount()).To(Equal(1))
+
+			pub.mu.Lock()
+			Expect(pub.published).To(HaveLen(1))
+			Expect(pub.published[0].ID()).To(Equal("evt-vm-after-bmi"))
+			pub.mu.Unlock()
+			store.mu.Lock()
+			Expect(store.states).NotTo(HaveKey("bmi-invalid"))
+			Expect(store.states).To(HaveKey("evt-vm-after-bmi"))
+			store.mu.Unlock()
+		})
+
+		It("emits started events for first allocation after FAILED", func() {
+			store := newMockStore()
+			failedAt := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
+			recoveredAt := failedAt.Add(time.Hour)
+			store.states["bmi-first-recovery"] = projection.ResourceState{
+				ResourceID:         "bmi-first-recovery",
+				ResourceType:       events.ResourceTypeBareMetalInstance,
+				TenantID:           "tenant-1",
+				CurrentState:       "BARE_METAL_INSTANCE_STATE_FAILED",
+				TransitionTime:     failedAt,
+				FulfillmentVersion: 3,
+				BillingDimensions: map[string]any{
+					"bm_instance_type": "bmi-type-gpu-large",
+					"catalog_item":     "catalog-item-1",
+				},
+			}
+
+			bmi := makeBareMetalInstance("bmi-first-recovery", "tenant-1")
+			bmi.Metadata.Version = 4
+			bmi.Status.StateTransitionTime = timestamppb.New(recoveredAt)
+			event := &privatev1.Event{
+				Id:      "evt-bmi-first-recovery",
+				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED,
+				Payload: &privatev1.Event_BareMetalInstance{BareMetalInstance: bmi},
+			}
+			client.results = []mockStreamResult{{stream: &mockWatchStream{
+				responses: []*privatev1.EventsWatchResponse{makeResponse(event)},
+			}}}
+
+			pub := &mockPublisher{published: make([]cloudevents.Event, 0, 2), cancelFunc: cancel}
+			consumer := newConsumerWithStore(pub, store)
+			Expect(consumer.Run(ctx)).To(Succeed())
+
+			pub.mu.Lock()
+			defer pub.mu.Unlock()
+			Expect(pub.published).To(HaveLen(2))
+			Expect(pub.published[0].ID()).To(Equal("evt-bmi-first-recovery/allocation"))
+			Expect(pub.published[1].ID()).To(Equal("evt-bmi-first-recovery/consumption"))
+			Expect(pub.published[0].Type()).To(Equal(events.EventStarted))
+			Expect(pub.published[1].Type()).To(Equal(events.EventStarted))
+		})
+
+		It("rejects BMaaS dimension drift without relabeling an active interval", func() {
+			store := newMockStore()
+			startedAt := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
+			store.states["bmi-running-dimension-update"] = projection.ResourceState{
+				ResourceID:    "bmi-running-dimension-update",
+				ResourceType:  events.ResourceTypeBareMetalInstance,
+				TenantID:      "tenant-1",
+				CurrentState:  "BARE_METAL_INSTANCE_STATE_RUNNING",
+				IsBillable:    true,
+				BillableSince: &startedAt,
+				BMaaSMeterState: projection.BMaaSMeterState{
+					Allocation: projection.MeterState{
+						ActiveSince: &startedAt, FirstStartedAt: &startedAt,
+					},
+				},
+				FulfillmentVersion: 1,
+				BillingDimensions: map[string]any{
+					"bm_instance_type": "bmi-type-gpu-large",
+					"catalog_item":     "catalog-item-1",
+				},
+			}
+
+			bmi := makeBareMetalInstance("bmi-running-dimension-update", "tenant-1")
+			bmi.Metadata.Version = 2
+			bmi.Spec.InstanceType.Id = "bmi-type-gpu-xlarge"
+			transitionAt := startedAt.Add(time.Hour)
+			bmi.Status.StateTransitionTime = timestamppb.New(transitionAt)
+			event := &privatev1.Event{
+				Id:      "evt-bmi-running-dimension-update",
+				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED,
+				Payload: &privatev1.Event_BareMetalInstance{BareMetalInstance: bmi},
+			}
+			client.results = []mockStreamResult{{stream: &mockWatchStream{
+				ctx:       ctx,
+				responses: []*privatev1.EventsWatchResponse{makeResponse(event)},
+			}}}
+
+			pub := &mockPublisher{}
+			consumer := newConsumerWithStore(pub, store)
+			done := make(chan error, 1)
+			go func() { done <- consumer.Run(ctx) }()
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+			Eventually(done, time.Second).Should(Receive(BeNil()))
+
+			pub.mu.Lock()
+			Expect(pub.published).To(BeEmpty())
+			pub.mu.Unlock()
+			store.mu.Lock()
+			updated := store.states["bmi-running-dimension-update"]
+			Expect(updated.ComponentBillableSince).To(BeNil())
+			Expect(updated.BillingDimensions["bm_instance_type"]).To(Equal("bmi-type-gpu-large"))
+			Expect(updated.FulfillmentVersion).To(Equal(int32(1)))
+			store.mu.Unlock()
+		})
+
+		It("skips invalid BMaaS transitions and processes later events on the same stream", func() {
+			store := newMockStore()
+			now := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
+			store.states["bmi-invalid-transition"] = projection.ResourceState{
+				ResourceID:    "bmi-invalid-transition",
+				ResourceType:  events.ResourceTypeBareMetalInstance,
+				TenantID:      "tenant-1",
+				CurrentState:  "BARE_METAL_INSTANCE_STATE_RUNNING",
+				IsBillable:    true,
+				BillableSince: &now,
+				BMaaSMeterState: projection.BMaaSMeterState{
+					Allocation: projection.MeterState{
+						ActiveSince: &now, FirstStartedAt: &now,
+					},
+					Consumption: projection.MeterState{
+						ActiveSince: &now, FirstStartedAt: &now,
+					},
+				},
+				FulfillmentVersion: 1,
+				BillingDimensions: map[string]any{
+					"bm_instance_type": "bmi-type-gpu-large",
+					"catalog_item":     "catalog-item-1",
+				},
+			}
+
+			invalid := makeBareMetalInstance("bmi-invalid-transition", "tenant-1")
+			invalid.Metadata.Version = 2
+			invalid.Status.State = privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_PROVISIONING
+			invalid.Status.StateTransitionTime = timestamppb.New(now.Add(time.Minute))
+			valid := makeBareMetalInstance("bmi-invalid-transition", "tenant-1")
+			valid.Metadata.Version = 3
+			valid.Status.State = privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_STOPPING
+			valid.Status.StateTransitionTime = timestamppb.New(now.Add(2 * time.Minute))
+			invalidEvent := &privatev1.Event{Id: "evt-bmi-invalid-transition", Type: privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED, Payload: &privatev1.Event_BareMetalInstance{BareMetalInstance: invalid}}
+			validEvent := &privatev1.Event{Id: "evt-bmi-valid-after-invalid", Type: privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED, Payload: &privatev1.Event_BareMetalInstance{BareMetalInstance: valid}}
+			client.results = []mockStreamResult{
+				{stream: &mockWatchStream{
+					responses: []*privatev1.EventsWatchResponse{makeResponse(invalidEvent), makeResponse(validEvent)},
+				}},
+				{stream: &mockWatchStream{
+					responses: []*privatev1.EventsWatchResponse{makeResponse(validEvent)},
+				}},
+			}
+
+			pub := &mockPublisher{published: make([]cloudevents.Event, 0, 1), cancelFunc: cancel}
+			consumer := newConsumerWithStore(pub, store)
+			Expect(consumer.Run(ctx)).To(Succeed())
+			Expect(client.watchCallCount()).To(Equal(1))
+
+			pub.mu.Lock()
+			defer pub.mu.Unlock()
+			Expect(pub.published).To(HaveLen(1))
+			Expect(pub.published[0].ID()).To(Equal("evt-bmi-valid-after-invalid/consumption"))
+			Expect(pub.published[0].Type()).To(Equal(events.EventSuspended))
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			Expect(store.states["bmi-invalid-transition"].CurrentState).To(Equal("BARE_METAL_INSTANCE_STATE_STOPPING"))
+		})
+
+		It("does not open an allocation interval for FAILED to DELETING skip", func() {
+			store := newMockStore()
+			failedAt := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
+			store.states["bmi-failed-deleting"] = projection.ResourceState{
+				ResourceID:         "bmi-failed-deleting",
+				ResourceType:       events.ResourceTypeBareMetalInstance,
+				TenantID:           "tenant-1",
+				CurrentState:       "BARE_METAL_INSTANCE_STATE_FAILED",
+				TransitionTime:     failedAt,
+				FulfillmentVersion: 1,
+				BillingDimensions: map[string]any{
+					"bm_instance_type": "bmi-type-gpu-large",
+					"catalog_item":     "catalog-item-1",
+				},
+			}
+
+			bmi := makeBareMetalInstance("bmi-failed-deleting", "tenant-1")
+			bmi.Metadata.Version = 2
+			deletingAt := failedAt.Add(time.Hour)
+			bmi.Status.State = privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_DELETING
+			bmi.Status.StateTransitionTime = timestamppb.New(deletingAt)
+			event := &privatev1.Event{
+				Id:      "evt-bmi-failed-deleting",
+				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED,
+				Payload: &privatev1.Event_BareMetalInstance{BareMetalInstance: bmi},
+			}
+			client.results = []mockStreamResult{{stream: &mockWatchStream{
+				ctx:       ctx,
+				responses: []*privatev1.EventsWatchResponse{makeResponse(event)},
+			}}}
+
+			pub := &mockPublisher{}
+			consumer := newConsumerWithStore(pub, store)
+			done := make(chan error, 1)
+			go func() { done <- consumer.Run(ctx) }()
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+			Eventually(done, time.Second).Should(Receive(BeNil()))
+
+			pub.mu.Lock()
+			Expect(pub.published).To(BeEmpty())
+			pub.mu.Unlock()
+			store.mu.Lock()
+			updated := store.states["bmi-failed-deleting"]
+			Expect(updated.CurrentState).To(Equal("BARE_METAL_INSTANCE_STATE_DELETING"))
+			Expect(updated.IsBillable).To(BeFalse())
+			Expect(updated.BillableSince).To(BeNil())
+			store.mu.Unlock()
+		})
+
+		It("emits independent allocation and consumption events when BMaaS enters RUNNING", func() {
+			store := newMockStore()
+			t0 := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
+			t1 := t0.Add(time.Hour)
+			store.states["bmi-running"] = projection.ResourceState{
+				ResourceID:         "bmi-running",
+				ResourceType:       events.ResourceTypeBareMetalInstance,
+				TenantID:           "tenant-1",
+				CurrentState:       "BARE_METAL_INSTANCE_STATE_PROVISIONING",
+				TransitionTime:     t0,
+				FulfillmentVersion: 1,
+				BillingDimensions:  map[string]any{"bm_instance_type": "bmi-type-gpu-large", "catalog_item": "catalog-item-1"},
+			}
+
+			bmi := makeBareMetalInstance("bmi-running", "tenant-1")
+			bmi.Metadata.Version = 2
+			bmi.Status.StateTransitionTime = timestamppb.New(t1)
+			event := &privatev1.Event{
+				Id:      "evt-bmi-running",
+				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED,
+				Payload: &privatev1.Event_BareMetalInstance{BareMetalInstance: bmi},
+			}
+			client.results = []mockStreamResult{{stream: &mockWatchStream{
+				responses: []*privatev1.EventsWatchResponse{makeResponse(event)},
+			}}}
+
+			pub := &mockPublisher{published: make([]cloudevents.Event, 0, 2)}
+			consumer := newConsumerWithStore(pub, store)
+
+			done := make(chan error, 1)
+			go func() { done <- consumer.Run(ctx) }()
+			Eventually(func() int {
+				pub.mu.Lock()
+				defer pub.mu.Unlock()
+				return len(pub.published)
+			}, time.Second).Should(BeNumerically(">=", 1))
+			cancel()
+			Eventually(done, time.Second).Should(Receive(BeNil()))
+
+			pub.mu.Lock()
+			defer pub.mu.Unlock()
+			Expect(pub.published).To(HaveLen(2))
+			Expect(pub.published[0].ID()).To(Equal("evt-bmi-running/allocation"))
+			Expect(pub.published[1].ID()).To(Equal("evt-bmi-running/consumption"))
+			Expect(pub.published[0].Type()).To(Equal(events.EventStarted))
+			Expect(pub.published[1].Type()).To(Equal(events.EventStarted))
+
+			for _, published := range pub.published {
+				var data map[string]any
+				Expect(json.Unmarshal(published.Data(), &data)).To(Succeed())
+				billingDims, ok := data["billing_dimensions"].(map[string]any)
+				Expect(ok).To(BeTrue())
+				Expect(billingDims["bm_instance_type"]).To(Equal("bmi-type-gpu-large"))
+				Expect(billingDims["meter_type"]).NotTo(BeNil())
+			}
+		})
+
+		It("suspends only consumption when BMaaS leaves RUNNING", func() {
+			store := newMockStore()
+			t0 := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
+			t1 := t0.Add(time.Hour)
+			store.states["bmi-stopping"] = projection.ResourceState{
+				ResourceID:    "bmi-stopping",
+				ResourceType:  events.ResourceTypeBareMetalInstance,
+				TenantID:      "tenant-1",
+				CurrentState:  "RUNNING",
+				IsBillable:    true,
+				BillableSince: &t0,
+				BMaaSMeterState: projection.BMaaSMeterState{
+					Allocation: projection.MeterState{
+						ActiveSince: &t0, FirstStartedAt: &t0,
+					},
+					Consumption: projection.MeterState{
+						ActiveSince: &t0, FirstStartedAt: &t0,
+					},
+				},
+				TransitionTime:     t0,
+				FulfillmentVersion: 1,
+				BillingDimensions:  map[string]any{"bm_instance_type": "bmi-type-gpu-large", "catalog_item": "catalog-item-1"},
+			}
+
+			bmi := makeBareMetalInstance("bmi-stopping", "tenant-1")
+			bmi.Metadata.Version = 2
+			bmi.Status.State = privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_STOPPING
+			bmi.Status.StateTransitionTime = timestamppb.New(t1)
+			event := &privatev1.Event{
+				Id:      "evt-bmi-stopping",
+				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED,
+				Payload: &privatev1.Event_BareMetalInstance{BareMetalInstance: bmi},
+			}
+			client.results = []mockStreamResult{{stream: &mockWatchStream{
+				responses: []*privatev1.EventsWatchResponse{makeResponse(event)},
+			}}}
+
+			pub := &mockPublisher{published: make([]cloudevents.Event, 0, 1)}
+			consumer := newConsumerWithStore(pub, store)
+			done := make(chan error, 1)
+			go func() { done <- consumer.Run(ctx) }()
+			Eventually(func() int {
+				pub.mu.Lock()
+				defer pub.mu.Unlock()
+				return len(pub.published)
+			}, time.Second).Should(Equal(1))
+			cancel()
+			Eventually(done, time.Second).Should(Receive(BeNil()))
+
+			pub.mu.Lock()
+			Expect(pub.published[0].ID()).To(Equal("evt-bmi-stopping/consumption"))
+			Expect(pub.published[0].Type()).To(Equal(events.EventSuspended))
+			var data map[string]any
+			Expect(json.Unmarshal(pub.published[0].Data(), &data)).To(Succeed())
+			Expect(data["duration_seconds"]).To(BeNumerically("==", 3600))
+			pub.mu.Unlock()
+
+			store.mu.Lock()
+			updated := store.states["bmi-stopping"]
+			Expect(updated.IsBillable).To(BeTrue())
+			Expect(updated.BillableSince).To(Equal(&t0))
+			Expect(updated.ComponentBillableSince).To(BeNil())
+			store.mu.Unlock()
+		})
+
+		It("covers BMaaS meter boundaries at the Watch handler", func() {
+			t0 := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
+			t1 := t0.Add(time.Hour)
+			for _, test := range []struct {
+				name            string
+				id              string
+				previousState   string
+				currentState    privatev1.BareMetalInstanceState
+				allocationSince *time.Time
+				meterState      projection.BMaaSMeterState
+				wantIDs         []string
+				wantTypes       []string
+			}{
+				{
+					name:          "provisioning to starting",
+					id:            "provisioning-starting",
+					previousState: "PROVISIONING",
+					currentState:  privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_STARTING,
+					wantIDs:       []string{"evt-boundary/provisioning-starting/allocation"},
+					wantTypes:     []string{events.EventStarted},
+				},
+				{
+					name:          "provisioning to stopped",
+					id:            "provisioning-stopped",
+					previousState: "PROVISIONING",
+					currentState:  privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_STOPPED,
+					wantIDs:       []string{"evt-boundary/provisioning-stopped/allocation"},
+					wantTypes:     []string{events.EventStarted},
+				},
+				{
+					name:            "stopping to running with consumption already started",
+					id:              "stopping-running",
+					previousState:   "STOPPING",
+					currentState:    privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_RUNNING,
+					allocationSince: &t0,
+					meterState: projection.BMaaSMeterState{
+						Allocation:  projection.MeterState{ActiveSince: &t0, FirstStartedAt: &t0},
+						Consumption: projection.MeterState{FirstStartedAt: &t0},
+					},
+					wantIDs:   []string{"evt-boundary/stopping-running/consumption"},
+					wantTypes: []string{events.EventResumed},
+				},
+				{
+					name:            "running to deleting",
+					id:              "running-deleting",
+					previousState:   "BARE_METAL_INSTANCE_STATE_RUNNING",
+					currentState:    privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_DELETING,
+					allocationSince: &t0,
+					meterState: projection.BMaaSMeterState{
+						Allocation:  projection.MeterState{ActiveSince: &t0, FirstStartedAt: &t0},
+						Consumption: projection.MeterState{ActiveSince: &t0, FirstStartedAt: &t0},
+					},
+					wantIDs:   []string{"evt-boundary/running-deleting/consumption"},
+					wantTypes: []string{events.EventSuspended},
+				},
+				{
+					name:            "first stopped to running",
+					id:              "first-stopped-running",
+					previousState:   "BARE_METAL_INSTANCE_STATE_STOPPED",
+					currentState:    privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_RUNNING,
+					allocationSince: &t0,
+					meterState: projection.BMaaSMeterState{
+						Allocation: projection.MeterState{ActiveSince: &t0, FirstStartedAt: &t0},
+					},
+					wantIDs:   []string{"evt-boundary/first-stopped-running/consumption"},
+					wantTypes: []string{events.EventStarted},
+				},
+				{
+					name:            "later stopped to running",
+					id:              "later-stopped-running",
+					previousState:   "BARE_METAL_INSTANCE_STATE_STOPPED",
+					currentState:    privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_RUNNING,
+					allocationSince: &t0,
+					meterState: projection.BMaaSMeterState{
+						Allocation:  projection.MeterState{ActiveSince: &t0, FirstStartedAt: &t0},
+						Consumption: projection.MeterState{FirstStartedAt: &t0},
+					},
+					wantIDs:   []string{"evt-boundary/later-stopped-running/consumption"},
+					wantTypes: []string{events.EventResumed},
+				},
+			} {
+				By(test.name)
+				client = &mockEventsClient{}
+				store := newMockStore()
+				resourceID := "bmi-" + test.name
+				store.states[resourceID] = projection.ResourceState{
+					ResourceID:         resourceID,
+					ResourceType:       events.ResourceTypeBareMetalInstance,
+					TenantID:           "tenant-1",
+					CurrentState:       test.previousState,
+					IsBillable:         test.allocationSince != nil,
+					BillableSince:      test.allocationSince,
+					BMaaSMeterState:    test.meterState,
+					FulfillmentVersion: 1,
+					BillingDimensions:  map[string]any{"bm_instance_type": "bmi-type-gpu-large", "catalog_item": "catalog-item-1"},
+				}
+				bmi := makeBareMetalInstance(resourceID, "tenant-1")
+				bmi.Metadata.Version = 2
+				bmi.Status.State = test.currentState
+				bmi.Status.StateTransitionTime = timestamppb.New(t1)
+				eventID := "evt-boundary/" + test.id
+				event := &privatev1.Event{
+					Id: eventID, Type: privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED,
+					Payload: &privatev1.Event_BareMetalInstance{BareMetalInstance: bmi},
+				}
+				runCtx, runCancel := context.WithCancel(context.Background())
+				client.results = []mockStreamResult{{stream: &mockWatchStream{
+					responses: []*privatev1.EventsWatchResponse{makeResponse(event)},
+				}}}
+				pub := &mockPublisher{published: make([]cloudevents.Event, 0, len(test.wantIDs)), cancelFunc: runCancel}
+				consumer := newConsumerWithStore(pub, store)
+				Expect(consumer.Run(runCtx)).To(Succeed())
+				runCancel()
+
+				pub.mu.Lock()
+				Expect(pub.published).To(HaveLen(len(test.wantIDs)))
+				for i, wantID := range test.wantIDs {
+					Expect(pub.published[i].ID()).To(Equal(wantID))
+					Expect(pub.published[i].Type()).To(Equal(test.wantTypes[i]))
+				}
+				pub.mu.Unlock()
+				store.mu.Lock()
+				updated := store.states[resourceID]
+				Expect(updated.IsBillable).To(BeTrue())
+				Expect(updated.BillableSince).NotTo(BeNil())
+				Expect(updated.ComponentBillableSince).To(BeNil())
+				store.mu.Unlock()
+			}
+		})
+
+		It("closes active BMaaS meters at the authoritative deletion timestamp", func() {
+			store := newMockStore()
+			startedAt := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
+			deletionRequestedAt := startedAt.Add(30 * time.Minute)
+			deletionCompletedAt := startedAt.Add(2 * time.Hour)
+			store.states["bmi-delete"] = projection.ResourceState{
+				ResourceID:    "bmi-delete",
+				ResourceType:  events.ResourceTypeBareMetalInstance,
+				TenantID:      "tenant-1",
+				CurrentState:  "BARE_METAL_INSTANCE_STATE_DELETING",
+				IsBillable:    true,
+				BillableSince: &startedAt,
+				BMaaSMeterState: projection.BMaaSMeterState{
+					Allocation: projection.MeterState{
+						ActiveSince: &startedAt, FirstStartedAt: &startedAt,
+					},
+					Consumption: projection.MeterState{
+						ActiveSince: &startedAt, FirstStartedAt: &startedAt,
+					},
+				},
+				TransitionTime:     deletionRequestedAt,
+				FulfillmentVersion: 4,
+				BillingDimensions:  map[string]any{"bm_instance_type": "bmi-type-gpu-large", "catalog_item": "catalog-item-1"},
+			}
+
+			bmi := makeBareMetalInstance("bmi-delete", "tenant-1")
+			bmi.Metadata.Version = 4
+			bmi.Metadata.DeletionTimestamp = timestamppb.New(deletionRequestedAt)
+			bmi.Status.State = privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_DELETING
+			event := &privatev1.Event{
+				Id:        "evt-bmi-delete",
+				Type:      privatev1.EventType_EVENT_TYPE_OBJECT_DELETED,
+				Timestamp: timestamppb.New(deletionCompletedAt),
+				Payload:   &privatev1.Event_BareMetalInstance{BareMetalInstance: bmi},
+			}
+			client.results = []mockStreamResult{{stream: &mockWatchStream{
+				responses: []*privatev1.EventsWatchResponse{makeResponse(event)},
+			}}}
+
+			pub := &mockPublisher{published: make([]cloudevents.Event, 0, 3)}
+			consumer := newConsumerWithStore(pub, store)
+			done := make(chan error, 1)
+			go func() { done <- consumer.Run(ctx) }()
+			Eventually(func() int {
+				pub.mu.Lock()
+				defer pub.mu.Unlock()
+				return len(pub.published)
+			}, time.Second).Should(Equal(3))
+			cancel()
+			Eventually(done, time.Second).Should(Receive(BeNil()))
+
+			pub.mu.Lock()
+			Expect(pub.published[0].ID()).To(Equal("evt-bmi-delete/allocation"))
+			Expect(pub.published[1].ID()).To(Equal("evt-bmi-delete/consumption"))
+			Expect(pub.published[2].ID()).To(Equal("evt-bmi-delete"))
+			Expect(pub.published[0].Time()).To(Equal(deletionCompletedAt))
+			Expect(pub.published[1].Time()).To(Equal(deletionCompletedAt))
+			Expect(pub.published[2].Time()).To(Equal(deletionCompletedAt))
+			pub.mu.Unlock()
+
+			store.mu.Lock()
+			Expect(store.states).NotTo(HaveKey("bmi-delete"))
+			store.mu.Unlock()
+		})
+
+		It("resumes both BMaaS meters after recovery from FAILED", func() {
+			store := newMockStore()
+			failedAt := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
+			recoveredAt := failedAt.Add(time.Hour)
+			store.states["bmi-recovered"] = projection.ResourceState{
+				ResourceID:         "bmi-recovered",
+				ResourceType:       events.ResourceTypeBareMetalInstance,
+				TenantID:           "tenant-1",
+				CurrentState:       "BARE_METAL_INSTANCE_STATE_FAILED",
+				EverBillable:       true,
+				TransitionTime:     failedAt,
+				FulfillmentVersion: 3,
+				BMaaSMeterState: projection.BMaaSMeterState{
+					Allocation:  projection.MeterState{FirstStartedAt: &failedAt},
+					Consumption: projection.MeterState{FirstStartedAt: &failedAt},
+				},
+				BillingDimensions: map[string]any{
+					"bm_instance_type": "bmi-type-gpu-large",
+					"catalog_item":     "catalog-item-1",
+				},
+			}
+
+			bmi := makeBareMetalInstance("bmi-recovered", "tenant-1")
+			bmi.Metadata.Version = 4
+			bmi.Status.State = privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_RUNNING
+			bmi.Status.StateTransitionTime = timestamppb.New(recoveredAt)
+			event := &privatev1.Event{
+				Id:      "evt-bmi-recovered",
+				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED,
+				Payload: &privatev1.Event_BareMetalInstance{BareMetalInstance: bmi},
+			}
+			client.results = []mockStreamResult{{stream: &mockWatchStream{
+				responses: []*privatev1.EventsWatchResponse{makeResponse(event)},
+			}}}
+
+			pub := &mockPublisher{published: make([]cloudevents.Event, 0, 2)}
+			consumer := newConsumerWithStore(pub, store)
+			done := make(chan error, 1)
+			go func() { done <- consumer.Run(ctx) }()
+			Eventually(func() int {
+				pub.mu.Lock()
+				defer pub.mu.Unlock()
+				return len(pub.published)
+			}, time.Second).Should(Equal(2))
+			cancel()
+			Eventually(done, time.Second).Should(Receive(BeNil()))
+
+			pub.mu.Lock()
+			Expect(pub.published[0].Type()).To(Equal(events.EventResumed))
+			Expect(pub.published[1].Type()).To(Equal(events.EventResumed))
+			pub.mu.Unlock()
+
+			store.mu.Lock()
+			updated := store.states["bmi-recovered"]
+			Expect(updated.CurrentState).To(Equal("BARE_METAL_INSTANCE_STATE_RUNNING"))
+			Expect(updated.BillableSince).NotTo(BeNil())
+			Expect(updated.ComponentBillableSince).To(BeNil())
+			store.mu.Unlock()
+		})
+
+		It("does not republish a duplicate BMaaS transition", func() {
+			store := newMockStore()
+			t0 := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
+			store.states["bmi-duplicate"] = projection.ResourceState{
+				ResourceID:    "bmi-duplicate",
+				ResourceType:  events.ResourceTypeBareMetalInstance,
+				TenantID:      "tenant-1",
+				CurrentState:  "BARE_METAL_INSTANCE_STATE_RUNNING",
+				IsBillable:    true,
+				BillableSince: &t0,
+				BMaaSMeterState: projection.BMaaSMeterState{
+					Allocation: projection.MeterState{
+						ActiveSince: &t0, FirstStartedAt: &t0,
+					},
+					Consumption: projection.MeterState{
+						ActiveSince: &t0, FirstStartedAt: &t0,
+					},
+				},
+				TransitionTime:     t0,
+				FulfillmentVersion: 1,
+				BillingDimensions:  map[string]any{"bm_instance_type": "bmi-type-gpu-large", "catalog_item": "catalog-item-1"},
+			}
+
+			bmi := makeBareMetalInstance("bmi-duplicate", "tenant-1")
+			bmi.Metadata.Version = 2
+			bmi.Status.State = privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_STOPPING
+			bmi.Status.StateTransitionTime = timestamppb.New(t0.Add(time.Hour))
+			event := &privatev1.Event{
+				Id:      "evt-bmi-duplicate",
+				Type:    privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED,
+				Payload: &privatev1.Event_BareMetalInstance{BareMetalInstance: bmi},
+			}
+			client.results = []mockStreamResult{{stream: &mockWatchStream{
+				ctx:       ctx,
+				responses: []*privatev1.EventsWatchResponse{makeResponse(event), makeResponse(event)},
+			}}}
+
+			pub := &mockPublisher{published: make([]cloudevents.Event, 0, 1), cancelFunc: cancel}
+			consumer := newConsumerWithStore(pub, store)
+			Expect(consumer.Run(ctx)).To(Succeed())
+
+			pub.mu.Lock()
+			defer pub.mu.Unlock()
+			Expect(pub.published).To(HaveLen(1))
+			Expect(pub.published[0].ID()).To(Equal("evt-bmi-duplicate/consumption"))
 		})
 	})
 })
