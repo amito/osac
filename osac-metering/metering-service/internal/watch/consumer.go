@@ -378,7 +378,7 @@ func projectionIsAhead(existing *projection.ResourceState, version int32, curren
 	if existing == nil {
 		return false
 	}
-	if existing.Deleted && version <= existing.FulfillmentVersion {
+	if existing.Deleted {
 		return true
 	}
 	if existing.FulfillmentVersion > version {
@@ -567,6 +567,9 @@ func (c *Consumer) handleBareMetalDeletion(
 	dims map[string]any,
 	transitionTime time.Time,
 ) error {
+	if existing != nil && existing.Deleted {
+		return nil
+	}
 	previousState := ""
 	if existing != nil {
 		previousState = existing.CurrentState

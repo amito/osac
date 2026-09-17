@@ -86,11 +86,13 @@ func (s *PostgresStore) Upsert(ctx context.Context, state ResourceState) error {
 		return fmt.Errorf("locking resource state %s: %w", state.ResourceID, err)
 	}
 
-	// Reject strictly older versions. Same-version upserts are allowed so that
-	// a replayed event (e.g. after publish failure) can re-process without being
-	// silently dropped — the projection write is idempotent for the same version.
-	if storedVersion != nil && (*storedVersion > state.FulfillmentVersion ||
-		(storedDeletedAt != nil && *storedVersion >= state.FulfillmentVersion)) {
+	// Tombstones are terminal for this resource ID. Same-version upserts on a
+	// live row remain allowed so a replay after publish failure can re-process
+	// idempotently, but no delayed event may revive a deleted row.
+	if storedDeletedAt != nil {
+		return ErrStaleVersion
+	}
+	if storedVersion != nil && *storedVersion > state.FulfillmentVersion {
 		return ErrStaleVersion
 	}
 
@@ -120,7 +122,8 @@ func (s *PostgresStore) Upsert(ctx context.Context, state ResourceState) error {
 			component_billable_since = EXCLUDED.component_billable_since,
 			deleted_at = NULL,
 			updated_at = NOW()
-		WHERE metering_resource_state.fulfillment_version <= EXCLUDED.fulfillment_version`,
+		WHERE metering_resource_state.deleted_at IS NULL
+		  AND metering_resource_state.fulfillment_version <= EXCLUDED.fulfillment_version`,
 		state.ResourceID,
 		state.ResourceType,
 		state.TenantID,
@@ -166,7 +169,13 @@ func (s *PostgresStore) Upsert(ctx context.Context, state ResourceState) error {
 }
 
 func (s *PostgresStore) DeleteIfVersion(ctx context.Context, resourceID string, version int32) (bool, error) {
-	result, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("beginning tombstone transaction for %s: %w", resourceID, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	result, err := tx.Exec(ctx, `
 		UPDATE metering_resource_state
 		SET deleted_at = NOW(), fulfillment_version = GREATEST(fulfillment_version, $2),
 		    billable_since = NULL, component_billable_since = '{}'::JSONB, updated_at = NOW()
@@ -175,7 +184,20 @@ func (s *PostgresStore) DeleteIfVersion(ctx context.Context, resourceID string, 
 	if err != nil {
 		return false, fmt.Errorf("tombstoning resource state %s: %w", resourceID, err)
 	}
-	return result.RowsAffected() == 1, nil
+	if result.RowsAffected() != 1 {
+		return false, nil
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE metering_resource_meter_state
+		SET active_since = NULL
+		WHERE resource_id = $1`, resourceID); err != nil {
+		return false, fmt.Errorf("clearing BMaaS meter state %s: %w", resourceID, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("committing tombstone for %s: %w", resourceID, err)
+	}
+	return true, nil
 }
 
 func (s *PostgresStore) ListBillable(ctx context.Context) ([]ResourceState, error) {
@@ -309,6 +331,12 @@ func scanResourceState(row rowScanner) (*ResourceState, error) {
 	if state.ResourceType == schema.ResourceTypeBareMetalInstance {
 		state.BillableSince = allocationActive
 		state.IsBillable = allocationActive != nil
+	}
+	if state.Deleted {
+		state.IsBillable = false
+		state.BillableSince = nil
+		state.BMaaSMeterState.Allocation.ActiveSince = nil
+		state.BMaaSMeterState.Consumption.ActiveSince = nil
 	}
 	return &state, nil
 }

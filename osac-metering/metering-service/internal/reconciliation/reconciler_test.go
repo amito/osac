@@ -178,8 +178,7 @@ func (s *mockStore) Upsert(_ context.Context, st projection.ResourceState) error
 		}
 	}
 	if existing, ok := s.states[st.ResourceID]; ok &&
-		(existing.FulfillmentVersion > st.FulfillmentVersion ||
-			(existing.Deleted && existing.FulfillmentVersion >= st.FulfillmentVersion)) {
+		(existing.Deleted || existing.FulfillmentVersion > st.FulfillmentVersion) {
 		return projection.ErrStaleVersion
 	}
 	s.states[st.ResourceID] = st
@@ -199,6 +198,8 @@ func (s *mockStore) DeleteIfVersion(_ context.Context, id string, version int32)
 	state.IsBillable = false
 	state.BillableSince = nil
 	state.ComponentBillableSince = nil
+	state.BMaaSMeterState.Allocation.ActiveSince = nil
+	state.BMaaSMeterState.Consumption.ActiveSince = nil
 	s.states[id] = state
 	return true, nil
 }
