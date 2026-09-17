@@ -25,9 +25,9 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/osac-project/osac-metering/internal/events"
+	"github.com/osac-project/osac-metering/internal/heartbeat"
 	kafkapub "github.com/osac-project/osac-metering/internal/kafka"
 	"github.com/osac-project/osac-metering/internal/projection"
-	"github.com/osac-project/osac-metering/schema"
 	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
 )
 
@@ -365,6 +365,7 @@ func (r *Reconciler) reconcileMissedDeletions(ctx context.Context, fulfillmentSt
 	corrections := 0
 	computeSkipLogged := false
 	clusterSkipLogged := false
+	bmaasSkipLogged := false
 
 	for id, ps := range projMap {
 		if _, exists := fulfillmentState[id]; !exists {
@@ -379,6 +380,13 @@ func (r *Reconciler) reconcileMissedDeletions(ctx context.Context, fulfillmentSt
 				if !clusterSkipLogged {
 					r.logger.Info("skipping cluster_order missed deletion checks, no cluster client configured")
 					clusterSkipLogged = true
+				}
+				continue
+			}
+			if ps.ResourceType == events.ResourceTypeBareMetalInstance {
+				if !bmaasSkipLogged {
+					r.logger.Info("skipping bare_metal_instance missed deletion checks, no BMI client configured")
+					bmaasSkipLogged = true
 				}
 				continue
 			}
@@ -793,11 +801,7 @@ func buildSyntheticHeartbeats(ps projection.ResourceState, now time.Time) ([]clo
 		}
 		baseID = fmt.Sprintf("%s/%s", baseID, identity)
 	}
-	buildFn := func(dims map[string]any, eventID string) (cloudevents.Event, error) {
-		return buildSingleSyntheticHeartbeat(ps, dims, eventID, now)
-	}
-
-	return events.BuildResourceEvents(ps.ResourceType, ps.BillingDimensions, baseID, buildFn)
+	return heartbeat.BuildHeartbeatEvents(&ps, baseID, now, "osac-metering/reconciler")
 }
 
 func reconciliationTransitionTime(resource fulfillmentResource, now time.Time) (time.Time, error) {
@@ -835,33 +839,4 @@ func staleReferencePoint(ps projection.ResourceState, now time.Time) time.Time {
 		return *ps.BillableSince
 	}
 	return now
-}
-
-func buildSingleSyntheticHeartbeat(ps projection.ResourceState, billingDims map[string]any, eventID string, now time.Time) (cloudevents.Event, error) {
-	ce := cloudevents.NewEvent()
-	ce.SetID(eventID)
-	ce.SetSource("osac-metering/reconciler")
-	ce.SetType(events.EventHeartbeat)
-	ce.SetTime(now)
-	events.SetOSACExtensions(&ce, ps.ResourceID, ps.ResourceType, ps.TenantID, ps.ProjectID)
-
-	var durationSeconds float64
-	if ps.BillableSince != nil {
-		durationSeconds = now.Sub(*ps.BillableSince).Seconds()
-	}
-
-	data := map[string]any{
-		"resource_id":        ps.ResourceID,
-		"resource_type":      ps.ResourceType,
-		"tenant_id":          ps.TenantID,
-		"project_id":         events.NilIfEmpty(ps.ProjectID),
-		"current_state":      ps.CurrentState,
-		"duration_seconds":   durationSeconds,
-		"billing_dimensions": billingDims,
-		"schema_version":     schema.SchemaVersion,
-	}
-	if err := ce.SetData(cloudevents.ApplicationJSON, data); err != nil {
-		return ce, fmt.Errorf("setting synthetic heartbeat CloudEvent data: %w", err)
-	}
-	return ce, nil
 }
