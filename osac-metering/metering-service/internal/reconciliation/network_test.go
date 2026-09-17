@@ -42,8 +42,7 @@ func (s *networkMockStore) Upsert(_ context.Context, state projection.ResourceSt
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing, ok := s.states[state.ResourceID]; ok &&
-		(existing.FulfillmentVersion > state.FulfillmentVersion ||
-			(existing.Deleted && existing.FulfillmentVersion >= state.FulfillmentVersion)) {
+		(existing.Deleted || existing.FulfillmentVersion > state.FulfillmentVersion) {
 		return projection.ErrStaleVersion
 	}
 	s.states[state.ResourceID] = state
@@ -64,6 +63,8 @@ func (s *networkMockStore) DeleteIfVersion(_ context.Context, id string, version
 	state.IsBillable = false
 	state.BillableSince = nil
 	state.ComponentBillableSince = nil
+	state.BMaaSMeterState.Allocation.ActiveSince = nil
+	state.BMaaSMeterState.Consumption.ActiveSince = nil
 	s.states[id] = state
 	return true, nil
 }

@@ -358,7 +358,40 @@ var _ = Describe("PostgresStore", func() {
 
 			newest := newer
 			newest.FulfillmentVersion++
-			Expect(store.Upsert(ctx, newest)).To(Succeed())
+			Expect(store.Upsert(ctx, newest)).To(MatchError(projection.ErrStaleVersion))
+		})
+
+		It("clears active BMaaS meter intervals when tombstoning", func() {
+			ctx := context.Background()
+			state := makeState("bmi-delete-meters", 4)
+			state.ResourceType = schema.ResourceTypeBareMetalInstance
+			allocationSince := state.TransitionTime.Add(-2 * time.Hour)
+			consumptionSince := state.TransitionTime.Add(-time.Hour)
+			state.BMaaSMeterState = projection.BMaaSMeterState{
+				Allocation: projection.MeterState{
+					ActiveSince:    &allocationSince,
+					FirstStartedAt: &allocationSince,
+				},
+				Consumption: projection.MeterState{
+					ActiveSince:    &consumptionSince,
+					FirstStartedAt: &consumptionSince,
+				},
+			}
+			Expect(store.Upsert(ctx, state)).To(Succeed())
+
+			deleted, err := store.DeleteIfVersion(ctx, state.ResourceID, state.FulfillmentVersion)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(deleted).To(BeTrue())
+
+			got, err := store.Get(ctx, state.ResourceID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(got.Deleted).To(BeTrue())
+			Expect(got.IsBillable).To(BeFalse())
+			Expect(got.BillableSince).To(BeNil())
+			Expect(got.BMaaSMeterState.Allocation.ActiveSince).To(BeNil())
+			Expect(got.BMaaSMeterState.Consumption.ActiveSince).To(BeNil())
+			Expect(got.BMaaSMeterState.Allocation.FirstStartedAt).ToNot(BeNil())
+			Expect(got.BMaaSMeterState.Consumption.FirstStartedAt).ToNot(BeNil())
 		})
 
 		It("retains a deletion tombstone for an existing resource", func() {
