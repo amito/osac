@@ -271,7 +271,6 @@ func run(ctx context.Context, logger logr.Logger, cfg *config) error {
 
 	hbGen := heartbeat.NewGenerator(store, publisher, logger, cfg.heartbeatInterval)
 	hbGen.SetBMaaSPresence(bmaasPresence)
-	hbGen.SetBMaaSPresence(bmaasPresence)
 
 	var wg sync.WaitGroup
 
