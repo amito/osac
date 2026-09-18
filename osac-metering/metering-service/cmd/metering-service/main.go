@@ -232,7 +232,6 @@ func run(ctx context.Context, logger logr.Logger, cfg *config) error {
 	if cfg.enableBMaaS {
 		bareMetalClient = privatev1.NewBareMetalInstancesClient(grpcConn)
 	}
-	replaySource := reconciliation.NewUnavailableBMaaSReplaySource()
 	bmaasPresence := heartbeat.NewBMaaSPresence()
 	reconciler := reconciliation.NewReconciler(
 		computeClient,
@@ -242,14 +241,12 @@ func run(ctx context.Context, logger logr.Logger, cfg *config) error {
 		externalIPPoolClient,
 		volumeClient,
 		bareMetalClient,
-		replaySource,
 		store,
 		publisher,
 		logger,
 		cfg.heartbeatInterval,
 		cfg.deploymentID,
-	)
-	pools, err := reconciliation.LoadExternalIPPools(ctx, externalIPPoolClient)
+	)	pools, err := reconciliation.LoadExternalIPPools(ctx, externalIPPoolClient)
 	if err != nil {
 		return fmt.Errorf("loading external IP pool families: %w", err)
 	}

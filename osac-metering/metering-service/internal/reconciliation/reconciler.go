@@ -87,40 +87,6 @@ type BareMetalInstancesClient interface {
 	List(ctx context.Context, in *privatev1.BareMetalInstancesListRequest, opts ...grpc.CallOption) (*privatev1.BareMetalInstancesListResponse, error)
 }
 
-var ErrBMaaSReplayUnavailable = errors.New("BMaaS replay unavailable")
-
-// BMaaSReplayRecord is the mapped form of one durable fulfillment event.
-// Records are returned in source order and preserve the event identity and
-// authoritative transition timestamp needed for deterministic replay.
-type BMaaSReplayRecord struct {
-	ResourceID     string
-	TenantID       string
-	ProjectID      string
-	State          string
-	Version        int32
-	EventType      privatev1.EventType
-	EventID        string
-	BillingDims    map[string]any
-	TransitionTime time.Time
-}
-
-type BMaaSReplaySource interface {
-	// Replay returns records with versions in (fromVersion, toVersion], in
-	// oldest-first order. OBJECT_DELETED may reuse the prior version and is
-	// therefore also returned when its version equals fromVersion.
-	Replay(ctx context.Context, resourceID string, fromVersion, toVersion int32) ([]BMaaSReplayRecord, error)
-}
-
-type unavailableBMaaSReplaySource struct{}
-
-func NewUnavailableBMaaSReplaySource() BMaaSReplaySource {
-	return unavailableBMaaSReplaySource{}
-}
-
-func (unavailableBMaaSReplaySource) Replay(context.Context, string, int32, int32) ([]BMaaSReplayRecord, error) {
-	return nil, ErrBMaaSReplayUnavailable
-}
-
 type Reconciler struct {
 	computeClient        ComputeInstancesClient
 	clusterClient        ClustersClient
@@ -130,7 +96,6 @@ type Reconciler struct {
 	volumeClient         VolumesClient
 	deploymentID         string
 	bareMetalClient      BareMetalInstancesClient
-	replaySource         BMaaSReplaySource
 	store                projection.Store
 	publisher            kafkapub.EventPublisher
 	logger               logr.Logger
@@ -167,16 +132,12 @@ func NewReconciler(
 	externalIPPoolClient ExternalIPPoolsClient,
 	volumeClient VolumesClient,
 	bareMetalClient BareMetalInstancesClient,
-	replaySource BMaaSReplaySource,
 	store projection.Store,
 	publisher kafkapub.EventPublisher,
 	logger logr.Logger,
 	heartbeatInterval time.Duration,
 	deploymentID string,
 ) *Reconciler {
-	if replaySource == nil {
-		replaySource = NewUnavailableBMaaSReplaySource()
-	}
 	return &Reconciler{
 		computeClient:        computeClient,
 		clusterClient:        clusterClient,
@@ -185,7 +146,6 @@ func NewReconciler(
 		externalIPPoolClient: externalIPPoolClient,
 		volumeClient:         volumeClient,
 		bareMetalClient:      bareMetalClient,
-		replaySource:         replaySource,
 		store:                store,
 		publisher:            publisher,
 		logger:               logger,
@@ -193,8 +153,7 @@ func NewReconciler(
 		deploymentID:         deploymentID,
 		unavailableTypes:     make(map[string]struct{}),
 		bmaasHolds:           make(map[string]struct{}),
-		bmaasHoldMetrics:     make(map[string]struct{}),
-	}
+		bmaasHoldMetrics:     make(map[string]struct{})}
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context) error {
@@ -491,68 +450,9 @@ func (r *Reconciler) reconcileBareMetalFulfillmentResource(ctx context.Context, 
 	}
 	transitionTime := fs.transitionTime.UTC()
 	if !exists {
-		records, err := r.replay(ctx, id, 0, fs.version)
-		if err != nil {
-			if !errors.Is(err, ErrBMaaSReplayUnavailable) {
-				return 0, err
-			}
-			r.holdBMaaS(id, "missing_replay")
-			r.logger.Info("holding bare metal instance reconciliation while history is unavailable", "resource_id", id, "error", err)
-			return 0, nil
-		}
-		expectedVersion := int32(1)
-		for _, record := range records {
-			if record.State == "" || record.TransitionTime.IsZero() || record.Version != expectedVersion || record.EventType == privatev1.EventType_EVENT_TYPE_OBJECT_DELETED {
-				r.holdBMaaS(id, "incomplete_history")
-				r.logger.Info("holding bare metal instance reconciliation with incomplete creation history", "resource_id", id)
-				return 0, nil
-			}
-			expectedVersion++
-		}
-		if len(records) == 0 {
-			r.holdBMaaS(id, "incomplete_history")
-			r.logger.Info("holding bare metal instance reconciliation with incomplete history", "resource_id", id)
-			return 0, nil
-		}
-		lastRecord := records[len(records)-1]
-		if lastRecord.Version != fs.version || lastRecord.State != fs.state || lastRecord.BillingDims == nil || !events.DimensionsEqual(lastRecord.BillingDims, fs.billingDimensions) {
-			r.holdBMaaS(id, "replay_endpoint_drift")
-			r.logger.Info("holding bare metal instance reconciliation with replay endpoint drift", "resource_id", id)
-			return 0, nil
-		}
-		corrections := 0
-		state := projection.ResourceState{}
-		for _, record := range records {
-			recordFS := fulfillmentResource{
-				resourceType:      events.ResourceTypeBareMetalInstance,
-				state:             record.State,
-				version:           record.Version,
-				tenantID:          record.TenantID,
-				projectID:         record.ProjectID,
-				billingDimensions: record.BillingDims,
-				transitionTime:    record.TransitionTime,
-			}
-			if recordFS.tenantID == "" {
-				recordFS.tenantID = fs.tenantID
-			}
-			if recordFS.projectID == "" {
-				recordFS.projectID = fs.projectID
-			}
-			if recordFS.billingDimensions == nil {
-				recordFS.billingDimensions = fs.billingDimensions
-			}
-			n, next, applyErr := r.applyBMaaSTransition(ctx, id, state, recordFS, MissedCreation, false)
-			if applyErr != nil {
-				return corrections, applyErr
-			}
-			if n == 0 && next.FulfillmentVersion == state.FulfillmentVersion && next.CurrentState == state.CurrentState {
-				r.holdBMaaS(id, "incomplete_history")
-				return corrections, nil
-			}
-			corrections += n
-			state = next
-		}
-		return corrections, nil
+		r.holdBMaaS(id, "history_unavailable")
+		r.logger.Info("holding bare metal instance reconciliation until reliable history is available", "resource_id", id)
+		return 0, nil
 	}
 
 	if fs.version < ps.FulfillmentVersion {
@@ -563,7 +463,9 @@ func (r *Reconciler) reconcileBareMetalFulfillmentResource(ctx context.Context, 
 	if fs.version > ps.FulfillmentVersion+1 ||
 		(fs.version > ps.FulfillmentVersion && ps.CurrentState == fs.state && events.DimensionsEqual(ps.BillingDimensions, fs.billingDimensions)) ||
 		(ps.CurrentState == "RUNNING" && fs.state == "STOPPED") {
-		return r.replayBMaaSGap(ctx, id, ps, fs)
+		r.holdBMaaS(id, "history_unavailable")
+		r.logger.Info("holding bare metal instance reconciliation until reliable history is available", "resource_id", id)
+		return 0, nil
 	}
 	reason := StateDrift
 	dimensionDrift := false
@@ -616,15 +518,9 @@ func (r *Reconciler) reconcileBareMetalFulfillmentResource(ctx context.Context, 
 				return 0, nil
 			}
 		} else {
-			resolvedIntervals, boundaryTime, ok, resolveErr := r.resolveBMaaSClosure(ctx, id, fs.version, fs.state, intervals, allocationEffect, consumptionEffect)
-			if resolveErr != nil {
-				return 0, resolveErr
-			}
-			if !ok {
-				return 0, nil
-			}
-			intervals = resolvedIntervals
-			transitionTime = boundaryTime
+			r.holdBMaaS(id, "history_unavailable")
+			r.logger.Info("holding bare metal instance closure until reliable history is available", "resource_id", id)
+			return 0, nil
 		}
 	}
 	published, err := r.publishBMaaSCorrections(ctx, id, fs.tenantID, fs.projectID, reason, ps.CurrentState, fs.state,
@@ -670,50 +566,6 @@ func bmaasClosureIntervalsComplete(intervals events.BMaaSMeterIntervals, allocat
 	return consumptionEffect != events.BMaaSEffectSuspend || intervals.ConsumptionSince != nil
 }
 
-func (r *Reconciler) resolveBMaaSClosure(ctx context.Context, id string, sourceVersion int32, boundaryState string, intervals events.BMaaSMeterIntervals, allocationEffect, consumptionEffect string) (events.BMaaSMeterIntervals, time.Time, bool, error) {
-	records, err := r.replay(ctx, id, sourceVersion-1, sourceVersion)
-	if err != nil {
-		if !errors.Is(err, ErrBMaaSReplayUnavailable) {
-			return events.BMaaSMeterIntervals{}, time.Time{}, false, err
-		}
-		r.holdBMaaS(id, "missing_replay")
-		r.logger.Info("holding bare metal instance closure while history is unavailable", "resource_id", id, "error", err)
-		return events.BMaaSMeterIntervals{}, time.Time{}, false, nil
-	}
-	boundaryTime, ok := replayStateBoundary(records, boundaryState)
-	if !ok {
-		r.holdBMaaS(id, "missing_replay_boundary")
-		r.logger.Info("holding bare metal instance closure without authoritative boundary", "resource_id", id)
-		return events.BMaaSMeterIntervals{}, time.Time{}, false, nil
-	}
-	if !bmaasClosureIntervalsComplete(intervals, allocationEffect, consumptionEffect) {
-		r.holdBMaaS(id, "incomplete_closure_intervals")
-		r.logger.Info("holding bare metal instance closure with incomplete meter intervals", "resource_id", id)
-		return events.BMaaSMeterIntervals{}, time.Time{}, false, nil
-	}
-	return intervals, boundaryTime, true, nil
-}
-
-func (r *Reconciler) resolveBMaaSDeletionBoundary(ctx context.Context, id string, sourceVersion int32) (time.Time, bool, error) {
-	records, err := r.replay(ctx, id, sourceVersion, sourceVersion)
-	if err != nil {
-		if !errors.Is(err, ErrBMaaSReplayUnavailable) {
-			return time.Time{}, false, err
-		}
-		r.holdBMaaS(id, "missing_replay")
-		r.logger.Info("holding bare metal instance deletion while history is unavailable", "resource_id", id, "error", err)
-		return time.Time{}, false, nil
-	}
-	for _, record := range records {
-		if record.EventType == privatev1.EventType_EVENT_TYPE_OBJECT_DELETED && !record.TransitionTime.IsZero() {
-			return record.TransitionTime.UTC(), true, nil
-		}
-	}
-	r.holdBMaaS(id, "missing_replay_boundary")
-	r.logger.Info("holding bare metal instance deletion without an authoritative deletion event", "resource_id", id)
-	return time.Time{}, false, nil
-}
-
 func bmaasActiveCorrectionEffect(active bool) string {
 	if active {
 		return events.BMaaSEffectStart
@@ -748,151 +600,6 @@ func (r *Reconciler) holdBMaaS(id string, reasons ...string) {
 		r.bmaasHoldMetrics[key] = struct{}{}
 		bmaasReconciliationHolds.WithLabelValues(reason).Inc()
 	}
-}
-
-func (r *Reconciler) replay(ctx context.Context, resourceID string, fromVersion, toVersion int32) ([]BMaaSReplayRecord, error) {
-	if r.replaySource == nil {
-		return nil, ErrBMaaSReplayUnavailable
-	}
-	return r.replaySource.Replay(ctx, resourceID, fromVersion, toVersion)
-}
-
-func (r *Reconciler) replayBMaaSGap(ctx context.Context, id string, existing projection.ResourceState, target fulfillmentResource) (int, error) {
-	records, err := r.replay(ctx, id, existing.FulfillmentVersion, target.version)
-	if err != nil {
-		if !errors.Is(err, ErrBMaaSReplayUnavailable) {
-			return 0, err
-		}
-		r.holdBMaaS(id, "missing_replay")
-		r.logger.Info("holding bare metal instance reconciliation while replay is unavailable", "resource_id", id, "error", err)
-		return 0, nil
-	}
-	if len(records) == 0 || records[len(records)-1].Version != target.version {
-		r.holdBMaaS(id, "non_contiguous_replay")
-		r.logger.Info("holding bare metal instance reconciliation with incomplete replay", "resource_id", id)
-		return 0, nil
-	}
-	expectedVersion := existing.FulfillmentVersion + 1
-	sawStopping := existing.CurrentState != "RUNNING" || target.state != "STOPPED"
-	for _, record := range records {
-		if record.State == "" || record.TransitionTime.IsZero() || record.Version != expectedVersion || record.EventType == privatev1.EventType_EVENT_TYPE_OBJECT_DELETED {
-			r.holdBMaaS(id, "non_contiguous_replay")
-			r.logger.Info("holding bare metal instance reconciliation with non-contiguous replay", "resource_id", id)
-			return 0, nil
-		}
-		if existing.CurrentState == "RUNNING" && target.state == "STOPPED" {
-			if record.State == "STOPPING" {
-				sawStopping = true
-			}
-			if record.State == "STOPPED" && !sawStopping {
-				r.holdBMaaS(id, "incomplete_history")
-				r.logger.Info("holding bare metal instance reconciliation without STOPPING boundary", "resource_id", id)
-				return 0, nil
-			}
-		}
-		expectedVersion++
-	}
-	if records[len(records)-1].State != target.state {
-		r.holdBMaaS(id, "replay_endpoint_drift")
-		r.logger.Info("holding bare metal instance reconciliation with replay endpoint drift", "resource_id", id)
-		return 0, nil
-	}
-
-	corrections := 0
-	state := existing
-	for _, record := range records {
-		fs := fulfillmentResource{
-			resourceType:      events.ResourceTypeBareMetalInstance,
-			state:             record.State,
-			version:           record.Version,
-			tenantID:          record.TenantID,
-			projectID:         record.ProjectID,
-			billingDimensions: record.BillingDims,
-			transitionTime:    record.TransitionTime,
-		}
-		if fs.tenantID == "" {
-			fs.tenantID = target.tenantID
-		}
-		if fs.projectID == "" {
-			fs.projectID = target.projectID
-		}
-		if fs.billingDimensions == nil {
-			fs.billingDimensions = target.billingDimensions
-		}
-		n, next, applyErr := r.applyBMaaSTransition(ctx, id, state, fs, StateDrift, false)
-		if applyErr != nil {
-			return corrections, applyErr
-		}
-		if n == 0 && next.FulfillmentVersion == state.FulfillmentVersion && next.CurrentState == state.CurrentState {
-			return corrections, nil
-		}
-		corrections += n
-		state = next
-	}
-	return corrections, nil
-}
-
-func (r *Reconciler) applyBMaaSTransition(ctx context.Context, id string, ps projection.ResourceState, fs fulfillmentResource, reason CorrectionReason, resolveClosure bool) (int, projection.ResourceState, error) {
-	allocationEffect, err := events.ResolveAllocationTransition(ps.CurrentState, fs.state)
-	if err != nil {
-		r.holdBMaaS(id, "unobserved_transition")
-		return 0, ps, nil
-	}
-	consumptionEffect, err := events.ResolveConsumptionTransition(ps.CurrentState, fs.state)
-	if err != nil {
-		r.holdBMaaS(id, "unobserved_transition")
-		return 0, ps, nil
-	}
-	intervals := bmaasIntervals(ps)
-	transitionTime := fs.transitionTime.UTC()
-	if allocationEffect == events.BMaaSEffectStart || allocationEffect == events.BMaaSEffectResume {
-		if intervals.AllocationSince == nil && events.IsAllocationBillableState(fs.state) {
-			intervals.AllocationSince = &transitionTime
-		}
-	}
-	if consumptionEffect == events.BMaaSEffectStart || consumptionEffect == events.BMaaSEffectResume {
-		if intervals.ConsumptionSince == nil && events.IsConsumptionBillableState(fs.state) {
-			intervals.ConsumptionSince = &transitionTime
-		}
-	}
-	if bmaasHasClosure(allocationEffect, consumptionEffect) && !bmaasClosureIntervalsComplete(intervals, allocationEffect, consumptionEffect) {
-		r.holdBMaaS(id, "incomplete_closure_intervals")
-		return 0, ps, nil
-	}
-	if resolveClosure && bmaasHasClosure(allocationEffect, consumptionEffect) {
-		resolvedIntervals, boundaryTime, ok, resolveErr := r.resolveBMaaSClosure(ctx, id, fs.version, fs.state, intervals, allocationEffect, consumptionEffect)
-		if resolveErr != nil {
-			return 0, ps, resolveErr
-		}
-		if !ok {
-			return 0, ps, nil
-		}
-		intervals = resolvedIntervals
-		transitionTime = boundaryTime
-	}
-	published, err := r.publishBMaaSCorrections(ctx, id, fs.tenantID, fs.projectID, reason, ps.CurrentState, fs.state,
-		fs.billingDimensions, intervals, allocationEffect, consumptionEffect,
-		ps.BMaaSMeterState.AllocationStarted, ps.BMaaSMeterState.ConsumptionStarted, transitionTime)
-	if err != nil {
-		return 0, ps, err
-	}
-	state := reconciledBMaaSState(id, ps, fs, intervals, allocationEffect, consumptionEffect, transitionTime)
-	if err := r.store.Upsert(ctx, state); err != nil {
-		if errors.Is(err, projection.ErrStaleVersion) {
-			return 0, ps, nil
-		}
-		return 0, ps, fmt.Errorf("upserting replay transition for %s: %w", id, err)
-	}
-	return boolToInt(published), state, nil
-}
-
-func replayStateBoundary(records []BMaaSReplayRecord, state string) (time.Time, bool) {
-	for _, record := range records {
-		if record.EventType == privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED && record.State == state && !record.TransitionTime.IsZero() {
-			return record.TransitionTime.UTC(), true
-		}
-	}
-	return time.Time{}, false
 }
 
 func reconciledBMaaSState(resourceID string, existing projection.ResourceState, fs fulfillmentResource, intervals events.BMaaSMeterIntervals, allocationEffect, consumptionEffect string, transitionTime time.Time) projection.ResourceState {
@@ -1003,38 +710,8 @@ func (r *Reconciler) reconcileMissedDeletions(ctx context.Context, fulfillmentSt
 					}
 					continue
 				}
-				allocationEffect := events.BMaaSEffectSkip
-				if ps.BillableSince != nil {
-					allocationEffect = events.BMaaSEffectSuspend
-				}
-				consumptionEffect := events.BMaaSEffectSkip
-				if _, active := ps.ComponentBillableSince[events.BMaaSMeterConsumption]; active {
-					consumptionEffect = events.BMaaSEffectSuspend
-				}
-				boundaryTime, ok, resolveErr := r.resolveBMaaSDeletionBoundary(ctx, id, ps.FulfillmentVersion)
-				if resolveErr != nil {
-					return corrections, resolveErr
-				}
-				if !ok {
-					continue
-				}
-				intervals := bmaasIntervals(ps)
-				published, err := r.publishBMaaSCorrections(ctx, id, ps.TenantID, ps.ProjectID, MissedDeletion,
-					ps.CurrentState, "", ps.BillingDimensions, intervals,
-					allocationEffect, consumptionEffect,
-					ps.BMaaSMeterState.AllocationStarted, ps.BMaaSMeterState.ConsumptionStarted, boundaryTime)
-				if err != nil {
-					return corrections, err
-				}
-				corrections += boolToInt(published)
-				deleted, err := r.store.DeleteIfVersion(ctx, id, ps.FulfillmentVersion)
-				if err != nil {
-					return corrections, fmt.Errorf("deleting missed deletion for %s: %w", id, err)
-				}
-				if !deleted {
-					r.logger.Info("skipping stale missed deletion after projection changed",
-						"resource_id", id, "projection_version", ps.FulfillmentVersion)
-				}
+				r.holdBMaaS(id, "history_unavailable")
+				r.logger.Info("holding bare metal instance deletion until reliable history is available", "resource_id", id)
 				continue
 			}
 			if ps.ResourceType == events.ResourceTypeExternalIP && r.externalIPClient == nil {

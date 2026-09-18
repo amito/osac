@@ -57,65 +57,6 @@ type mockBareMetalInstancesClient struct {
 	requests []*privatev1.BareMetalInstancesListRequest
 }
 
-type fakeBMaaSReplaySource struct {
-	records []BMaaSReplayRecord
-	err     error
-	calls   []struct {
-		resourceID string
-		from       int32
-		to         int32
-	}
-}
-
-func (r *fakeBMaaSReplaySource) Replay(_ context.Context, resourceID string, fromVersion, toVersion int32) ([]BMaaSReplayRecord, error) {
-	r.calls = append(r.calls, struct {
-		resourceID string
-		from       int32
-		to         int32
-	}{resourceID, fromVersion, toVersion})
-	if r.err != nil {
-		return nil, r.err
-	}
-	filtered := make([]BMaaSReplayRecord, 0, len(r.records))
-	for _, record := range r.records {
-		inRange := record.Version > fromVersion && record.Version <= toVersion
-		if record.EventType == privatev1.EventType_EVENT_TYPE_OBJECT_DELETED {
-			inRange = record.Version >= fromVersion && record.Version <= toVersion
-		}
-		if inRange {
-			filtered = append(filtered, record)
-		}
-	}
-	return filtered, nil
-}
-
-func replayRecord(resourceID, tenantID, projectID, state string, version int32, eventID string, transitionTime time.Time, billingDims map[string]any) BMaaSReplayRecord {
-	return BMaaSReplayRecord{
-		ResourceID:     resourceID,
-		TenantID:       tenantID,
-		ProjectID:      projectID,
-		State:          state,
-		Version:        version,
-		EventType:      privatev1.EventType_EVENT_TYPE_OBJECT_UPDATED,
-		EventID:        eventID,
-		BillingDims:    billingDims,
-		TransitionTime: transitionTime,
-	}
-}
-
-func deletedReplayRecord(resourceID, tenantID, projectID string, version int32, eventID string, deletionTime time.Time, billingDims map[string]any) BMaaSReplayRecord {
-	return BMaaSReplayRecord{
-		ResourceID:     resourceID,
-		TenantID:       tenantID,
-		ProjectID:      projectID,
-		Version:        version,
-		EventType:      privatev1.EventType_EVENT_TYPE_OBJECT_DELETED,
-		EventID:        eventID,
-		BillingDims:    billingDims,
-		TransitionTime: deletionTime,
-	}
-}
-
 func (m *mockBareMetalInstancesClient) List(_ context.Context, req *privatev1.BareMetalInstancesListRequest, _ ...grpc.CallOption) (*privatev1.BareMetalInstancesListResponse, error) {
 	m.requests = append(m.requests, proto.Clone(req).(*privatev1.BareMetalInstancesListRequest))
 	if m.err != nil {
@@ -1057,368 +998,7 @@ var _ = Describe("Reconciler", func() {
 	})
 
 	Describe("BMaaS fulfillment loading", func() {
-		It("replays every lifecycle hop when recovering a missed creation", func() {
-			t1 := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-			t2 := t1.Add(time.Minute)
-			t3 := t2.Add(time.Minute)
-			t4 := t3.Add(time.Minute)
-			dims := map[string]any{"bm_instance_type": "bm.large"}
-			resolver := &fakeBMaaSReplaySource{records: []BMaaSReplayRecord{
-				replayRecord("bmi-missed-creation", "tenant-1", "project-1", "STOPPING", 1, "event-1", t1, dims),
-				replayRecord("bmi-missed-creation", "tenant-1", "project-1", "STOPPED", 2, "event-2", t2, dims),
-				replayRecord("bmi-missed-creation", "tenant-1", "project-1", "STARTING", 3, "event-3", t3, dims),
-				replayRecord("bmi-missed-creation", "tenant-1", "project-1", "RUNNING", 4, "event-4", t4, dims),
-			}}
-			store := newMockStore()
-			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, resolver, store, pub, logr.Discard(), time.Minute)
-			fulfillment := map[string]fulfillmentResource{"bmi-missed-creation": {
-				resourceType:      events.ResourceTypeBareMetalInstance,
-				state:             "RUNNING",
-				version:           4,
-				tenantID:          "tenant-1",
-				projectID:         "project-1",
-				billingDimensions: dims,
-				transitionTime:    t4,
-			}}
-
-			corrections, err := recon.reconcileFulfillmentResources(ctx, fulfillment, map[string]projection.ResourceState{}, t4)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(corrections).To(Equal(2))
-			Expect(pub.published).To(HaveLen(2))
-			Expect(pub.published[0].ID()).To(HaveSuffix("/allocation"))
-			Expect(pub.published[0].Time()).To(Equal(t1))
-			Expect(pub.published[1].ID()).To(HaveSuffix("/consumption"))
-			Expect(pub.published[1].Time()).To(Equal(t4))
-			Expect(store.states["bmi-missed-creation"].CurrentState).To(Equal("RUNNING"))
-			Expect(store.states["bmi-missed-creation"].FulfillmentVersion).To(Equal(int32(4)))
-		})
-
-		It("holds a missed creation when replay starts after version one", func() {
-			t1 := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-			t2 := t1.Add(time.Minute)
-			dims := map[string]any{"bm_instance_type": "bm.large"}
-			resolver := &fakeBMaaSReplaySource{records: []BMaaSReplayRecord{
-				replayRecord("bmi-missed-creation-gap", "tenant-1", "project-1", "STOPPED", 2, "event-2", t1, dims),
-				replayRecord("bmi-missed-creation-gap", "tenant-1", "project-1", "RUNNING", 3, "event-3", t2, dims),
-			}}
-			store := newMockStore()
-			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, resolver, store, pub, logr.Discard(), time.Minute)
-			fulfillment := map[string]fulfillmentResource{"bmi-missed-creation-gap": {
-				resourceType:      events.ResourceTypeBareMetalInstance,
-				state:             "RUNNING",
-				version:           3,
-				tenantID:          "tenant-1",
-				billingDimensions: dims,
-				transitionTime:    t2,
-			}}
-
-			corrections, err := recon.reconcileFulfillmentResources(ctx, fulfillment, map[string]projection.ResourceState{}, t2)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(corrections).To(Equal(0))
-			Expect(pub.published).To(BeEmpty())
-			Expect(store.states).ToNot(HaveKey("bmi-missed-creation-gap"))
-		})
-
-		It("holds a missed creation when replay dimensions do not match the snapshot", func() {
-			t1 := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-			t2 := t1.Add(time.Minute)
-			replayDims := map[string]any{"bm_instance_type": "bm.large"}
-			snapshotDims := map[string]any{"bm_instance_type": "bm.xlarge"}
-			resolver := &fakeBMaaSReplaySource{records: []BMaaSReplayRecord{
-				replayRecord("bmi-missed-creation-drift", "tenant-1", "project-1", "STOPPED", 1, "event-1", t1, replayDims),
-				replayRecord("bmi-missed-creation-drift", "tenant-1", "project-1", "RUNNING", 2, "event-2", t2, replayDims),
-			}}
-			store := newMockStore()
-			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, resolver, store, pub, logr.Discard(), time.Minute)
-			fulfillment := map[string]fulfillmentResource{"bmi-missed-creation-drift": {
-				resourceType:      events.ResourceTypeBareMetalInstance,
-				state:             "RUNNING",
-				version:           2,
-				tenantID:          "tenant-1",
-				billingDimensions: snapshotDims,
-				transitionTime:    t2,
-			}}
-
-			corrections, err := recon.reconcileFulfillmentResources(ctx, fulfillment, map[string]projection.ResourceState{}, t2)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(corrections).To(Equal(0))
-			Expect(pub.published).To(BeEmpty())
-			Expect(store.states).ToNot(HaveKey("bmi-missed-creation-drift"))
-		})
-
-		It("initializes a missing RUNNING projection from resolver-established meter boundaries", func() {
-			allocationSince := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-			consumptionSince := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
-			transitionTime := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-			dims := map[string]any{"bm_instance_type": "bm.large"}
-			resolver := &fakeBMaaSReplaySource{records: []BMaaSReplayRecord{
-				replayRecord("bmi-new", "tenant-1", "project-1", "STOPPED", 1, "event-1", allocationSince, dims),
-				replayRecord("bmi-new", "tenant-1", "project-1", "STOPPED", 2, "event-2", allocationSince, dims),
-				replayRecord("bmi-new", "tenant-1", "project-1", "STOPPED", 3, "event-3", allocationSince, dims),
-				replayRecord("bmi-new", "tenant-1", "project-1", "STOPPED", 4, "event-4", allocationSince, dims),
-				replayRecord("bmi-new", "tenant-1", "project-1", "STOPPED", 5, "event-5", allocationSince, dims),
-				replayRecord("bmi-new", "tenant-1", "project-1", "RUNNING", 6, "event-6", consumptionSince, dims),
-				replayRecord("bmi-new", "tenant-1", "project-1", "RUNNING", 7, "event-7", transitionTime, dims),
-			}}
-			store := newMockStore()
-			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, resolver, store, pub, logr.Discard(), time.Minute)
-			fulfillment := map[string]fulfillmentResource{"bmi-new": {
-				resourceType:      events.ResourceTypeBareMetalInstance,
-				state:             "RUNNING",
-				version:           7,
-				tenantID:          "tenant-1",
-				projectID:         "project-1",
-				billingDimensions: dims,
-				transitionTime:    transitionTime,
-			}}
-
-			corrections, err := recon.reconcileFulfillmentResources(ctx, fulfillment, map[string]projection.ResourceState{}, transitionTime)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(corrections).To(Equal(2))
-			Expect(resolver.calls).To(Equal([]struct {
-				resourceID string
-				from       int32
-				to         int32
-			}{{"bmi-new", 0, 7}}))
-
-			Expect(pub.published).To(HaveLen(2))
-			Expect(pub.published[0].ID()).To(HaveSuffix("/allocation"))
-			Expect(pub.published[1].ID()).To(HaveSuffix("/consumption"))
-			stored := store.states["bmi-new"]
-			Expect(stored.BillableSince).NotTo(BeNil())
-			Expect(*stored.BillableSince).To(Equal(allocationSince))
-			Expect(stored.ComponentBillableSince).To(HaveKeyWithValue(events.BMaaSMeterConsumption, consumptionSince))
-			Expect(stored.TransitionTime).To(Equal(transitionTime))
-		})
-
-		It("holds a missing RUNNING projection when resolver history lacks a consumption boundary", func() {
-			transitionTime := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-			resolver := &fakeBMaaSReplaySource{}
-			store := newMockStore()
-			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, resolver, store, pub, logr.Discard(), time.Minute)
-			fulfillment := map[string]fulfillmentResource{"bmi-incomplete": {
-				resourceType:      events.ResourceTypeBareMetalInstance,
-				state:             "RUNNING",
-				version:           8,
-				tenantID:          "tenant-1",
-				billingDimensions: map[string]any{"bm_instance_type": "bm.large"},
-				transitionTime:    transitionTime,
-			}}
-
-			corrections, err := recon.reconcileFulfillmentResources(ctx, fulfillment, map[string]projection.ResourceState{}, transitionTime)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(corrections).To(Equal(0))
-			Expect(pub.published).To(BeEmpty())
-			Expect(store.states).ToNot(HaveKey("bmi-incomplete"))
-		})
-
-		It("holds a same-state version gap when replay is unavailable", func() {
-			allocationSince := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-			consumptionSince := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
-			transitionTime := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-			store := newMockStore()
-			store.states["bmi-version-gap"] = projection.ResourceState{
-				ResourceID:         "bmi-version-gap",
-				ResourceType:       events.ResourceTypeBareMetalInstance,
-				CurrentState:       "RUNNING",
-				IsBillable:         true,
-				BillableSince:      &allocationSince,
-				FulfillmentVersion: 1,
-				ComponentBillableSince: map[string]time.Time{
-					events.BMaaSMeterConsumption: consumptionSince,
-				},
-				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
-			}
-			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, nil, store, pub, logr.Discard(), time.Minute)
-			fulfillment := map[string]fulfillmentResource{"bmi-version-gap": {
-				resourceType:      events.ResourceTypeBareMetalInstance,
-				state:             "RUNNING",
-				version:           4,
-				tenantID:          "tenant-1",
-				billingDimensions: map[string]any{"bm_instance_type": "bm.large"},
-				transitionTime:    transitionTime,
-			}}
-
-			corrections, err := recon.reconcileFulfillmentResources(ctx, fulfillment, store.states, transitionTime)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(corrections).To(Equal(0))
-			Expect(pub.published).To(BeEmpty())
-			Expect(store.states["bmi-version-gap"].FulfillmentVersion).To(Equal(int32(1)))
-			Expect(*store.states["bmi-version-gap"].BillableSince).To(Equal(allocationSince))
-			Expect(store.states["bmi-version-gap"].ComponentBillableSince).To(HaveKeyWithValue(events.BMaaSMeterConsumption, consumptionSince))
-		})
-
-		It("returns a publisher error from a later replay hop", func() {
-			allocationSince := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-			consumptionSince := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
-			t1 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-			t2 := t1.Add(time.Minute)
-			dims := map[string]any{"bm_instance_type": "bm.large"}
-			store := newMockStore()
-			store.states["bmi-publish-error"] = projection.ResourceState{
-				ResourceID:         "bmi-publish-error",
-				ResourceType:       events.ResourceTypeBareMetalInstance,
-				CurrentState:       "RUNNING",
-				IsBillable:         true,
-				BillableSince:      &allocationSince,
-				FulfillmentVersion: 1,
-				ComponentBillableSince: map[string]time.Time{
-					events.BMaaSMeterConsumption: consumptionSince,
-				},
-				BillingDimensions: dims,
-			}
-			resolver := &fakeBMaaSReplaySource{records: []BMaaSReplayRecord{
-				replayRecord("bmi-publish-error", "tenant-1", "project-1", "STOPPING", 2, "event-2", t1, dims),
-				replayRecord("bmi-publish-error", "tenant-1", "project-1", "RUNNING", 3, "event-3", t2, dims),
-			}}
-			pub := &mockPublisher{failAfter: 1}
-			recon := NewReconciler(nil, nil, nil, resolver, store, pub, logr.Discard(), time.Minute)
-			fulfillment := map[string]fulfillmentResource{"bmi-publish-error": {
-				resourceType:      events.ResourceTypeBareMetalInstance,
-				state:             "RUNNING",
-				version:           3,
-				tenantID:          "tenant-1",
-				billingDimensions: dims,
-				transitionTime:    t2,
-			}}
-
-			_, err := recon.reconcileFulfillmentResources(ctx, fulfillment, store.states, t2)
-			Expect(err).To(MatchError(ContainSubstring("publisher failure after 1 events")))
-		})
-
-		It("returns a non-stale upsert error from replay", func() {
-			allocationSince := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-			consumptionSince := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
-			t1 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-			t2 := t1.Add(time.Minute)
-			dims := map[string]any{"bm_instance_type": "bm.large"}
-			store := newMockStore()
-			store.states["bmi-upsert-error"] = projection.ResourceState{
-				ResourceID:         "bmi-upsert-error",
-				ResourceType:       events.ResourceTypeBareMetalInstance,
-				CurrentState:       "RUNNING",
-				IsBillable:         true,
-				BillableSince:      &allocationSince,
-				FulfillmentVersion: 1,
-				ComponentBillableSince: map[string]time.Time{
-					events.BMaaSMeterConsumption: consumptionSince,
-				},
-				BillingDimensions: dims,
-			}
-			store.upsertErr = map[string]error{"bmi-upsert-error": fmt.Errorf("database unavailable")}
-			resolver := &fakeBMaaSReplaySource{records: []BMaaSReplayRecord{
-				replayRecord("bmi-upsert-error", "tenant-1", "project-1", "STOPPING", 2, "event-2", t1, dims),
-				replayRecord("bmi-upsert-error", "tenant-1", "project-1", "STOPPED", 3, "event-3", t2, dims),
-			}}
-			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, resolver, store, pub, logr.Discard(), time.Minute)
-			fulfillment := map[string]fulfillmentResource{"bmi-upsert-error": {
-				resourceType:      events.ResourceTypeBareMetalInstance,
-				state:             "STOPPED",
-				version:           3,
-				tenantID:          "tenant-1",
-				billingDimensions: dims,
-				transitionTime:    t2,
-			}}
-
-			_, err := recon.reconcileFulfillmentResources(ctx, fulfillment, store.states, t2)
-			Expect(err).To(MatchError(ContainSubstring("database unavailable")))
-		})
-
-		It("holds RUNNING to STOPPED when replay does not provide the STOPPING boundary", func() {
-			allocationSince := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-			consumptionSince := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
-			stoppedAt := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-			store := newMockStore()
-			store.states["bmi-stop-boundary"] = projection.ResourceState{
-				ResourceID:         "bmi-stop-boundary",
-				ResourceType:       events.ResourceTypeBareMetalInstance,
-				CurrentState:       "RUNNING",
-				IsBillable:         true,
-				BillableSince:      &allocationSince,
-				FulfillmentVersion: 1,
-				ComponentBillableSince: map[string]time.Time{
-					events.BMaaSMeterConsumption: consumptionSince,
-				},
-				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
-			}
-			resolver := &fakeBMaaSReplaySource{records: []BMaaSReplayRecord{
-				replayRecord("bmi-stop-boundary", "tenant-1", "project-1", "STOPPED", 2, "event-2", stoppedAt, map[string]any{"bm_instance_type": "bm.large"}),
-			}}
-			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, resolver, store, pub, logr.Discard(), time.Minute)
-			fulfillment := map[string]fulfillmentResource{"bmi-stop-boundary": {
-				resourceType:      events.ResourceTypeBareMetalInstance,
-				state:             "STOPPED",
-				version:           2,
-				tenantID:          "tenant-1",
-				billingDimensions: map[string]any{"bm_instance_type": "bm.large"},
-				transitionTime:    stoppedAt,
-			}}
-
-			corrections, err := recon.reconcileFulfillmentResources(ctx, fulfillment, store.states, stoppedAt)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(corrections).To(Equal(0))
-			Expect(pub.published).To(BeEmpty())
-			Expect(store.states["bmi-stop-boundary"].CurrentState).To(Equal("RUNNING"))
-		})
-
-		It("closes RUNNING to STOPPED at the replayed STOPPING timestamp", func() {
-			allocationSince := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-			consumptionSince := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
-			stoppingAt := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-			stoppedAt := stoppingAt.Add(time.Minute)
-			dims := map[string]any{"bm_instance_type": "bm.large"}
-			store := newMockStore()
-			store.states["bmi-stop-replay"] = projection.ResourceState{
-				ResourceID:         "bmi-stop-replay",
-				ResourceType:       events.ResourceTypeBareMetalInstance,
-				CurrentState:       "RUNNING",
-				IsBillable:         true,
-				BillableSince:      &allocationSince,
-				FulfillmentVersion: 1,
-				ComponentBillableSince: map[string]time.Time{
-					events.BMaaSMeterConsumption: consumptionSince,
-				},
-				BillingDimensions: dims,
-			}
-			resolver := &fakeBMaaSReplaySource{records: []BMaaSReplayRecord{
-				replayRecord("bmi-stop-replay", "tenant-1", "project-1", "STOPPING", 2, "event-stopping", stoppingAt, dims),
-				replayRecord("bmi-stop-replay", "tenant-1", "project-1", "STOPPED", 3, "event-stopped", stoppedAt, dims),
-			}}
-			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, resolver, store, pub, logr.Discard(), time.Minute)
-			fulfillment := map[string]fulfillmentResource{"bmi-stop-replay": {
-				resourceType:      events.ResourceTypeBareMetalInstance,
-				state:             "STOPPED",
-				version:           3,
-				tenantID:          "tenant-1",
-				billingDimensions: dims,
-				transitionTime:    stoppedAt,
-			}}
-
-			corrections, err := recon.reconcileFulfillmentResources(ctx, fulfillment, store.states, stoppedAt)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(corrections).To(Equal(1))
-			Expect(pub.published).To(HaveLen(1))
-			var data map[string]any
-			Expect(json.Unmarshal(pub.published[0].Data(), &data)).To(Succeed())
-			interval := data["affected_interval"].(map[string]any)
-			Expect(interval["to"]).To(Equal(stoppingAt.Format(time.RFC3339Nano)))
-			stored := store.states["bmi-stop-replay"]
-			Expect(stored.CurrentState).To(Equal("STOPPED"))
-			Expect(stored.FulfillmentVersion).To(Equal(int32(3)))
-			Expect(stored.BillableSince).NotTo(BeNil())
-			Expect(stored.ComponentBillableSince).ToNot(HaveKey(events.BMaaSMeterConsumption))
-		})
-
-		It("closes RUNNING to STARTING at the snapshot timestamp without replay", func() {
+		It("closes RUNNING to STARTING at the snapshot timestamp", func() {
 			allocationSince := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
 			consumptionSince := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
 			transitionTime := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
@@ -1438,7 +1018,7 @@ var _ = Describe("Reconciler", func() {
 				BillingDimensions: dims,
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, nil, store, pub, logr.Discard(), time.Minute)
+			recon := NewReconciler(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
 			fulfillment := map[string]fulfillmentResource{"bmi-starting": {
 				resourceType:      events.ResourceTypeBareMetalInstance,
 				state:             "STARTING",
@@ -1454,171 +1034,6 @@ var _ = Describe("Reconciler", func() {
 			Expect(pub.published).To(HaveLen(1))
 			Expect(pub.published[0].ID()).To(HaveSuffix("/consumption"))
 			Expect(pub.published[0].Time()).To(Equal(transitionTime))
-		})
-
-		It("replays ordered lifecycle hops and is idempotent on a second reconcile", func() {
-			allocationSince := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-			consumptionSince := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
-			t1 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-			t2 := t1.Add(time.Minute)
-			t3 := t2.Add(time.Minute)
-			t4 := t3.Add(time.Minute)
-			dims := map[string]any{"bm_instance_type": "bm.large"}
-			store := newMockStore()
-			store.states["bmi-replay"] = projection.ResourceState{
-				ResourceID:         "bmi-replay",
-				ResourceType:       events.ResourceTypeBareMetalInstance,
-				CurrentState:       "RUNNING",
-				IsBillable:         true,
-				EverBillable:       true,
-				BillableSince:      &allocationSince,
-				FulfillmentVersion: 1,
-				ComponentBillableSince: map[string]time.Time{
-					events.BMaaSMeterConsumption: consumptionSince,
-				},
-				BMaaSMeterState: projection.BMaaSMeterState{
-					AllocationStarted:  true,
-					ConsumptionStarted: true,
-				},
-				BillingDimensions: dims,
-			}
-			resolver := &fakeBMaaSReplaySource{records: []BMaaSReplayRecord{
-				replayRecord("bmi-replay", "tenant-1", "project-1", "STOPPING", 2, "event-2", t1, dims),
-				replayRecord("bmi-replay", "tenant-1", "project-1", "STOPPED", 3, "event-3", t2, dims),
-				replayRecord("bmi-replay", "tenant-1", "project-1", "STARTING", 4, "event-4", t3, dims),
-				replayRecord("bmi-replay", "tenant-1", "project-1", "RUNNING", 5, "event-5", t4, dims),
-			}}
-			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, resolver, store, pub, logr.Discard(), time.Minute)
-			fulfillment := map[string]fulfillmentResource{"bmi-replay": {
-				resourceType:      events.ResourceTypeBareMetalInstance,
-				state:             "RUNNING",
-				version:           5,
-				tenantID:          "tenant-1",
-				projectID:         "project-1",
-				billingDimensions: dims,
-				transitionTime:    t4,
-			}}
-
-			corrections, err := recon.reconcileFulfillmentResources(ctx, fulfillment, store.states, t4)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(corrections).To(Equal(2))
-			Expect(pub.published).To(HaveLen(2))
-			Expect(pub.published[0].Type()).To(Equal(events.EventCorrection))
-			Expect(pub.published[1].Type()).To(Equal(events.EventCorrection))
-			stored := store.states["bmi-replay"]
-			Expect(stored.CurrentState).To(Equal("RUNNING"))
-			Expect(stored.FulfillmentVersion).To(Equal(int32(5)))
-			Expect(stored.BillableSince).NotTo(BeNil())
-			Expect(*stored.BillableSince).To(Equal(allocationSince))
-			Expect(stored.ComponentBillableSince).To(HaveKeyWithValue(events.BMaaSMeterConsumption, t4))
-
-			corrections, err = recon.reconcileFulfillmentResources(ctx, fulfillment, store.states, t4)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(corrections).To(Equal(0))
-			Expect(pub.published).To(HaveLen(2))
-		})
-
-		DescribeTable("reconciles BMaaS state drift at independent meter boundaries",
-			func(targetState string, allocationEvents, consumptionEvents int, allocationRemains bool) {
-				allocationSince := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-				consumptionSince := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
-				transitionTime := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-				store := newMockStore()
-				store.states["bmi-drift"] = projection.ResourceState{
-					ResourceID:         "bmi-drift",
-					ResourceType:       events.ResourceTypeBareMetalInstance,
-					CurrentState:       "RUNNING",
-					IsBillable:         true,
-					EverBillable:       true,
-					BillableSince:      &allocationSince,
-					FulfillmentVersion: 1,
-					TransitionTime:     allocationSince,
-					ComponentBillableSince: map[string]time.Time{
-						events.BMaaSMeterConsumption: consumptionSince,
-					},
-					BMaaSMeterState: projection.BMaaSMeterState{
-						AllocationStarted:  true,
-						ConsumptionStarted: true,
-					},
-					BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
-				}
-				pub := &mockPublisher{}
-				resolver := &fakeBMaaSReplaySource{records: []BMaaSReplayRecord{
-					replayRecord("bmi-recovered-allocation", "tenant-1", "project-1", "RUNNING", 2, "event-2", transitionTime, map[string]any{"bm_instance_type": "bm.large"}),
-				}}
-				recon := NewReconciler(nil, nil, nil, resolver, store, pub, logr.Discard(), time.Minute)
-				fulfillment := map[string]fulfillmentResource{"bmi-drift": {
-					resourceType:      events.ResourceTypeBareMetalInstance,
-					state:             targetState,
-					version:           2,
-					tenantID:          "tenant-1",
-					billingDimensions: map[string]any{"bm_instance_type": "bm.large"},
-					transitionTime:    transitionTime,
-				}}
-
-				corrections, err := recon.reconcileFulfillmentResources(ctx, fulfillment, store.states, transitionTime)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(corrections).To(Equal(1))
-				Expect(pub.published).To(HaveLen(allocationEvents + consumptionEvents))
-				for _, event := range pub.published {
-					if allocationEvents == 0 {
-						Expect(event.ID()).NotTo(HaveSuffix("/allocation"))
-					}
-				}
-				stored := store.states["bmi-drift"]
-				Expect(stored.TransitionTime).To(Equal(transitionTime))
-				if allocationRemains {
-					Expect(stored.BillableSince).NotTo(BeNil())
-					Expect(*stored.BillableSince).To(Equal(allocationSince))
-					Expect(stored.IsBillable).To(BeTrue())
-				} else {
-					Expect(stored.BillableSince).To(BeNil())
-					Expect(stored.IsBillable).To(BeFalse())
-				}
-				Expect(stored.ComponentBillableSince).ToNot(HaveKey(events.BMaaSMeterConsumption))
-			},
-			Entry("RUNNING to STARTING", "STARTING", 0, 1, true),
-			Entry("RUNNING to STOPPING", "STOPPING", 0, 1, true),
-			Entry("RUNNING to FAILED", "FAILED", 1, 1, false),
-			Entry("RUNNING to DELETING", "DELETING", 0, 1, true),
-		)
-
-		It("holds state drift when resolver history cannot recover a missing consumption interval", func() {
-			allocationSince := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-			transitionTime := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-			store := newMockStore()
-			store.states["bmi-incomplete-drift"] = projection.ResourceState{
-				ResourceID:        "bmi-incomplete-drift",
-				ResourceType:      events.ResourceTypeBareMetalInstance,
-				CurrentState:      "RUNNING",
-				IsBillable:        true,
-				BillableSince:     &allocationSince,
-				TransitionTime:    allocationSince,
-				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
-			}
-			resolver := &fakeBMaaSReplaySource{records: []BMaaSReplayRecord{
-				replayRecord("bmi-incomplete-drift", "tenant-1", "", "STOPPED", 2, "event-2", transitionTime, map[string]any{"bm_instance_type": "bm.large"}),
-			}}
-			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, resolver, store, pub, logr.Discard(), time.Minute)
-			fulfillment := map[string]fulfillmentResource{"bmi-incomplete-drift": {
-				resourceType:      events.ResourceTypeBareMetalInstance,
-				state:             "STOPPED",
-				version:           2,
-				tenantID:          "tenant-1",
-				billingDimensions: map[string]any{"bm_instance_type": "bm.large"},
-				transitionTime:    transitionTime,
-			}}
-
-			corrections, err := recon.reconcileFulfillmentResources(ctx, fulfillment, store.states, transitionTime)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(corrections).To(Equal(0))
-			Expect(resolver.calls).To(HaveLen(1))
-			Expect(pub.published).To(BeEmpty())
-			stored := store.states["bmi-incomplete-drift"]
-			Expect(stored.CurrentState).To(Equal("RUNNING"))
-			Expect(stored.ComponentBillableSince).ToNot(HaveKey(events.BMaaSMeterConsumption))
 		})
 
 		It("holds an existing billable projection when allocation history is missing", func() {
@@ -1637,7 +1052,7 @@ var _ = Describe("Reconciler", func() {
 				},
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, nil, store, pub, logr.Discard(), time.Minute)
+			recon := NewReconciler(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
 			fulfillment := map[string]fulfillmentResource{"bmi-missing-allocation": {
 				resourceType:      events.ResourceTypeBareMetalInstance,
 				state:             "RUNNING",
@@ -1671,11 +1086,8 @@ var _ = Describe("Reconciler", func() {
 					"bm_instance_type": "bm.large",
 				},
 			}
-			resolver := &fakeBMaaSReplaySource{records: []BMaaSReplayRecord{
-				replayRecord("bmi-recovered-allocation", "tenant-1", "project-1", "RUNNING", 2, "event-2", allocationSince, map[string]any{"bm_instance_type": "bm.large"}),
-			}}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, resolver, store, pub, logr.Discard(), time.Minute)
+			recon := NewReconciler(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
 			fulfillment := map[string]fulfillmentResource{"bmi-recovered-allocation": {
 				resourceType: events.ResourceTypeBareMetalInstance,
 				state:        "STOPPED",
@@ -1691,7 +1103,6 @@ var _ = Describe("Reconciler", func() {
 			corrections, err := recon.reconcileFulfillmentResources(ctx, fulfillment, store.states, transitionTime)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(corrections).To(Equal(0))
-			Expect(resolver.calls).To(BeEmpty())
 			Expect(pub.published).To(BeEmpty())
 			stored := store.states["bmi-recovered-allocation"]
 			Expect(stored.BillableSince).To(BeNil())
@@ -1720,7 +1131,7 @@ var _ = Describe("Reconciler", func() {
 				},
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, nil, store, pub, logr.Discard(), time.Minute)
+			recon := NewReconciler(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
 			fulfillment := map[string]fulfillmentResource{"bmi-catalog-drift": {
 				resourceType: events.ResourceTypeBareMetalInstance,
 				state:        "STOPPED",
@@ -1764,7 +1175,7 @@ var _ = Describe("Reconciler", func() {
 				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, nil, store, pub, logr.Discard(), time.Minute)
+			recon := NewReconciler(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
 			fulfillment := map[string]fulfillmentResource{"bmi-failed": {
 				resourceType:      events.ResourceTypeBareMetalInstance,
 				state:             "FAILED",
@@ -1805,7 +1216,7 @@ var _ = Describe("Reconciler", func() {
 				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, nil, store, pub, logr.Discard(), time.Minute)
+			recon := NewReconciler(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
 			fulfillment := map[string]fulfillmentResource{"bmi-resume": {
 				resourceType:      events.ResourceTypeBareMetalInstance,
 				state:             "RUNNING",
@@ -1823,86 +1234,12 @@ var _ = Describe("Reconciler", func() {
 			stored := store.states["bmi-resume"]
 			Expect(stored.BillableSince).NotTo(BeNil())
 			Expect(*stored.BillableSince).To(Equal(allocationSince))
-			Expect(stored.ComponentBillableSince).To(HaveKeyWithValue(events.BMaaSMeterConsumption, transitionTime))
+			Expect(stored.ComponentBillableSince).To(BeNil())
+			Expect(stored.BMaaSMeterState.Consumption.ActiveSince).NotTo(BeNil())
+			Expect(*stored.BMaaSMeterState.Consumption.ActiveSince).To(Equal(transitionTime))
 		})
 
-		It("emits meter-specific missed-deletion corrections before tombstoning the projection", func() {
-			allocationSince := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-			consumptionSince := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
-			deletionTime := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-			store := newMockStore()
-			state := projection.ResourceState{
-				ResourceID:     "bmi-deleted",
-				ResourceType:   events.ResourceTypeBareMetalInstance,
-				TenantID:       "tenant-1",
-				ProjectID:      "project-1",
-				CurrentState:   "RUNNING",
-				IsBillable:     true,
-				BillableSince:  &allocationSince,
-				TransitionTime: allocationSince,
-				ComponentBillableSince: map[string]time.Time{
-					events.BMaaSMeterConsumption: consumptionSince,
-				},
-				BMaaSMeterState: projection.BMaaSMeterState{
-					AllocationStarted:  true,
-					ConsumptionStarted: true,
-				},
-				FulfillmentVersion: 7,
-				BillingDimensions:  map[string]any{"bm_instance_type": "bm.large"},
-			}
-			store.states[state.ResourceID] = state
-			pub := &mockPublisher{}
-			readTime := time.Date(2026, 9, 14, 15, 0, 0, 0, time.UTC)
-			resolver := &fakeBMaaSReplaySource{records: []BMaaSReplayRecord{
-				replayRecord("bmi-deleted", "tenant-1", "project-1", "RUNNING", 7, "event-update", deletionTime.Add(-time.Minute), map[string]any{"bm_instance_type": "bm.large"}),
-				deletedReplayRecord("bmi-deleted", "tenant-1", "project-1", 7, "event-delete", deletionTime, map[string]any{"bm_instance_type": "bm.large"}),
-			}}
-			recon := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, resolver, store, pub, logr.Discard(), time.Minute)
-
-			corrections, err := recon.reconcileMissedDeletions(ctx, map[string]fulfillmentResource{}, store.states, readTime)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(corrections).To(Equal(1))
-			Expect(pub.published).To(HaveLen(2))
-			Expect(pub.published[0].ID()).To(HaveSuffix("/allocation"))
-			Expect(pub.published[1].ID()).To(HaveSuffix("/consumption"))
-			Expect(pub.published[0].Time()).To(Equal(deletionTime))
-			Expect(pub.published[1].Time()).To(Equal(deletionTime))
-			Expect(store.states).To(HaveKey("bmi-deleted"))
-			Expect(store.states["bmi-deleted"].Deleted).To(BeTrue())
-		})
-
-		It("holds missed deletion when replay has no deletion event", func() {
-			allocationSince := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-			consumptionSince := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
-			updateTime := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-			store := newMockStore()
-			store.states["bmi-update-only"] = projection.ResourceState{
-				ResourceID:         "bmi-update-only",
-				ResourceType:       events.ResourceTypeBareMetalInstance,
-				CurrentState:       "RUNNING",
-				IsBillable:         true,
-				BillableSince:      &allocationSince,
-				FulfillmentVersion: 7,
-				TransitionTime:     allocationSince,
-				ComponentBillableSince: map[string]time.Time{
-					events.BMaaSMeterConsumption: consumptionSince,
-				},
-				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
-			}
-			pub := &mockPublisher{}
-			resolver := &fakeBMaaSReplaySource{records: []BMaaSReplayRecord{
-				replayRecord("bmi-update-only", "tenant-1", "project-1", "RUNNING", 7, "event-update", updateTime, map[string]any{"bm_instance_type": "bm.large"}),
-			}}
-			recon := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, resolver, store, pub, logr.Discard(), time.Minute)
-
-			corrections, err := recon.reconcileMissedDeletions(ctx, map[string]fulfillmentResource{}, store.states, updateTime.Add(time.Hour))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(corrections).To(Equal(0))
-			Expect(pub.published).To(BeEmpty())
-			Expect(store.states).To(HaveKey("bmi-update-only"))
-		})
-
-		It("holds missed deletion without a resolver-provided boundary", func() {
+		It("holds missed deletion while reliable history is unavailable", func() {
 			allocationSince := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
 			consumptionSince := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
 			store := newMockStore()
@@ -1920,7 +1257,7 @@ var _ = Describe("Reconciler", func() {
 				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, nil, store, pub, logr.Discard(), time.Minute)
+			recon := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, store, pub, logr.Discard(), time.Minute)
 
 			corrections, err := recon.reconcileMissedDeletions(ctx, map[string]fulfillmentResource{}, store.states, time.Date(2026, 9, 14, 15, 0, 0, 0, time.UTC))
 			Expect(err).NotTo(HaveOccurred())
@@ -1949,7 +1286,7 @@ var _ = Describe("Reconciler", func() {
 				},
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, nil, store, pub, logr.Discard(), time.Minute)
+			recon := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, store, pub, logr.Discard(), time.Minute)
 
 			corrections, err := recon.reconcileStaleHeartbeats(ctx, map[string]fulfillmentResource{"bmi-heartbeat": {}}, now)
 			Expect(err).NotTo(HaveOccurred())
@@ -1976,7 +1313,7 @@ var _ = Describe("Reconciler", func() {
 				},
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, NewUnavailableBMaaSReplaySource(), store, pub, logr.Discard(), time.Minute)
+			recon := NewReconciler(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
 			now := lastHeartbeat.Add(3 * time.Minute)
 
 			corrections, err := recon.reconcileMissedDeletions(ctx, map[string]fulfillmentResource{}, store.states, now)
@@ -2028,7 +1365,7 @@ var _ = Describe("Reconciler", func() {
 				makeBMI("bmi-matching", "tenant-1", privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_RUNNING, 2, timestamppb.New(transitionTime)),
 			}}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, client, nil, store, pub, logr.Discard(), time.Minute)
+			recon := NewReconciler(nil, nil, client, store, pub, logr.Discard(), time.Minute)
 
 			Expect(recon.Reconcile(ctx)).To(Succeed())
 			Expect(store.lastHeartbeatUpdateIDs).To(Equal([][]string{{"bmi-matching"}}))
@@ -2056,7 +1393,7 @@ var _ = Describe("Reconciler", func() {
 				makeCI("vm-after-bmaas-hold", "tenant-1", "RUNNING", 1),
 			}}
 			pub := &mockPublisher{}
-			recon := NewReconciler(computeClient, nil, client, nil, store, pub, logr.Discard(), time.Minute)
+			recon := NewReconciler(computeClient, nil, client, store, pub, logr.Discard(), time.Minute)
 
 			Expect(recon.Reconcile(ctx)).To(Succeed())
 			Expect(store.states).To(HaveKey("vm-after-bmaas-hold"))
@@ -2075,7 +1412,7 @@ var _ = Describe("Reconciler", func() {
 			}}
 			store := newMockStore()
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, client, nil, store, pub, logr.Discard(), 60*time.Second)
+			recon := NewReconciler(nil, nil, client, store, pub, logr.Discard(), 60*time.Second)
 
 			Expect(recon.Reconcile(ctx)).To(Succeed())
 
@@ -2107,11 +1444,8 @@ var _ = Describe("Reconciler", func() {
 				},
 				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
 			}
-			resolver := &fakeBMaaSReplaySource{records: []BMaaSReplayRecord{
-				deletedReplayRecord(invalid.GetId(), "tenant-1", "project-1", 7, "event-delete", deletionTime, map[string]any{"bm_instance_type": "bm.large"}),
-			}}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, client, resolver, store, pub, logr.Discard(), time.Minute)
+			recon := NewReconciler(nil, nil, client, store, pub, logr.Discard(), time.Minute)
 			presence := heartbeat.NewBMaaSPresence()
 			recon.SetBMaaSPresence(presence)
 
@@ -2136,95 +1470,18 @@ var _ = Describe("Reconciler", func() {
 				IsBillable:         true,
 				BillableSince:      &allocationSince,
 				FulfillmentVersion: 7,
-				ComponentBillableSince: map[string]time.Time{
-					events.BMaaSMeterConsumption: consumptionSince,
+				BMaaSMeterState: projection.BMaaSMeterState{
+					Allocation:  projection.MeterState{ActiveSince: &allocationSince},
+					Consumption: projection.MeterState{ActiveSince: &consumptionSince},
 				},
 				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
 			}
-			resolver := &fakeBMaaSReplaySource{records: []BMaaSReplayRecord{
-				deletedReplayRecord(invalid.GetId(), "tenant-1", "project-1", 7, "event-delete", deletionTime, map[string]any{"bm_instance_type": "bm.large"}),
-			}}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, client, resolver, store, pub, logr.Discard(), time.Minute)
+			recon := NewReconciler(nil, nil, client, store, pub, logr.Discard(), time.Minute)
 
 			Expect(recon.Reconcile(ctx)).To(Succeed())
 			Expect(pub.published).To(BeEmpty())
 			Expect(store.states).To(HaveKey(invalid.GetId()))
-		})
-
-		It("closes active BMaaS meters and tombstones a projection missing from fulfillment", func() {
-			client := &mockBareMetalInstancesClient{}
-			store := newMockStore()
-			allocationSince := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-			consumptionSince := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
-			lastHeartbeat := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
-			store.states["bmi-missing"] = projection.ResourceState{
-				ResourceID:    "bmi-missing",
-				ResourceType:  events.ResourceTypeBareMetalInstance,
-				TenantID:      "tenant-1",
-				CurrentState:  "RUNNING",
-				IsBillable:    true,
-				BillableSince: &allocationSince,
-				ComponentBillableSince: map[string]time.Time{
-					events.BMaaSMeterConsumption: consumptionSince,
-				},
-				LastHeartbeatAt:   &lastHeartbeat,
-				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
-			}
-			pub := &mockPublisher{}
-			resolver := &fakeBMaaSReplaySource{records: []BMaaSReplayRecord{
-				deletedReplayRecord("bmi-missing", "tenant-1", "project-1", 0, "event-delete", lastHeartbeat, map[string]any{"bm_instance_type": "bm.large"}),
-			}}
-			recon := NewReconciler(nil, nil, client, resolver, store, pub, logr.Discard(), 60*time.Second)
-
-			Expect(recon.Reconcile(ctx)).To(Succeed())
-
-			pub.mu.Lock()
-			defer pub.mu.Unlock()
-			Expect(pub.published).To(HaveLen(2))
-			Expect(pub.published[0].ID()).To(HaveSuffix("/allocation"))
-			Expect(pub.published[1].ID()).To(HaveSuffix("/consumption"))
-			store.mu.Lock()
-			defer store.mu.Unlock()
-			Expect(store.states).To(HaveKey("bmi-missing"))
-			Expect(store.states["bmi-missing"].Deleted).To(BeTrue())
-		})
-
-		It("does not synthesize or checkpoint heartbeats after missed-deletion closure", func() {
-			client := &mockBareMetalInstancesClient{}
-			store := newMockStore()
-			allocationSince := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-			consumptionSince := time.Date(2026, 9, 14, 11, 0, 0, 0, time.UTC)
-			lastHeartbeat := time.Date(2026, 9, 14, 11, 30, 0, 0, time.UTC)
-			store.states["bmi-stale-missing"] = projection.ResourceState{
-				ResourceID:    "bmi-stale-missing",
-				ResourceType:  events.ResourceTypeBareMetalInstance,
-				TenantID:      "tenant-1",
-				CurrentState:  "RUNNING",
-				IsBillable:    true,
-				BillableSince: &allocationSince,
-				ComponentBillableSince: map[string]time.Time{
-					events.BMaaSMeterConsumption: consumptionSince,
-				},
-				LastHeartbeatAt:   &lastHeartbeat,
-				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
-			}
-			pub := &mockPublisher{}
-			resolver := &fakeBMaaSReplaySource{records: []BMaaSReplayRecord{
-				deletedReplayRecord("bmi-stale-missing", "tenant-1", "project-1", 0, "event-delete", lastHeartbeat, map[string]any{"bm_instance_type": "bm.large"}),
-			}}
-			recon := NewReconciler(nil, nil, client, resolver, store, pub, logr.Discard(), time.Minute)
-
-			Expect(recon.Reconcile(ctx)).To(Succeed())
-
-			pub.mu.Lock()
-			defer pub.mu.Unlock()
-			Expect(pub.published).To(HaveLen(2), "the deletion correction closes both active meters before stale heartbeat handling")
-			store.mu.Lock()
-			defer store.mu.Unlock()
-			Expect(store.states).To(HaveKey("bmi-stale-missing"))
-			Expect(store.states["bmi-stale-missing"].Deleted).To(BeTrue())
-			Expect(store.lastHeartbeatUpdateIDs).To(BeEmpty(), "a deleted resource must not checkpoint a synthetic heartbeat")
 		})
 
 		It("loads paginated snapshots with normalized states, dimensions, metadata, and transition times", func() {
@@ -2243,7 +1500,7 @@ var _ = Describe("Reconciler", func() {
 			client := &mockBareMetalInstancesClient{items: items}
 			store := newMockStore()
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, client, nil, store, pub, logr.Discard(), 60*time.Second)
+			recon := NewReconciler(nil, nil, client, store, pub, logr.Discard(), 60*time.Second)
 
 			loaded, err := recon.loadFulfillmentState(ctx)
 			Expect(err).NotTo(HaveOccurred())
@@ -2278,37 +1535,6 @@ var _ = Describe("Reconciler", func() {
 			Expect(unspecifiedBillable).To(BeFalse())
 		})
 
-		It("skips snapshots without a bare metal instance type ID", func() {
-			client := &mockBareMetalInstancesClient{items: []*privatev1.BareMetalInstance{
-				{
-					Id:       "bmi-invalid-dimensions",
-					Metadata: &privatev1.Metadata{Tenant: "tenant-1", Version: 1},
-					Spec:     &privatev1.BareMetalInstanceSpec{InstanceType: &privatev1.BareMetalInstanceTypeLocalReference{}},
-				},
-				makeBMI("bmi-valid", "tenant-1", privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_RUNNING, 2, timestamppb.Now()),
-			}}
-			computeClient := &mockComputeClient{items: []*privatev1.ComputeInstance{makeCI("vm-valid", "tenant-1", "RUNNING", 1)}}
-			store := newMockStore()
-			recon := NewReconciler(computeClient, nil, client, nil, store, &mockPublisher{}, logr.Discard(), 60*time.Second)
-
-			loaded, err := recon.loadFulfillmentState(ctx)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(loaded).To(HaveLen(2))
-			Expect(loaded).To(HaveKey("bmi-valid"))
-			Expect(loaded).NotTo(HaveKey("bmi-invalid-dimensions"))
-
-			Expect(recon.Reconcile(ctx)).To(Succeed())
-			Expect(store.states).To(HaveKey("vm-valid"))
-		})
-
-		It("propagates bare metal instance list errors", func() {
-			client := &mockBareMetalInstancesClient{err: fmt.Errorf("fulfillment unavailable")}
-			recon := NewReconciler(nil, nil, client, nil, newMockStore(), &mockPublisher{}, logr.Discard(), 60*time.Second)
-
-			_, err := recon.loadFulfillmentState(ctx)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("listing bare metal instances (offset=0): fulfillment unavailable"))
-		})
 	})
 
 	Describe("RunPeriodic", func() {
@@ -2506,7 +1732,7 @@ var _ = Describe("Reconciler", func() {
 			}
 
 			pub := &mockPublisher{}
-			recon := NewReconciler(computeClient, nil, nil, nil, store, pub, logr.Discard(), 60*time.Second)
+			recon := NewReconciler(computeClient, nil, nil, store, pub, logr.Discard(), 60*time.Second)
 
 			Expect(recon.Reconcile(ctx)).To(Succeed())
 

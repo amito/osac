@@ -282,7 +282,7 @@ func TestReconcileStaleBMaaSHeartbeatStateFanout(t *testing.T) {
 			}
 			store.states["bmi-1"] = state
 			publisher := &mockPublisher{}
-			reconciler := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, nil, store, publisher, logr.Discard(), time.Minute)
+			reconciler := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, store, publisher, logr.Discard(), time.Minute)
 
 			corrections, err := reconciler.reconcileStaleHeartbeats(context.Background(), map[string]fulfillmentResource{"bmi-1": {}}, now)
 			if err != nil {
@@ -339,7 +339,7 @@ func TestReconcileStaleBMaaSHeartbeatDoesNotCheckpointPartialFanout(t *testing.T
 		BillingDimensions: map[string]any{"bm_instance_type": "gpu-large"},
 	}
 	failingPublisher := &partialHeartbeatPublisher{failAfter: 1}
-	reconciler := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, nil, store, failingPublisher, logr.Discard(), time.Minute)
+	reconciler := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, store, failingPublisher, logr.Discard(), time.Minute)
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	corrections, err := reconciler.reconcileStaleHeartbeats(context.Background(), map[string]fulfillmentResource{"bmi-1": {}}, now)
@@ -402,7 +402,7 @@ func TestReconcileStaleBMaaSHeartbeatMutesConsumptionForHeldHost(t *testing.T) {
 	presence.SetMeterMutes(map[string]heartbeat.BMaaSMeterMute{
 		"bmi-stopped": {Consumption: true},
 	})
-	reconciler := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, NewUnavailableBMaaSReplaySource(), store, publisher, logr.Discard(), time.Minute)
+	reconciler := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, store, publisher, logr.Discard(), time.Minute)
 	reconciler.SetBMaaSPresence(presence)
 	reconciler.bmaasHolds = map[string]struct{}{"bmi-stopped": {}}
 
