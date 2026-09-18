@@ -155,8 +155,9 @@ func TestBuildSyntheticHeartbeatsBMaaSReusesMeterIDsForSameStaleGap(t *testing.T
 		IsBillable:      true,
 		BillableSince:   &allocationSince,
 		LastHeartbeatAt: &lastHeartbeat,
-		ComponentBillableSince: map[string]time.Time{
-			events.BMaaSMeterConsumption: consumptionSince,
+		BMaaSMeterState: projection.BMaaSMeterState{
+			Allocation:  projection.MeterState{ActiveSince: &allocationSince},
+			Consumption: projection.MeterState{ActiveSince: &consumptionSince},
 		},
 		BillingDimensions: map[string]any{"bm_instance_type": "gpu-large"},
 	}
@@ -202,8 +203,8 @@ func TestBuildSyntheticHeartbeatsBMaaSUsesConsumptionBoundaryWithoutAllocationCh
 		ResourceType: events.ResourceTypeBareMetalInstance,
 		CurrentState: "RUNNING",
 		IsBillable:   true,
-		ComponentBillableSince: map[string]time.Time{
-			events.BMaaSMeterConsumption: consumptionSince,
+		BMaaSMeterState: projection.BMaaSMeterState{
+			Consumption: projection.MeterState{ActiveSince: &consumptionSince},
 		},
 		BillingDimensions: map[string]any{"bm_instance_type": "gpu-large"},
 	}
@@ -275,14 +276,15 @@ func TestReconcileStaleBMaaSHeartbeatStateFanout(t *testing.T) {
 				LastHeartbeatAt:   &lastHeartbeat,
 				BillingDimensions: map[string]any{"bm_instance_type": "gpu-large"},
 			}
+			if test.hasAllocationSince {
+				state.BMaaSMeterState.Allocation.ActiveSince = &allocationSince
+			}
 			if test.hasConsumptionSince {
-				state.ComponentBillableSince = map[string]time.Time{
-					events.BMaaSMeterConsumption: consumptionSince,
-				}
+				state.BMaaSMeterState.Consumption.ActiveSince = &consumptionSince
 			}
 			store.states["bmi-1"] = state
 			publisher := &mockPublisher{}
-			reconciler := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, store, publisher, logr.Discard(), time.Minute)
+			reconciler := newReconcilerForTest(nil, nil, &mockBareMetalInstancesClient{}, store, publisher, logr.Discard(), time.Minute)
 
 			corrections, err := reconciler.reconcileStaleHeartbeats(context.Background(), map[string]fulfillmentResource{"bmi-1": {}}, now)
 			if err != nil {
@@ -333,13 +335,14 @@ func TestReconcileStaleBMaaSHeartbeatDoesNotCheckpointPartialFanout(t *testing.T
 		IsBillable:      true,
 		BillableSince:   &allocationSince,
 		LastHeartbeatAt: &lastHeartbeat,
-		ComponentBillableSince: map[string]time.Time{
-			events.BMaaSMeterConsumption: consumptionSince,
+		BMaaSMeterState: projection.BMaaSMeterState{
+			Allocation:  projection.MeterState{ActiveSince: &allocationSince},
+			Consumption: projection.MeterState{ActiveSince: &consumptionSince},
 		},
 		BillingDimensions: map[string]any{"bm_instance_type": "gpu-large"},
 	}
 	failingPublisher := &partialHeartbeatPublisher{failAfter: 1}
-	reconciler := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, store, failingPublisher, logr.Discard(), time.Minute)
+	reconciler := newReconcilerForTest(nil, nil, &mockBareMetalInstancesClient{}, store, failingPublisher, logr.Discard(), time.Minute)
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	corrections, err := reconciler.reconcileStaleHeartbeats(context.Background(), map[string]fulfillmentResource{"bmi-1": {}}, now)
@@ -402,7 +405,7 @@ func TestReconcileStaleBMaaSHeartbeatMutesConsumptionForHeldHost(t *testing.T) {
 	presence.SetMeterMutes(map[string]heartbeat.BMaaSMeterMute{
 		"bmi-stopped": {Consumption: true},
 	})
-	reconciler := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, store, publisher, logr.Discard(), time.Minute)
+	reconciler := newReconcilerForTest(nil, nil, &mockBareMetalInstancesClient{}, store, publisher, logr.Discard(), time.Minute)
 	reconciler.SetBMaaSPresence(presence)
 	reconciler.bmaasHolds = map[string]struct{}{"bmi-stopped": {}}
 

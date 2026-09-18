@@ -916,24 +916,37 @@ func fulfillmentResourceBillable(resource fulfillmentResource) (bool, error) {
 func (r *Reconciler) loadFulfillmentState(ctx context.Context) (map[string]fulfillmentResource, error) {
 	result := make(map[string]fulfillmentResource)
 
-	if err := r.loadComputeInstances(ctx, result); err != nil {
-		return nil, err
+	if r.computeClient != nil {
+		if err := r.loadComputeInstances(ctx, result); err != nil {
+			return nil, err
+		}
 	}
-	if err := r.loadClusters(ctx, result); err != nil {
-		return nil, err
+	if r.clusterClient != nil {
+		if err := r.loadClusters(ctx, result); err != nil {
+			return nil, err
+		}
 	}
-	pools, err := LoadExternalIPPools(ctx, r.externalIPPoolClient)
-	if err != nil {
-		return nil, err
+	if r.externalIPClient != nil {
+		if r.externalIPPoolClient == nil {
+			return nil, fmt.Errorf("external IP client requires external IP pool client")
+		}
+		pools, err := LoadExternalIPPools(ctx, r.externalIPPoolClient)
+		if err != nil {
+			return nil, err
+		}
+		if err := r.loadExternalIPs(ctx, result, pools); err != nil {
+			return nil, err
+		}
 	}
-	if err := r.loadExternalIPs(ctx, result, pools); err != nil {
-		return nil, err
+	if r.natGatewayClient != nil {
+		if err := r.loadNATGateways(ctx, result); err != nil {
+			return nil, err
+		}
 	}
-	if err := r.loadNATGateways(ctx, result); err != nil {
-		return nil, err
-	}
-	if err := r.loadVolumes(ctx, result); err != nil {
-		return nil, err
+	if r.volumeClient != nil {
+		if err := r.loadVolumes(ctx, result); err != nil {
+			return nil, err
+		}
 	}
 	if r.bareMetalClient != nil {
 		if err := r.loadBareMetalInstances(ctx, result); err != nil {

@@ -48,7 +48,7 @@ func TestProjectionIsAheadTreatsTombstoneAsTerminal(t *testing.T) {
 	}
 
 	for _, version := range []int32{1, 4, 5, 100} {
-		if !projectionIsAhead(existing, version, "RUNNING", nil) {
+		if !projectionIsAhead(existing, version, "RUNNING", nil, false) {
 			t.Errorf("projectionIsAhead() = false for tombstone at incoming version %d", version)
 		}
 	}

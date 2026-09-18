@@ -209,29 +209,13 @@ func run(ctx context.Context, logger logr.Logger, cfg *config) error {
 
 	publisher := kafkapub.NewPublisher(producer)
 
-	logger.Info("service enablement",
-		"caas", cfg.enableCaaS,
-		"vmaas", cfg.enableVMaaS,
-		"bmaas", cfg.enableBMaaS,
-		"maas", cfg.enableMaaS,
-	)
-
-	var computeClient privatev1.ComputeInstancesClient
-	var clusterClient privatev1.ClustersClient
-	var bareMetalClient privatev1.BareMetalInstancesClient
-	if cfg.enableVMaaS {
-		computeClient = privatev1.NewComputeInstancesClient(grpcConn)
-	}
-	if cfg.enableCaaS {
-		clusterClient = privatev1.NewClustersClient(grpcConn)
-	}
+	computeClient := privatev1.NewComputeInstancesClient(grpcConn)
+	clusterClient := privatev1.NewClustersClient(grpcConn)
 	externalIPClient := privatev1.NewExternalIPsClient(grpcConn)
 	natGatewayClient := privatev1.NewNATGatewaysClient(grpcConn)
 	externalIPPoolClient := privatev1.NewExternalIPPoolsClient(grpcConn)
 	volumeClient := privatev1.NewVolumesClient(grpcConn)
-	if cfg.enableBMaaS {
-		bareMetalClient = privatev1.NewBareMetalInstancesClient(grpcConn)
-	}
+	bareMetalClient := privatev1.NewBareMetalInstancesClient(grpcConn)
 	bmaasPresence := heartbeat.NewBMaaSPresence()
 	reconciler := reconciliation.NewReconciler(
 		computeClient,
@@ -246,7 +230,8 @@ func run(ctx context.Context, logger logr.Logger, cfg *config) error {
 		logger,
 		cfg.heartbeatInterval,
 		cfg.deploymentID,
-	)	pools, err := reconciliation.LoadExternalIPPools(ctx, externalIPPoolClient)
+	)
+	pools, err := reconciliation.LoadExternalIPPools(ctx, externalIPPoolClient)
 	if err != nil {
 		return fmt.Errorf("loading external IP pool families: %w", err)
 	}

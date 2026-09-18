@@ -115,8 +115,9 @@ func makeBMaaSBillableState(id string) projection.ResourceState {
 		CurrentState:  "RUNNING",
 		IsBillable:    true,
 		BillableSince: &now,
-		ComponentBillableSince: map[string]time.Time{
-			events.BMaaSMeterConsumption: now,
+		BMaaSMeterState: projection.BMaaSMeterState{
+			Allocation:  projection.MeterState{ActiveSince: &now},
+			Consumption: projection.MeterState{ActiveSince: &now},
 		},
 		BillingDimensions: map[string]any{
 			"bm_instance_type": "bm.large",

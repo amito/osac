@@ -93,52 +93,68 @@ func (m *mockClusterClient) List(_ context.Context, req *privatev1.ClustersListR
 }
 
 func newTestReconciler(
-	computeClient reconciliation.ComputeInstancesClient,
-	clusterClient reconciliation.ClustersClient,
+	computeClient ComputeInstancesClient,
+	clusterClient ClustersClient,
 	store *mockStore,
 	publisher *mockPublisher,
 	interval time.Duration,
-) *reconciliation.Reconciler {
+) *Reconciler {
 	if computeClient == nil {
 		computeClient = &mockComputeClient{}
 	}
 	if clusterClient == nil {
 		clusterClient = &mockClusterClient{}
 	}
-	return reconciliation.NewReconciler(
+	return newReconcilerForTest(computeClient, clusterClient, nil, store, publisher, logr.Discard(), interval)
+}
+
+func newReconcilerForTest(
+	computeClient ComputeInstancesClient,
+	clusterClient ClustersClient,
+	bareMetalClient BareMetalInstancesClient,
+	store *mockStore,
+	publisher interface {
+		Publish(context.Context, cloudevents.Event) error
+	},
+	logger logr.Logger,
+	interval time.Duration,
+) *Reconciler {
+	return NewReconciler(
 		computeClient,
 		clusterClient,
-		networkExternalIPClient{},
-		networkNATGatewayClient{},
-		networkPoolClient{response: &privatev1.ExternalIPPoolsListResponse{}},
-		volumeClient{},
+		nil,
+		nil,
+		nil,
+		nil,
+		bareMetalClient,
 		store,
 		publisher,
-		logr.Discard(),
+		logger,
 		interval,
 		"deployment-1",
 	)
 }
 
 func newConfiguredReconciler(
-	computeClient reconciliation.ComputeInstancesClient,
-	clusterClient reconciliation.ClustersClient,
-	externalIPClient reconciliation.ExternalIPsClient,
-	natGatewayClient reconciliation.NATGatewaysClient,
-	externalIPPoolClient reconciliation.ExternalIPPoolsClient,
-	volumeClient reconciliation.VolumesClient,
+	computeClient ComputeInstancesClient,
+	clusterClient ClustersClient,
+	externalIPClient ExternalIPsClient,
+	natGatewayClient NATGatewaysClient,
+	externalIPPoolClient ExternalIPPoolsClient,
+	volumeClient VolumesClient,
 	store *mockStore,
 	publisher *mockPublisher,
 	interval time.Duration,
 	deploymentID string,
-) *reconciliation.Reconciler {
-	return reconciliation.NewReconciler(
+) *Reconciler {
+	return NewReconciler(
 		computeClient,
 		clusterClient,
 		externalIPClient,
 		natGatewayClient,
 		externalIPPoolClient,
 		volumeClient,
+		nil,
 		store,
 		publisher,
 		logr.Discard(),
@@ -1018,7 +1034,7 @@ var _ = Describe("Reconciler", func() {
 				BillingDimensions: dims,
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
+			recon := newReconcilerForTest(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
 			fulfillment := map[string]fulfillmentResource{"bmi-starting": {
 				resourceType:      events.ResourceTypeBareMetalInstance,
 				state:             "STARTING",
@@ -1052,7 +1068,7 @@ var _ = Describe("Reconciler", func() {
 				},
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
+			recon := newReconcilerForTest(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
 			fulfillment := map[string]fulfillmentResource{"bmi-missing-allocation": {
 				resourceType:      events.ResourceTypeBareMetalInstance,
 				state:             "RUNNING",
@@ -1087,7 +1103,7 @@ var _ = Describe("Reconciler", func() {
 				},
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
+			recon := newReconcilerForTest(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
 			fulfillment := map[string]fulfillmentResource{"bmi-recovered-allocation": {
 				resourceType: events.ResourceTypeBareMetalInstance,
 				state:        "STOPPED",
@@ -1131,7 +1147,7 @@ var _ = Describe("Reconciler", func() {
 				},
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
+			recon := newReconcilerForTest(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
 			fulfillment := map[string]fulfillmentResource{"bmi-catalog-drift": {
 				resourceType: events.ResourceTypeBareMetalInstance,
 				state:        "STOPPED",
@@ -1175,7 +1191,7 @@ var _ = Describe("Reconciler", func() {
 				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
+			recon := newReconcilerForTest(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
 			fulfillment := map[string]fulfillmentResource{"bmi-failed": {
 				resourceType:      events.ResourceTypeBareMetalInstance,
 				state:             "FAILED",
@@ -1216,7 +1232,7 @@ var _ = Describe("Reconciler", func() {
 				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
+			recon := newReconcilerForTest(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
 			fulfillment := map[string]fulfillmentResource{"bmi-resume": {
 				resourceType:      events.ResourceTypeBareMetalInstance,
 				state:             "RUNNING",
@@ -1257,7 +1273,7 @@ var _ = Describe("Reconciler", func() {
 				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, store, pub, logr.Discard(), time.Minute)
+			recon := newReconcilerForTest(nil, nil, &mockBareMetalInstancesClient{}, store, pub, logr.Discard(), time.Minute)
 
 			corrections, err := recon.reconcileMissedDeletions(ctx, map[string]fulfillmentResource{}, store.states, time.Date(2026, 9, 14, 15, 0, 0, 0, time.UTC))
 			Expect(err).NotTo(HaveOccurred())
@@ -1286,7 +1302,7 @@ var _ = Describe("Reconciler", func() {
 				},
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, &mockBareMetalInstancesClient{}, store, pub, logr.Discard(), time.Minute)
+			recon := newReconcilerForTest(nil, nil, &mockBareMetalInstancesClient{}, store, pub, logr.Discard(), time.Minute)
 
 			corrections, err := recon.reconcileStaleHeartbeats(ctx, map[string]fulfillmentResource{"bmi-heartbeat": {}}, now)
 			Expect(err).NotTo(HaveOccurred())
@@ -1313,7 +1329,7 @@ var _ = Describe("Reconciler", func() {
 				},
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
+			recon := newReconcilerForTest(nil, nil, nil, store, pub, logr.Discard(), time.Minute)
 			now := lastHeartbeat.Add(3 * time.Minute)
 
 			corrections, err := recon.reconcileMissedDeletions(ctx, map[string]fulfillmentResource{}, store.states, now)
@@ -1365,7 +1381,7 @@ var _ = Describe("Reconciler", func() {
 				makeBMI("bmi-matching", "tenant-1", privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_RUNNING, 2, timestamppb.New(transitionTime)),
 			}}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, client, store, pub, logr.Discard(), time.Minute)
+			recon := newReconcilerForTest(nil, nil, client, store, pub, logr.Discard(), time.Minute)
 
 			Expect(recon.Reconcile(ctx)).To(Succeed())
 			Expect(store.lastHeartbeatUpdateIDs).To(Equal([][]string{{"bmi-matching"}}))
@@ -1393,7 +1409,7 @@ var _ = Describe("Reconciler", func() {
 				makeCI("vm-after-bmaas-hold", "tenant-1", "RUNNING", 1),
 			}}
 			pub := &mockPublisher{}
-			recon := NewReconciler(computeClient, nil, client, store, pub, logr.Discard(), time.Minute)
+			recon := newReconcilerForTest(computeClient, nil, client, store, pub, logr.Discard(), time.Minute)
 
 			Expect(recon.Reconcile(ctx)).To(Succeed())
 			Expect(store.states).To(HaveKey("vm-after-bmaas-hold"))
@@ -1412,7 +1428,7 @@ var _ = Describe("Reconciler", func() {
 			}}
 			store := newMockStore()
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, client, store, pub, logr.Discard(), 60*time.Second)
+			recon := newReconcilerForTest(nil, nil, client, store, pub, logr.Discard(), 60*time.Second)
 
 			Expect(recon.Reconcile(ctx)).To(Succeed())
 
@@ -1445,7 +1461,7 @@ var _ = Describe("Reconciler", func() {
 				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, client, store, pub, logr.Discard(), time.Minute)
+			recon := newReconcilerForTest(nil, nil, client, store, pub, logr.Discard(), time.Minute)
 			presence := heartbeat.NewBMaaSPresence()
 			recon.SetBMaaSPresence(presence)
 
@@ -1477,7 +1493,7 @@ var _ = Describe("Reconciler", func() {
 				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
 			}
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, client, store, pub, logr.Discard(), time.Minute)
+			recon := newReconcilerForTest(nil, nil, client, store, pub, logr.Discard(), time.Minute)
 
 			Expect(recon.Reconcile(ctx)).To(Succeed())
 			Expect(pub.published).To(BeEmpty())
@@ -1500,7 +1516,7 @@ var _ = Describe("Reconciler", func() {
 			client := &mockBareMetalInstancesClient{items: items}
 			store := newMockStore()
 			pub := &mockPublisher{}
-			recon := NewReconciler(nil, nil, client, store, pub, logr.Discard(), 60*time.Second)
+			recon := newReconcilerForTest(nil, nil, client, store, pub, logr.Discard(), 60*time.Second)
 
 			loaded, err := recon.loadFulfillmentState(ctx)
 			Expect(err).NotTo(HaveOccurred())
@@ -1732,7 +1748,7 @@ var _ = Describe("Reconciler", func() {
 			}
 
 			pub := &mockPublisher{}
-			recon := NewReconciler(computeClient, nil, nil, store, pub, logr.Discard(), 60*time.Second)
+			recon := newReconcilerForTest(computeClient, nil, nil, store, pub, logr.Discard(), 60*time.Second)
 
 			Expect(recon.Reconcile(ctx)).To(Succeed())
 
