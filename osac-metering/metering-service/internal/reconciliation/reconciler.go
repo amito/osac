@@ -590,7 +590,7 @@ func (r *Reconciler) reconcileBareMetalFulfillmentResource(ctx context.Context, 
 		}
 		reason = BillingDimensionsDrift
 		dimensionDrift = true
-		_, consumptionActive := ps.ComponentBillableSince[events.BMaaSMeterConsumption]
+		consumptionActive := ps.BMaaSMeterState.Consumption.ActiveSince != nil
 		consumptionEffect = bmaasActiveCorrectionEffect(consumptionActive)
 	}
 
@@ -629,7 +629,8 @@ func (r *Reconciler) reconcileBareMetalFulfillmentResource(ctx context.Context, 
 	}
 	published, err := r.publishBMaaSCorrections(ctx, id, fs.tenantID, fs.projectID, reason, ps.CurrentState, fs.state,
 		fs.billingDimensions, intervals, allocationEffect, consumptionEffect,
-		ps.BMaaSMeterState.AllocationStarted, ps.BMaaSMeterState.ConsumptionStarted, transitionTime)
+		ps.BMaaSMeterState.Allocation.FirstStartedAt != nil,
+		ps.BMaaSMeterState.Consumption.FirstStartedAt != nil, transitionTime)
 	if err != nil {
 		return 0, err
 	}
@@ -652,11 +653,10 @@ func boolToInt(value bool) int {
 }
 
 func bmaasIntervals(state projection.ResourceState) events.BMaaSMeterIntervals {
-	intervals := events.BMaaSMeterIntervals{AllocationSince: state.BillableSince}
-	if since, ok := state.ComponentBillableSince[events.BMaaSMeterConsumption]; ok {
-		intervals.ConsumptionSince = &since
+	return events.BMaaSMeterIntervals{
+		AllocationSince:  state.BMaaSMeterState.Allocation.ActiveSince,
+		ConsumptionSince: state.BMaaSMeterState.Consumption.ActiveSince,
 	}
-	return intervals
 }
 
 func bmaasHasClosure(allocationEffect, consumptionEffect string) bool {
@@ -897,43 +897,69 @@ func replayStateBoundary(records []BMaaSReplayRecord, state string) (time.Time, 
 
 func reconciledBMaaSState(resourceID string, existing projection.ResourceState, fs fulfillmentResource, intervals events.BMaaSMeterIntervals, allocationEffect, consumptionEffect string, transitionTime time.Time) projection.ResourceState {
 	state := projection.ResourceState{
-		ResourceID:             resourceID,
-		ResourceType:           events.ResourceTypeBareMetalInstance,
-		TenantID:               fs.tenantID,
-		ProjectID:              fs.projectID,
-		CurrentState:           fs.state,
-		PreviousState:          existing.CurrentState,
-		EverBillable:           existing.EverBillable,
-		LastHeartbeatAt:        existing.LastHeartbeatAt,
-		TransitionTime:         transitionTime,
-		FulfillmentVersion:     fs.version,
-		BillingDimensions:      fs.billingDimensions,
-		ComponentBillableSince: map[string]time.Time{},
-		BMaaSMeterState:        existing.BMaaSMeterState,
-	}
-	for meter, since := range existing.ComponentBillableSince {
-		state.ComponentBillableSince[meter] = since
+		ResourceID:         resourceID,
+		ResourceType:       events.ResourceTypeBareMetalInstance,
+		TenantID:           fs.tenantID,
+		ProjectID:          fs.projectID,
+		CurrentState:       fs.state,
+		PreviousState:      existing.CurrentState,
+		EverBillable:       existing.EverBillable,
+		LastHeartbeatAt:    existing.LastHeartbeatAt,
+		TransitionTime:     transitionTime,
+		FulfillmentVersion: fs.version,
+		BillingDimensions:  fs.billingDimensions,
+		BMaaSMeterState:    existing.BMaaSMeterState,
 	}
 	if events.IsAllocationBillableState(fs.state) {
-		state.BillableSince = intervals.AllocationSince
+		if state.BMaaSMeterState.Allocation.ActiveSince == nil {
+			state.BMaaSMeterState.Allocation.ActiveSince = intervals.AllocationSince
+		}
+		if state.BMaaSMeterState.Allocation.ActiveSince == nil {
+			since := transitionTime.UTC()
+			state.BMaaSMeterState.Allocation.ActiveSince = &since
+		}
+		state.BillableSince = state.BMaaSMeterState.Allocation.ActiveSince
 	} else {
+		state.BMaaSMeterState.Allocation.ActiveSince = nil
 		state.BillableSince = nil
 	}
-	if allocationEffect == events.BMaaSEffectStart || allocationEffect == events.BMaaSEffectResume {
-		state.BMaaSMeterState.AllocationStarted = true
+	switch allocationEffect {
+	case events.BMaaSEffectStart, events.BMaaSEffectResume:
+		if state.BMaaSMeterState.Allocation.ActiveSince == nil {
+			since := transitionTime.UTC()
+			state.BMaaSMeterState.Allocation.ActiveSince = &since
+		}
+		if state.BMaaSMeterState.Allocation.FirstStartedAt == nil {
+			firstStartedAt := transitionTime.UTC()
+			state.BMaaSMeterState.Allocation.FirstStartedAt = &firstStartedAt
+		}
+	case events.BMaaSEffectSuspend:
+		state.BMaaSMeterState.Allocation.ActiveSince = nil
 	}
 
 	if events.IsConsumptionBillableState(fs.state) {
-		if intervals.ConsumptionSince != nil {
-			state.ComponentBillableSince[events.BMaaSMeterConsumption] = *intervals.ConsumptionSince
-		} else {
-			state.ComponentBillableSince[events.BMaaSMeterConsumption] = transitionTime
+		if state.BMaaSMeterState.Consumption.ActiveSince == nil {
+			state.BMaaSMeterState.Consumption.ActiveSince = intervals.ConsumptionSince
+		}
+		if state.BMaaSMeterState.Consumption.ActiveSince == nil {
+			since := transitionTime.UTC()
+			state.BMaaSMeterState.Consumption.ActiveSince = &since
 		}
 	} else {
-		delete(state.ComponentBillableSince, events.BMaaSMeterConsumption)
+		state.BMaaSMeterState.Consumption.ActiveSince = nil
 	}
-	if consumptionEffect == events.BMaaSEffectStart || consumptionEffect == events.BMaaSEffectResume {
-		state.BMaaSMeterState.ConsumptionStarted = true
+	switch consumptionEffect {
+	case events.BMaaSEffectStart, events.BMaaSEffectResume:
+		if state.BMaaSMeterState.Consumption.ActiveSince == nil {
+			since := transitionTime.UTC()
+			state.BMaaSMeterState.Consumption.ActiveSince = &since
+		}
+		if state.BMaaSMeterState.Consumption.FirstStartedAt == nil {
+			firstStartedAt := transitionTime.UTC()
+			state.BMaaSMeterState.Consumption.FirstStartedAt = &firstStartedAt
+		}
+	case events.BMaaSEffectSuspend:
+		state.BMaaSMeterState.Consumption.ActiveSince = nil
 	}
 	state.IsBillable = state.BillableSince != nil
 	state.EverBillable = state.EverBillable || state.IsBillable
@@ -1657,13 +1683,17 @@ func staleReferencePoint(ps projection.ResourceState, now time.Time) time.Time {
 	if ps.LastHeartbeatAt != nil {
 		return *ps.LastHeartbeatAt
 	}
+	if ps.ResourceType == events.ResourceTypeBareMetalInstance {
+		if ps.BMaaSMeterState.Allocation.ActiveSince != nil {
+			return *ps.BMaaSMeterState.Allocation.ActiveSince
+		}
+		if ps.BMaaSMeterState.Consumption.ActiveSince != nil {
+			return *ps.BMaaSMeterState.Consumption.ActiveSince
+		}
+		return now
+	}
 	if ps.BillableSince != nil {
 		return *ps.BillableSince
-	}
-	if ps.ResourceType == events.ResourceTypeBareMetalInstance {
-		if consumptionSince, ok := ps.ComponentBillableSince[events.BMaaSMeterConsumption]; ok {
-			return consumptionSince
-		}
 	}
 	return now
 }

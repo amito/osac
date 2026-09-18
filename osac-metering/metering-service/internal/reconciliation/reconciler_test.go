@@ -1431,8 +1431,9 @@ var _ = Describe("Reconciler", func() {
 				IsBillable:         true,
 				BillableSince:      &allocationSince,
 				FulfillmentVersion: 1,
-				ComponentBillableSince: map[string]time.Time{
-					events.BMaaSMeterConsumption: consumptionSince,
+				BMaaSMeterState: projection.BMaaSMeterState{
+					Allocation:  projection.MeterState{ActiveSince: &allocationSince},
+					Consumption: projection.MeterState{ActiveSince: &consumptionSince},
 				},
 				BillingDimensions: dims,
 			}
@@ -1656,7 +1657,6 @@ var _ = Describe("Reconciler", func() {
 		})
 
 		It("holds BMaaS instance-type dimension drift", func() {
-			allocationSince := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
 			transitionTime := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 			store := newMockStore()
 			store.states["bmi-recovered-allocation"] = projection.ResourceState{
@@ -1711,6 +1711,9 @@ var _ = Describe("Reconciler", func() {
 				BillableSince:      &allocationSince,
 				TransitionTime:     allocationSince,
 				FulfillmentVersion: 1,
+				BMaaSMeterState: projection.BMaaSMeterState{
+					Allocation: projection.MeterState{ActiveSince: &allocationSince},
+				},
 				BillingDimensions: map[string]any{
 					"bm_instance_type": "bm.large",
 					"catalog_item":     "old-catalog",
@@ -1754,8 +1757,9 @@ var _ = Describe("Reconciler", func() {
 				IsBillable:         true,
 				BillableSince:      &allocationSince,
 				FulfillmentVersion: 1,
-				ComponentBillableSince: map[string]time.Time{
-					events.BMaaSMeterConsumption: consumptionSince,
+				BMaaSMeterState: projection.BMaaSMeterState{
+					Allocation:  projection.MeterState{ActiveSince: &allocationSince},
+					Consumption: projection.MeterState{ActiveSince: &consumptionSince},
 				},
 				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
 			}
@@ -1795,8 +1799,8 @@ var _ = Describe("Reconciler", func() {
 				FulfillmentVersion: 1,
 				TransitionTime:     allocationSince,
 				BMaaSMeterState: projection.BMaaSMeterState{
-					AllocationStarted:  true,
-					ConsumptionStarted: true,
+					Allocation:  projection.MeterState{ActiveSince: &allocationSince, FirstStartedAt: &allocationSince},
+					Consumption: projection.MeterState{FirstStartedAt: &allocationSince},
 				},
 				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
 			}
@@ -1909,8 +1913,9 @@ var _ = Describe("Reconciler", func() {
 				IsBillable:     true,
 				BillableSince:  &allocationSince,
 				TransitionTime: allocationSince,
-				ComponentBillableSince: map[string]time.Time{
-					events.BMaaSMeterConsumption: consumptionSince,
+				BMaaSMeterState: projection.BMaaSMeterState{
+					Allocation:  projection.MeterState{ActiveSince: &allocationSince},
+					Consumption: projection.MeterState{ActiveSince: &consumptionSince},
 				},
 				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
 			}
@@ -1938,8 +1943,9 @@ var _ = Describe("Reconciler", func() {
 				BillableSince:     &allocationSince,
 				LastHeartbeatAt:   &lastHeartbeat,
 				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
-				ComponentBillableSince: map[string]time.Time{
-					events.BMaaSMeterConsumption: consumptionSince,
+				BMaaSMeterState: projection.BMaaSMeterState{
+					Allocation:  projection.MeterState{ActiveSince: &allocationSince},
+					Consumption: projection.MeterState{ActiveSince: &consumptionSince},
 				},
 			}
 			pub := &mockPublisher{}
@@ -2006,10 +2012,15 @@ var _ = Describe("Reconciler", func() {
 						}
 						return 2
 					}(),
-					ComponentBillableSince: map[string]time.Time{
-						events.BMaaSMeterConsumption: consumptionSince,
-					},
 					BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
+				}
+				if id == "bmi-matching" {
+					state := store.states[id]
+					state.BMaaSMeterState = projection.BMaaSMeterState{
+						Allocation:  projection.MeterState{ActiveSince: &allocationSince},
+						Consumption: projection.MeterState{ActiveSince: &consumptionSince},
+					}
+					store.states[id] = state
 				}
 			}
 			client := &mockBareMetalInstancesClient{items: []*privatev1.BareMetalInstance{
@@ -2090,8 +2101,9 @@ var _ = Describe("Reconciler", func() {
 				IsBillable:         true,
 				BillableSince:      &allocationSince,
 				FulfillmentVersion: 7,
-				ComponentBillableSince: map[string]time.Time{
-					events.BMaaSMeterConsumption: consumptionSince,
+				BMaaSMeterState: projection.BMaaSMeterState{
+					Allocation:  projection.MeterState{ActiveSince: &allocationSince},
+					Consumption: projection.MeterState{ActiveSince: &consumptionSince},
 				},
 				BillingDimensions: map[string]any{"bm_instance_type": "bm.large"},
 			}
