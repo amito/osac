@@ -123,23 +123,20 @@ func TestBuildSyntheticHeartbeatsBMaaSUsesIndependentMeters(t *testing.T) {
 		t.Fatalf("expected allocation and consumption heartbeats, got %d", len(got))
 	}
 
-	for i, expectation := range []struct {
-		meterType string
-		duration  float64
-	}{
-		{events.BMaaSMeterAllocation, 3600},
-		{events.BMaaSMeterConsumption, 1800},
+	for i, meterType := range []string{
+		events.BMaaSMeterAllocation,
+		events.BMaaSMeterConsumption,
 	} {
 		var data map[string]any
 		if err := json.Unmarshal(got[i].Data(), &data); err != nil {
 			t.Fatalf("heartbeat %d data: %v", i, err)
 		}
 		dims := data["billing_dimensions"].(map[string]any)
-		if dims["meter_type"] != expectation.meterType {
-			t.Errorf("heartbeat %d meter_type = %v, want %q", i, dims["meter_type"], expectation.meterType)
+		if dims["meter_type"] != meterType {
+			t.Errorf("heartbeat %d meter_type = %v, want %q", i, dims["meter_type"], meterType)
 		}
-		if data["duration_seconds"] != expectation.duration {
-			t.Errorf("heartbeat %d duration_seconds = %v, want %v", i, data["duration_seconds"], expectation.duration)
+		if _, ok := data["duration_seconds"]; ok {
+			t.Errorf("heartbeat %d unexpectedly includes duration_seconds: %v", i, data["duration_seconds"])
 		}
 	}
 }
@@ -229,8 +226,8 @@ func TestBuildSyntheticHeartbeatsBMaaSUsesConsumptionBoundaryWithoutAllocationCh
 	if err := json.Unmarshal(first[0].Data(), &data); err != nil {
 		t.Fatalf("heartbeat data: %v", err)
 	}
-	if data["duration_seconds"] != float64(1800) {
-		t.Errorf("consumption-only heartbeat duration_seconds = %v, want 1800", data["duration_seconds"])
+	if _, ok := data["duration_seconds"]; ok {
+		t.Errorf("consumption-only heartbeat unexpectedly includes duration_seconds: %v", data["duration_seconds"])
 	}
 }
 

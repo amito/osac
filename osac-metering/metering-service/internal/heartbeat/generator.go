@@ -252,9 +252,13 @@ func buildHeartbeatEvent(state *projection.ResourceState, eventID string, dims m
 
 	events.SetOSACExtensions(&ce, state.ResourceID, state.ResourceType, state.TenantID, state.ProjectID)
 
-	duration := float64(0)
-	if durationSeconds != nil {
-		duration = *durationSeconds
+	var duration *float64
+	if state.ResourceType != events.ResourceTypeBareMetalInstance {
+		seconds := float64(0)
+		if durationSeconds != nil {
+			seconds = *durationSeconds
+		}
+		duration = &seconds
 	}
 
 	data := heartbeatData{
@@ -314,7 +318,7 @@ type heartbeatData struct {
 	TenantID          string         `json:"tenant_id"`
 	ProjectID         *string        `json:"project_id"`
 	CurrentState      string         `json:"current_state"`
-	DurationSeconds   float64        `json:"duration_seconds"`
+	DurationSeconds   *float64       `json:"duration_seconds,omitempty"`
 	Usage             *schema.Usage  `json:"usage,omitempty"`
 	BillingDimensions map[string]any `json:"billing_dimensions"`
 	SchemaVersion     string         `json:"schema_version"`

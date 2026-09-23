@@ -190,7 +190,7 @@ func DecomposeBMIEvents(
 			return
 		}
 		var duration *float64
-		if since != nil && (eventType == EventSuspended || eventType == EventHeartbeat) {
+		if since != nil && eventType == EventSuspended {
 			seconds := transitionTime.Sub(*since).Seconds()
 			duration = &seconds
 		}

@@ -184,6 +184,48 @@ var _ = Describe("DecomposeBMIEvents", func() {
 		Expect(consumptionRequest.DurationSeconds).To(BeNil())
 	})
 
+	It("does not assign state duration to heartbeat events", func() {
+		eventsOut, err := events.DecomposeBMIEvents(
+			map[string]any{"bm_instance_type": "bm.large"},
+			"evt-heartbeat",
+			transitionTime,
+			events.BMaaSMeterIntervals{AllocationSince: &allocationSince, ConsumptionSince: &consumptionSince},
+			build,
+			events.EventHeartbeat,
+			events.EventHeartbeat,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(eventsOut).To(HaveLen(2))
+
+		var allocationRequest, consumptionRequest events.BMaaSEventBuildRequest
+		Expect(eventsOut[0].DataAs(&allocationRequest)).To(Succeed())
+		Expect(eventsOut[1].DataAs(&consumptionRequest)).To(Succeed())
+		Expect(allocationRequest.DurationSeconds).To(BeNil())
+		Expect(consumptionRequest.DurationSeconds).To(BeNil())
+	})
+
+	It("reports full time spent in each previous state when closing meters", func() {
+		eventsOut, err := events.DecomposeBMIEvents(
+			map[string]any{"bm_instance_type": "bm.large"},
+			"evt-suspend",
+			transitionTime,
+			events.BMaaSMeterIntervals{AllocationSince: &allocationSince, ConsumptionSince: &consumptionSince},
+			build,
+			events.EventSuspended,
+			events.EventSuspended,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(eventsOut).To(HaveLen(2))
+
+		var allocationRequest, consumptionRequest events.BMaaSEventBuildRequest
+		Expect(eventsOut[0].DataAs(&allocationRequest)).To(Succeed())
+		Expect(eventsOut[1].DataAs(&consumptionRequest)).To(Succeed())
+		Expect(allocationRequest.DurationSeconds).NotTo(BeNil())
+		Expect(*allocationRequest.DurationSeconds).To(Equal(3600.0))
+		Expect(consumptionRequest.DurationSeconds).NotTo(BeNil())
+		Expect(*consumptionRequest.DurationSeconds).To(Equal(1800.0))
+	})
+
 	It("emits only active meter closures", func() {
 		eventsOut, err := events.DecomposeBMIEvents(
 			map[string]any{"bm_instance_type": "bm.large"},

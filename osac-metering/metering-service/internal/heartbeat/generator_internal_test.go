@@ -184,28 +184,72 @@ func TestBuildHeartbeatEventsBMaaSUsesIndependentMeters(t *testing.T) {
 		t.Fatalf("expected new per-meter IDs in the next heartbeat window")
 	}
 
-	expectations := []struct {
-		meterType string
-		duration  float64
-	}{
-		{events.BMaaSMeterAllocation, 3600},
-		{events.BMaaSMeterConsumption, 1800},
+	expectations := []string{
+		events.BMaaSMeterAllocation,
+		events.BMaaSMeterConsumption,
 	}
 	for i, expectation := range expectations {
-		var data heartbeatData
+		var data map[string]any
 		if err := json.Unmarshal(first[i].Data(), &data); err != nil {
 			t.Fatalf("heartbeat %d data: %v", i, err)
 		}
-		if data.BillingDimensions["meter_type"] != expectation.meterType {
-			t.Errorf("heartbeat %d meter_type = %v, want %q", i, data.BillingDimensions["meter_type"], expectation.meterType)
+		dimensions, ok := data["billing_dimensions"].(map[string]any)
+		if !ok || dimensions["meter_type"] != expectation {
+			t.Errorf("heartbeat %d meter_type = %v, want %q", i, dimensions["meter_type"], expectation)
 		}
-		if data.DurationSeconds != expectation.duration {
-			t.Errorf("heartbeat %d duration_seconds = %v, want %v", i, data.DurationSeconds, expectation.duration)
+		if _, ok := data["duration_seconds"]; ok {
+			t.Errorf("heartbeat %d unexpectedly includes duration_seconds: %v", i, data["duration_seconds"])
 		}
-		if data.BillingDimensions["bm_instance_type"] != "gpu-large" {
-			t.Errorf("heartbeat %d lost base billing dimensions: %#v", i, data.BillingDimensions)
+		if dimensions["bm_instance_type"] != "gpu-large" {
+			t.Errorf("heartbeat %d lost base billing dimensions: %#v", i, dimensions)
 		}
 	}
+}
+
+func TestBuildHeartbeatEventsBMaaSOmitsDurationAfterPreviousHeartbeat(t *testing.T) {
+	g := &Generator{interval: 60 * time.Second}
+	allocationSince := time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC)
+	consumptionSince := time.Date(2026, 1, 1, 11, 55, 0, 0, time.UTC)
+	lastHeartbeat := time.Date(2026, 1, 1, 11, 45, 0, 0, time.UTC)
+	state := &projection.ResourceState{
+		ResourceID:      "bmi-delta-1",
+		ResourceType:    events.ResourceTypeBareMetalInstance,
+		CurrentState:    "RUNNING",
+		LastHeartbeatAt: &lastHeartbeat,
+		BMaaSMeterState: projection.BMaaSMeterState{
+			Allocation:  projection.MeterState{ActiveSince: &allocationSince},
+			Consumption: projection.MeterState{ActiveSince: &consumptionSince},
+		},
+		BillingDimensions: map[string]any{"bm_instance_type": "gpu-large"},
+	}
+
+	checkDurationsOmitted := func(at time.Time) {
+		t.Helper()
+		got, err := g.buildHeartbeatEvents(state, at)
+		if err != nil {
+			t.Fatalf("build heartbeat at %s: %v", at, err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("heartbeat count = %d, want 2", len(got))
+		}
+		for i := range got {
+			var data map[string]any
+			if err := json.Unmarshal(got[i].Data(), &data); err != nil {
+				t.Fatalf("heartbeat %d data: %v", i, err)
+			}
+			if _, ok := data["duration_seconds"]; ok {
+				t.Errorf("heartbeat %d unexpectedly includes duration_seconds: %v", i, data["duration_seconds"])
+			}
+		}
+	}
+
+	checkDurationsOmitted(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
+
+	lastHeartbeat = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	checkDurationsOmitted(time.Date(2026, 1, 1, 12, 1, 0, 0, time.UTC))
+
+	lastHeartbeat = time.Date(2026, 1, 1, 12, 1, 0, 0, time.UTC)
+	checkDurationsOmitted(time.Date(2026, 1, 1, 12, 4, 0, 0, time.UTC))
 }
 
 func TestBuildHeartbeatEventsBMaaSStateCardinality(t *testing.T) {
