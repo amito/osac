@@ -1261,6 +1261,10 @@ func (r *Reconciler) loadBareMetalInstances(ctx context.Context, result map[stri
 			Limit:  &limit,
 		})
 		if err != nil {
+			if isUnavailable(err) {
+				r.unavailableTypes[events.ResourceTypeBareMetalInstance] = struct{}{}
+				return nil
+			}
 			return fmt.Errorf("listing bare metal instances (offset=%d): %w", offset, err)
 		}
 

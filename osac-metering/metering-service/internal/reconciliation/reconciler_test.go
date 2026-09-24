@@ -613,6 +613,39 @@ var _ = Describe("Reconciler", func() {
 			Expect(pub.published).To(BeEmpty())
 		})
 
+		It("continues startup reconciliation when BMaaS is disabled", func() {
+			store := newMockStore()
+			store.states["bmi-disabled"] = projection.ResourceState{
+				ResourceID:   "bmi-disabled",
+				ResourceType: events.ResourceTypeBareMetalInstance,
+				CurrentState: "RUNNING",
+				IsBillable:   true,
+				BillingDimensions: map[string]any{
+					"bm_instance_type": "bm.large",
+				},
+			}
+			client := &mockBareMetalInstancesClient{
+				err: status.Error(codes.Unavailable, "the BMaaS service is not enabled on this server"),
+			}
+			pub := &mockPublisher{}
+			recon := newReconcilerForTest(nil, nil, client, store, pub, logr.Discard(), time.Minute)
+
+			Expect(recon.Reconcile(ctx)).To(Succeed())
+			Expect(store.states).To(HaveKey("bmi-disabled"))
+			Expect(pub.published).To(BeEmpty())
+		})
+
+		It("fails reconciliation for non-availability BMaaS List errors", func() {
+			client := &mockBareMetalInstancesClient{err: fmt.Errorf("backend failure")}
+			store := newMockStore()
+			pub := &mockPublisher{}
+			recon := newReconcilerForTest(nil, nil, client, store, pub, logr.Discard(), time.Minute)
+
+			err := recon.Reconcile(ctx)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("backend failure"))
+		})
+
 		It("fails when correction publish fails (publish-first)", func() {
 			client := &mockComputeClient{
 				items: []*privatev1.ComputeInstance{
