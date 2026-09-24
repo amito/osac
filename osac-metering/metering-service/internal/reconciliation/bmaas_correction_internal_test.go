@@ -146,3 +146,16 @@ func TestBuildBMaaSCorrectionEventsDistinctTransitionsGetDistinctIDs(t *testing.
 		t.Errorf("distinct authoritative transitions reused correction ID %q", first[0].ID())
 	}
 }
+
+func TestBuildBMaaSCorrectionEventsRejectsUnknownEffects(t *testing.T) {
+	transitionTime := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	_, err := buildBMaaSCorrectionEvents(
+		"bmi-1", "tenant-1", "project-1", StateDrift, "STOPPED", "RUNNING",
+		map[string]any{"bm_instance_type": "bm.large"},
+		events.BMaaSMeterIntervals{},
+		"start_typo", events.BMaaSEffectSkip, false, false, transitionTime,
+	)
+	if err == nil {
+		t.Fatal("expected unknown BMaaS effect to be rejected")
+	}
+}

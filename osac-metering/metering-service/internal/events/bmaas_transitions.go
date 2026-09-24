@@ -20,7 +20,10 @@ const (
 	BMaaSEffectSkip    = "skip"
 )
 
-var ErrInvalidBMaaSTransition = errors.New("invalid BMaaS state transition")
+var (
+	ErrInvalidBMaaSTransition = errors.New("invalid BMaaS state transition")
+	ErrUnknownBMaaSEffect     = errors.New("unknown BMaaS transition effect")
+)
 
 const (
 	bmaasStateProvisioning = "BARE_METAL_INSTANCE_STATE_PROVISIONING"
@@ -143,17 +146,20 @@ func ResolveConsumptionTransition(from, to string) (string, error) {
 // BMaaSEffectEventType converts a meter transition effect into its lifecycle
 // event type. The everStarted flag distinguishes a first allocation from a
 // later reactivation, including when the transition table calls the effect a
-// resume.
-func BMaaSEffectEventType(effect string, everStarted bool) string {
+// resume. BMaaSEffectSkip maps to an empty type; unknown effects return
+// ErrUnknownBMaaSEffect.
+func BMaaSEffectEventType(effect string, everStarted bool) (string, error) {
 	switch effect {
 	case BMaaSEffectStart:
-		return ResolveLifecycleStartEvent(everStarted)
+		return ResolveLifecycleStartEvent(everStarted), nil
 	case BMaaSEffectResume:
-		return ResolveLifecycleStartEvent(everStarted)
+		return ResolveLifecycleStartEvent(everStarted), nil
 	case BMaaSEffectSuspend:
-		return EventSuspended
+		return EventSuspended, nil
+	case BMaaSEffectSkip:
+		return "", nil
 	default:
-		return ""
+		return "", fmt.Errorf("%w: %q", ErrUnknownBMaaSEffect, effect)
 	}
 }
 

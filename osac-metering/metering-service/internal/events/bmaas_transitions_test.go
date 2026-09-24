@@ -14,7 +14,9 @@ import (
 var _ = Describe("BMaaS meter transition contracts", func() {
 	DescribeTable("maps meter effects to lifecycle event types",
 		func(effect string, everStarted bool, expected string) {
-			Expect(events.BMaaSEffectEventType(effect, everStarted)).To(Equal(expected))
+			eventType, err := events.BMaaSEffectEventType(effect, everStarted)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(eventType).To(Equal(expected))
 		},
 		Entry("first start", events.BMaaSEffectStart, false, events.EventStarted),
 		Entry("subsequent start", events.BMaaSEffectStart, true, events.EventResumed),
@@ -23,6 +25,11 @@ var _ = Describe("BMaaS meter transition contracts", func() {
 		Entry("suspend", events.BMaaSEffectSuspend, true, events.EventSuspended),
 		Entry("skip", events.BMaaSEffectSkip, false, ""),
 	)
+
+	It("rejects unknown transition effects", func() {
+		_, err := events.BMaaSEffectEventType("start_typo", false)
+		Expect(errors.Is(err, events.ErrUnknownBMaaSEffect)).To(BeTrue())
+	})
 
 	It("classifies allocation and consumption billable states independently", func() {
 		for _, state := range []string{"RUNNING", "STOPPED", "STARTING", "STOPPING", "DELETING"} {

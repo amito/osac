@@ -30,6 +30,14 @@ func buildBMaaSCorrectionEvents(
 	allocationEverStarted, consumptionEverStarted bool,
 	transitionTime time.Time,
 ) ([]cloudevents.Event, error) {
+	allocationEventType, err := events.BMaaSEffectEventType(allocationEffect, allocationEverStarted)
+	if err != nil {
+		return nil, fmt.Errorf("mapping BMaaS allocation effect: %w", err)
+	}
+	consumptionEventType, err := events.BMaaSEffectEventType(consumptionEffect, consumptionEverStarted)
+	if err != nil {
+		return nil, fmt.Errorf("mapping BMaaS consumption effect: %w", err)
+	}
 	fingerprint, err := bmaasCorrectionFingerprint(billingDimensions, intervals, transitionTime)
 	if err != nil {
 		return nil, fmt.Errorf("building BMaaS correction identity: %w", err)
@@ -60,8 +68,8 @@ func buildBMaaSCorrectionEvents(
 			ce.SetID(request.EventID)
 			return ce, nil
 		},
-		events.BMaaSEffectEventType(allocationEffect, allocationEverStarted),
-		events.BMaaSEffectEventType(consumptionEffect, consumptionEverStarted),
+		allocationEventType,
+		consumptionEventType,
 	)
 }
 
