@@ -800,8 +800,11 @@ func (r *Reconciler) reconcileStaleHeartbeats(ctx context.Context, fulfillmentSt
 				continue
 			}
 			if _, present := fulfillmentState[ps.ResourceID]; !present {
-				r.logger.Info("holding stale bare metal instance heartbeat until meter-specific reconciliation is available", "resource_id", ps.ResourceID)
-				continue
+				sourcePresent := r.bmaasPresence != nil && r.bmaasPresence.Contains(ps.ResourceID)
+				if !sourcePresent {
+					r.logger.Info("holding stale bare metal instance heartbeat until source presence is confirmed", "resource_id", ps.ResourceID)
+					continue
+				}
 			}
 		}
 		if ps.LastHeartbeatAt == nil || now.Sub(*ps.LastHeartbeatAt) > 2*r.heartbeatInterval {
@@ -1280,6 +1283,19 @@ func (r *Reconciler) loadBareMetalInstances(ctx context.Context, result map[stri
 				projectID = md.GetProject()
 				version = md.GetVersion()
 			}
+			// Keep source presence and meter state independent of dimension conversion.
+			// Existing billable projections can still heartbeat using their last valid
+			// dimensions while the source row is repaired.
+			listedIDs = append(listedIDs, bmi.GetId())
+			if r.bmaasPresence != nil {
+				if mutes == nil {
+					mutes = make(map[string]heartbeat.BMaaSMeterMute)
+				}
+				mutes[bmi.GetId()] = heartbeat.BMaaSMeterMute{
+					Allocation:  !events.IsAllocationBillableState(state),
+					Consumption: !events.IsConsumptionBillableState(state),
+				}
+			}
 			dimensions, err := events.BareMetalInstanceBillingDimensions(bmi)
 			if err != nil {
 				if r.bmaasSkipped == nil {
@@ -1298,16 +1314,6 @@ func (r *Reconciler) loadBareMetalInstances(ctx context.Context, result map[stri
 				projectID:         projectID,
 				billingDimensions: dimensions,
 				transitionTime:    transitionTime,
-			}
-			listedIDs = append(listedIDs, bmi.GetId())
-			if r.bmaasPresence != nil {
-				if mutes == nil {
-					mutes = make(map[string]heartbeat.BMaaSMeterMute)
-				}
-				mutes[bmi.GetId()] = heartbeat.BMaaSMeterMute{
-					Allocation:  !events.IsAllocationBillableState(state),
-					Consumption: !events.IsConsumptionBillableState(state),
-				}
 			}
 		}
 

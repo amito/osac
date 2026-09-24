@@ -1439,7 +1439,7 @@ var _ = Describe("Reconciler", func() {
 			defer store.mu.Unlock()
 			Expect(store.states).ToNot(HaveKey("bmi-new"), "BMaaS must not persist guessed billable intervals")
 		})
-		It("holds a projected BMaaS instance skipped for invalid dimensions", func() {
+		It("preserves heartbeats for a projected BMaaS instance with invalid source dimensions", func() {
 			deletionTime := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 			invalid := makeBMI("bmi-invalid-dimensions", "tenant-1", privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_RUNNING, 7, timestamppb.New(deletionTime))
 			invalid.Spec.InstanceType = nil
@@ -1466,9 +1466,25 @@ var _ = Describe("Reconciler", func() {
 			recon.SetBMaaSPresence(presence)
 
 			Expect(recon.Reconcile(ctx)).To(Succeed())
-			Expect(pub.published).To(BeEmpty())
+			Expect(pub.published).To(HaveLen(2), "existing allocation and consumption meters must keep receiving heartbeats")
 			Expect(store.states).To(HaveKey(invalid.GetId()))
-			Expect(presence.Contains(invalid.GetId())).To(BeFalse())
+			Expect(presence.Contains(invalid.GetId())).To(BeTrue())
+		})
+
+		It("preserves source meter mutes when BMaaS dimensions are invalid", func() {
+			invalid := makeBMI("bmi-invalid-stopped", "tenant-1", privatev1.BareMetalInstanceState_BARE_METAL_INSTANCE_STATE_STOPPED, 7, timestamppb.Now())
+			invalid.Spec.InstanceType = nil
+			client := &mockBareMetalInstancesClient{items: []*privatev1.BareMetalInstance{invalid}}
+			store := newMockStore()
+			pub := &mockPublisher{}
+			recon := newReconcilerForTest(nil, nil, client, store, pub, logr.Discard(), time.Minute)
+			presence := heartbeat.NewBMaaSPresence()
+			recon.SetBMaaSPresence(presence)
+
+			_, err := recon.loadFulfillmentState(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(presence.Contains(invalid.GetId())).To(BeTrue())
+			Expect(presence.MeterMute(invalid.GetId())).To(Equal(heartbeat.BMaaSMeterMute{Consumption: true}))
 		})
 
 		It("holds a projected BMaaS instance skipped for invalid dimensions", func() {
