@@ -1,3 +1,17 @@
+{{- $billing := .Values.global.billing | default dict -}}
+{{- $globalM360 := $billing.m360 | default dict -}}
+{{- $globalSecret := $globalM360.apiKeySecret | default dict -}}
+{{- $localM360 := .Values.m360Adapter.m360 | default dict -}}
+{{- $m360APIURL := $localM360.apiUrl | default "" -}}
+{{- $m360APIVersion := $localM360.apiVersion | default "v1" -}}
+{{- $m360SecretName := $localM360.apiKeySecret | default "" -}}
+{{- $m360SecretKey := "api-key" -}}
+{{- if eq $billing.provider "m360" -}}
+{{- $m360APIURL = $globalM360.apiUrl | default "" -}}
+{{- $m360APIVersion = $globalM360.apiVersion | default "v1" -}}
+{{- $m360SecretName = $globalSecret.name | default "" -}}
+{{- $m360SecretKey = $globalSecret.key | default "api-key" -}}
+{{- end -}}
 {{- if .Values.m360Adapter.enabled }}
 apiVersion: apps/v1
 kind: Deployment
@@ -35,7 +49,10 @@ spec:
             name: {{ .Values.certs.caBundle.configMap }}
         - name: m360-api-key
           secret:
-            secretName: {{ required "m360Adapter.m360.apiKeySecret is required when m360Adapter is enabled" .Values.m360Adapter.m360.apiKeySecret }}
+            secretName: {{ required "m360Adapter.m360.apiKeySecret is required when m360Adapter is enabled" $m360SecretName }}
+            items:
+              - key: {{ $m360SecretKey }}
+                path: api-key
         - name: tmp
           emptyDir:
             sizeLimit: 10Mi
@@ -108,11 +125,11 @@ spec:
             - name: KAFKA_SASL_PASSWORD_FILE
               value: /etc/kafka-secrets/password
             - name: M360_API_URL
-              value: {{ required "m360Adapter.m360.apiUrl is required when m360Adapter is enabled" .Values.m360Adapter.m360.apiUrl | quote }}
+              value: {{ required "m360Adapter.m360.apiUrl is required when m360Adapter is enabled" $m360APIURL | quote }}
             - name: M360_API_KEY_FILE
               value: /etc/m360/api-key
             - name: M360_API_VERSION
-              value: {{ .Values.m360Adapter.m360.apiVersion | default "v1" | quote }}
+              value: {{ $m360APIVersion | quote }}
             - name: DLQ_TOPIC
               value: "osac.metering.dlq"
             - name: DLQ_ENABLED

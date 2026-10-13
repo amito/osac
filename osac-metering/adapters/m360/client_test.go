@@ -87,6 +87,7 @@ var _ = Describe("m360Client", func() {
 			Expect(err).To(HaveOccurred())
 			var nonRetryable *adapters.NonRetryableError
 			Expect(errors.As(err, &nonRetryable)).To(BeTrue())
+			Expect(err.Error()).NotTo(ContainSubstring("bad request"))
 		})
 
 		It("returns NonRetryableError on 401", func() {

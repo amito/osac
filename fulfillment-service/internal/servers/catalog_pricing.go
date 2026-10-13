@@ -19,6 +19,7 @@ package servers
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,8 @@ import (
 	"github.com/osac-project/osac/fulfillment-service/internal/billing"
 	publicv1 "github.com/osac-project/osac/proto/gen/osac/public/v1"
 	"github.com/prometheus/client_golang/prometheus"
+	grpccodes "google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 const (
@@ -36,6 +39,7 @@ const (
 	catalogPricingCircuitFailureThreshold = 5
 	catalogPricingCircuitFailureWindow    = 30 * time.Second
 	catalogPricingCircuitOpenDuration     = 30 * time.Second
+	billingCoverageTimeout                = 30 * time.Second
 )
 
 type catalogPricingEnrichmentDisabledKey struct{}
@@ -185,6 +189,114 @@ func (r *CatalogPricingResolver) Resolve(
 		}
 	}
 	return results
+}
+
+// CheckCoverage requires a fresh rate-card lookup for every billable service in
+// the requested configuration. Cached catalog prices are deliberately ignored:
+// a retained amount can help browsing, but cannot authorize a new launch.
+func (r *CatalogPricingResolver) CheckCoverage(
+	ctx context.Context,
+	tenantID string,
+	requests []CatalogPricingRequest,
+) error {
+	if len(requests) == 0 || r == nil {
+		return nil
+	}
+	if tenantID == "" {
+		return grpcstatus.Error(grpccodes.InvalidArgument, "tenant is required for billing coverage")
+	}
+	if r.provider == nil || r.accounts == nil || r.providerKey == "" {
+		return grpcstatus.Error(grpccodes.Unavailable, "BILLING_COVERAGE_UNAVAILABLE")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, billingCoverageTimeout)
+	defer cancel()
+	account, err := r.accounts.GetAssignedAccount(ctx, tenantID)
+	if errors.Is(err, billing.ErrTenantBillingAssignmentNotFound) {
+		return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_ACCOUNT_UNAVAILABLE")
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return grpcstatus.Error(grpccodes.DeadlineExceeded, "BILLING_COVERAGE_TIMEOUT")
+		}
+		return grpcstatus.Error(grpccodes.Internal, "BILLING_ACCOUNT_LOOKUP_FAILED")
+	}
+	account.CurrencyCode = strings.ToUpper(strings.TrimSpace(account.CurrencyCode))
+	if account.ProviderKey != r.providerKey || !assignmentIsConnected(account.ConnectionState) || account.ProviderAccountReference == "" || account.CurrencyCode == "" {
+		return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_ACCOUNT_UNAVAILABLE")
+	}
+
+	byService := make(map[string][]CatalogPricingRequest)
+	for _, request := range requests {
+		if !request.Supported || request.Service == "" {
+			return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_CONFIGURATION_UNSUPPORTED")
+		}
+		byService[request.Service] = append(byService[request.Service], request)
+	}
+	services := make([]string, 0, len(byService))
+	for service := range byService {
+		services = append(services, service)
+	}
+	sort.Strings(services)
+	for _, service := range services {
+		rateItems, err := r.getFreshRateCardItems(ctx, account, service)
+		if err != nil {
+			if ctx.Err() != nil {
+				return grpcstatus.Error(grpccodes.DeadlineExceeded, "BILLING_COVERAGE_TIMEOUT")
+			}
+			return grpcstatus.Error(grpccodes.Unavailable, "BILLING_COVERAGE_UNAVAILABLE")
+		}
+		for _, request := range byService[service] {
+			_, err := billing.ResolveRateCardItem(rateItems, service, account.CurrencyCode, request.Dimensions)
+			switch {
+			case err == nil:
+				continue
+			case errors.Is(err, billing.ErrRateCoverageGap):
+				return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_COVERAGE_GAP")
+			case errors.Is(err, billing.ErrAmbiguousRateCard):
+				return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_RATE_AMBIGUOUS")
+			default:
+				return grpcstatus.Error(grpccodes.Unavailable, "BILLING_COVERAGE_UNAVAILABLE")
+			}
+		}
+	}
+	return nil
+}
+
+func (r *CatalogPricingResolver) getFreshRateCardItems(
+	ctx context.Context,
+	account billing.AssignedAccount,
+	service string,
+) ([]billing.RateCardItem, error) {
+	allowed, probe := r.circuit.allow(r.now())
+	if !allowed {
+		if r.metrics != nil && r.metrics.lookupOutcomes != nil {
+			r.metrics.lookupOutcomes.WithLabelValues(r.providerKey, "circuit_open").Inc()
+		}
+		return nil, errors.New("billing pricing circuit is open")
+	}
+	startedAt := time.Now()
+	items, err := listRateCardsWithRetries(ctx, r.provider, billing.RateCardQuery{
+		AccountReference: account.ProviderAccountReference,
+		Service:          service,
+		CurrencyCode:     account.CurrencyCode,
+	})
+	if r.metrics != nil && r.metrics.lookupOutcomes != nil {
+		outcome := "success"
+		if err != nil {
+			outcome = "error"
+		}
+		r.metrics.lookupOutcomes.WithLabelValues(r.providerKey, outcome).Inc()
+	}
+	if r.metrics != nil && r.metrics.lookupDuration != nil {
+		r.metrics.lookupDuration.WithLabelValues(r.providerKey).Observe(time.Since(startedAt).Seconds())
+	}
+	if err != nil {
+		r.circuit.recordFailure(r.now(), probe)
+		return nil, err
+	}
+	r.circuit.recordSuccess(probe)
+	return items, nil
 }
 
 func (r *CatalogPricingResolver) getRateCardItems(
