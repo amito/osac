@@ -281,6 +281,7 @@ func (s *PrivateBareMetalInstanceCatalogItemsServer) prepareCatalogItemCandidate
 		return nil, grpcstatus.Error(grpccodes.Internal, "failed to evaluate billing coverage for bare metal catalog item")
 	}
 	requests := bareMetalCatalogPricingRequests([]*publicv1.BareMetalInstanceCatalogItem{publicItem})
+	requests[0] = applyTemplatePricingDefaults(requests[0], bareMetalTemplatePricingDimensions(template))
 	if err := checkCatalogItemBillingCoverage(ctx, s.pricingResolver, candidate.GetMetadata().GetTenant(), candidate.GetPublished(), requests); err != nil {
 		return nil, err
 	}

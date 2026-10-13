@@ -235,7 +235,8 @@ func (s *PrivateClusterCatalogItemsServer) prepareCatalogItemCandidate(
 			return nil
 		}
 	}
-	if err := s.validateAndCanonicalizeTemplate(ctx, current, candidate); err != nil {
+	template, err := s.validateAndCanonicalizeTemplate(ctx, current, candidate)
+	if err != nil {
 		return err
 	}
 	if err := validateAndCanonicalizeClusterCatalogItemPolicies(ctx, candidate, s.bareMetalInstanceTypesDao, s.clusterVersionsDao, s.secretsDao, s.subnetsDao, s.securityGroupsDao); err != nil {
@@ -250,6 +251,7 @@ func (s *PrivateClusterCatalogItemsServer) prepareCatalogItemCandidate(
 		return grpcstatus.Error(grpccodes.Internal, "failed to evaluate billing coverage for cluster catalog item")
 	}
 	requests := clusterCatalogPricingRequests([]*publicv1.ClusterCatalogItem{publicItem})
+	requests[0] = applyTemplatePricingDefaults(requests[0], clusterTemplatePricingDimensions(template))
 	return checkCatalogItemBillingCoverage(ctx, s.pricingResolver, candidate.GetMetadata().GetTenant(), candidate.GetPublished(), requests)
 }
 
@@ -260,33 +262,33 @@ func (s *PrivateClusterCatalogItemsServer) prepareCatalogItemCandidate(
 // resolved independently in the Catalog Item's scope.
 func (s *PrivateClusterCatalogItemsServer) validateAndCanonicalizeTemplate(
 	ctx context.Context, current *privatev1.ClusterCatalogItem, candidate *privatev1.ClusterCatalogItem,
-) error {
+) (*privatev1.ClusterTemplate, error) {
 	ref := candidate.GetTemplate()
 	if ref == nil || (ref.GetId() == "" && ref.GetName() == "") {
-		return grpcstatus.Errorf(grpccodes.InvalidArgument, "field 'template' must specify id or name")
+		return nil, grpcstatus.Errorf(grpccodes.InvalidArgument, "field 'template' must specify id or name")
 	}
 	resolved, err := resolveLockedFullResourceReference(ctx, s.templatesDao, catalogItemScope(candidate), ref,
 		"cluster template", " in template", grpccodes.InvalidArgument)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := validateResourceNotDeleted("cluster template", refKey(ref), " in template", resolved.GetMetadata()); err != nil {
-		return err
+		return nil, err
 	}
 	if current != nil {
 		currentRef := current.GetTemplate()
 		if currentRef == nil || currentRef.GetId() == "" {
-			return grpcstatus.Errorf(grpccodes.InvalidArgument, "existing catalog item has no valid template reference")
+			return nil, grpcstatus.Errorf(grpccodes.InvalidArgument, "existing catalog item has no valid template reference")
 		}
 		if currentRef.GetId() != resolved.GetId() {
-			return grpcstatus.Errorf(grpccodes.InvalidArgument, "cannot change template from '%s' to '%s': template is immutable", currentRef.GetName(), resolved.GetMetadata().GetName())
+			return nil, grpcstatus.Errorf(grpccodes.InvalidArgument, "cannot change template from '%s' to '%s': template is immutable", currentRef.GetName(), resolved.GetMetadata().GetName())
 		}
 	}
 	if err := validateCatalogItemTemplateParameterPolicies(utils.ClusterTemplateAdapter{ClusterTemplate: resolved}, candidate.GetTemplateParameters()); err != nil {
-		return err
+		return nil, err
 	}
 	candidate.SetTemplate(canonicalClusterTemplateReference(resolved))
-	return nil
+	return resolved, nil
 }
 
 func (s *PrivateClusterCatalogItemsServer) Delete(ctx context.Context,

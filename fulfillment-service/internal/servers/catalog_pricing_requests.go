@@ -25,6 +25,13 @@ import (
 )
 
 func computeCatalogPricingRequests(items []*publicv1.ComputeInstanceCatalogItem) []CatalogPricingRequest {
+	return computeCatalogPricingRequestsWithTemplateDefaults(items, nil)
+}
+
+func computeCatalogPricingRequestsWithTemplateDefaults(
+	items []*publicv1.ComputeInstanceCatalogItem,
+	templateDefaults map[string]map[string]string,
+) []CatalogPricingRequest {
 	requests := make([]CatalogPricingRequest, len(items))
 	for i, item := range items {
 		request := CatalogPricingRequest{
@@ -42,12 +49,19 @@ func computeCatalogPricingRequests(items []*publicv1.ComputeInstanceCatalogItem)
 			}
 			request.PriceMayVary = addComputeAdditionalDiskPricingDimensions(&request, fields.GetAdditionalDisks()) || request.PriceMayVary
 		}
-		requests[i] = request
+		requests[i] = applyTemplatePricingDefaults(request, templateDefaults[item.GetId()])
 	}
 	return requests
 }
 
 func clusterCatalogPricingRequests(items []*publicv1.ClusterCatalogItem) []CatalogPricingRequest {
+	return clusterCatalogPricingRequestsWithTemplateDefaults(items, nil)
+}
+
+func clusterCatalogPricingRequestsWithTemplateDefaults(
+	items []*publicv1.ClusterCatalogItem,
+	templateDefaults map[string]map[string]string,
+) []CatalogPricingRequest {
 	requests := make([]CatalogPricingRequest, len(items))
 	for i, item := range items {
 		request := CatalogPricingRequest{
@@ -63,12 +77,19 @@ func clusterCatalogPricingRequests(items []*publicv1.ClusterCatalogItem) []Catal
 			request.PriceMayVary = addClusterVersionPricingDimension(request.Dimensions, "release_image", fields.GetVersion())
 			request.PriceMayVary = addClusterNodeSetPricingDimensions(&request, fields.GetNodeSets()) || request.PriceMayVary
 		}
-		requests[i] = request
+		requests[i] = applyTemplatePricingDefaults(request, templateDefaults[item.GetId()])
 	}
 	return requests
 }
 
 func bareMetalCatalogPricingRequests(items []*publicv1.BareMetalInstanceCatalogItem) []CatalogPricingRequest {
+	return bareMetalCatalogPricingRequestsWithTemplateDefaults(items, nil)
+}
+
+func bareMetalCatalogPricingRequestsWithTemplateDefaults(
+	items []*publicv1.BareMetalInstanceCatalogItem,
+	templateDefaults map[string]map[string]string,
+) []CatalogPricingRequest {
 	requests := make([]CatalogPricingRequest, len(items))
 	for i, item := range items {
 		request := CatalogPricingRequest{
@@ -84,9 +105,41 @@ func bareMetalCatalogPricingRequests(items []*publicv1.BareMetalInstanceCatalogI
 			request.PriceMayVary = addBareMetalInstanceTypePricingDimension(request.Dimensions, "bm_instance_type", fields.GetInstanceType())
 			request.PriceMayVary = addDiskImagePricingDimension(request.Dimensions, "image_ref", fields.GetDiskImage()) || request.PriceMayVary
 		}
-		requests[i] = request
+		requests[i] = applyTemplatePricingDefaults(request, templateDefaults[item.GetId()])
 	}
 	return requests
+}
+
+// applyTemplatePricingDefaults fills billable dimensions omitted by the
+// catalog item's field policies from its referenced template. Catalog policy
+// values take precedence because provisioning applies them before template
+// defaults.
+func applyTemplatePricingDefaults(request CatalogPricingRequest, defaults map[string]string) CatalogPricingRequest {
+	if request.Dimensions == nil {
+		request.Dimensions = make(map[string]string)
+	}
+	for dimension, value := range defaults {
+		if value == "" {
+			continue
+		}
+		if _, present := request.Dimensions[dimension]; !present {
+			request.Dimensions[dimension] = value
+		}
+	}
+	for i := range request.Components {
+		if request.Components[i].Dimensions == nil {
+			request.Components[i].Dimensions = make(map[string]string)
+		}
+		for dimension, value := range defaults {
+			if value == "" {
+				continue
+			}
+			if _, present := request.Components[i].Dimensions[dimension]; !present {
+				request.Components[i].Dimensions[dimension] = value
+			}
+		}
+	}
+	return request
 }
 
 func addDiskImagePricingDimension(dimensions map[string]string, dimension string, policy *publicv1.DiskImageReferenceFieldPolicy) bool {

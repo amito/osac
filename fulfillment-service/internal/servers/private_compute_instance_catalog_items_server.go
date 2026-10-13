@@ -262,7 +262,8 @@ func (s *PrivateComputeInstanceCatalogItemsServer) prepareCatalogItemCandidate(
 			return nil, nil
 		}
 	}
-	if err := s.validateAndCanonicalizeTemplate(ctx, current, candidate); err != nil {
+	template, err := s.validateAndCanonicalizeTemplate(ctx, current, candidate)
+	if err != nil {
 		return nil, err
 	}
 	warnings, err := validateAndCanonicalizeComputeInstanceCatalogItemPolicies(
@@ -277,6 +278,7 @@ func (s *PrivateComputeInstanceCatalogItemsServer) prepareCatalogItemCandidate(
 		return nil, grpcstatus.Error(grpccodes.Internal, "failed to evaluate billing coverage for compute catalog item")
 	}
 	requests := computeCatalogPricingRequests([]*publicv1.ComputeInstanceCatalogItem{publicItem})
+	requests[0] = applyTemplatePricingDefaults(requests[0], computeInstanceTemplatePricingDimensions(template))
 	if err := checkCatalogItemBillingCoverage(ctx, s.pricingResolver, candidate.GetMetadata().GetTenant(), candidate.GetPublished(), requests); err != nil {
 		return nil, err
 	}
@@ -289,34 +291,34 @@ func (s *PrivateComputeInstanceCatalogItemsServer) prepareCatalogItemCandidate(
 // Template, and forbids changing the Template on Update.
 func (s *PrivateComputeInstanceCatalogItemsServer) validateAndCanonicalizeTemplate(
 	ctx context.Context, current *privatev1.ComputeInstanceCatalogItem, candidate *privatev1.ComputeInstanceCatalogItem,
-) error {
+) (*privatev1.ComputeInstanceTemplate, error) {
 	ref := candidate.GetTemplate()
 	if ref == nil || (ref.GetId() == "" && ref.GetName() == "") {
-		return grpcstatus.Errorf(grpccodes.InvalidArgument, "field 'template' must specify id or name")
+		return nil, grpcstatus.Errorf(grpccodes.InvalidArgument, "field 'template' must specify id or name")
 	}
 	resolved, err := resolveLockedFullResourceReference(ctx, s.templatesDao, catalogItemScope(candidate), ref,
 		"compute instance template", " in template", grpccodes.InvalidArgument)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := validateResourceNotDeleted("compute instance template", refKey(ref), " in template", resolved.GetMetadata()); err != nil {
-		return err
+		return nil, err
 	}
 	if current != nil {
 		currentRef := current.GetTemplate()
 		if currentRef == nil || currentRef.GetId() == "" {
-			return grpcstatus.Errorf(grpccodes.InvalidArgument, "existing catalog item has no valid template reference")
+			return nil, grpcstatus.Errorf(grpccodes.InvalidArgument, "existing catalog item has no valid template reference")
 		}
 		if currentRef.GetId() != resolved.GetId() {
-			return grpcstatus.Errorf(grpccodes.InvalidArgument,
+			return nil, grpcstatus.Errorf(grpccodes.InvalidArgument,
 				"cannot change template from '%s' to '%s': template is immutable", currentRef.GetName(), resolved.GetMetadata().GetName())
 		}
 	}
 	if err := validateCatalogItemTemplateParameterPolicies(utils.ComputeInstanceTemplateAdapter{ComputeInstanceTemplate: resolved}, candidate.GetTemplateParameters()); err != nil {
-		return err
+		return nil, err
 	}
 	candidate.SetTemplate(canonicalComputeInstanceTemplateReference(resolved))
-	return nil
+	return resolved, nil
 }
 
 func (s *PrivateComputeInstanceCatalogItemsServer) Delete(ctx context.Context,

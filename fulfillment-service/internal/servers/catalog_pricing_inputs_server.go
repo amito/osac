@@ -127,7 +127,29 @@ func (s *CatalogPricingInputsServer) List(ctx context.Context,
 		return nil, s.listError(ctx, "bare metal instance", err)
 	}
 
-	items := billing.CatalogPricingInputsFromCatalog(computeItems, clusterItems, bareMetalItems)
+	computeDefaults, computeDefaultErrors := loadCatalogPricingTemplateDefaults(
+		ctx, templateDefaultsReaderFrom(s.computeItems), catalogPricingTemplateReferencesFromComputeItems(computeItems),
+	)
+	clusterDefaults, clusterDefaultErrors := loadCatalogPricingTemplateDefaults(
+		ctx, templateDefaultsReaderFrom(s.clusterItems), catalogPricingTemplateReferencesFromClusterItems(clusterItems),
+	)
+	bareMetalDefaults, bareMetalDefaultErrors := loadCatalogPricingTemplateDefaults(
+		ctx, templateDefaultsReaderFrom(s.bareMetalItems), catalogPricingTemplateReferencesFromBareMetalItems(bareMetalItems),
+	)
+	if len(computeDefaultErrors) != 0 || len(clusterDefaultErrors) != 0 || len(bareMetalDefaultErrors) != 0 {
+		s.logger.ErrorContext(ctx, "failed to load catalog template defaults for pricing inventory")
+		return nil, grpcstatus.Error(grpccodes.Internal, "failed to load catalog pricing inputs")
+	}
+	items := billing.CatalogPricingInputsFromCatalogWithTemplateDefaults(
+		computeItems,
+		clusterItems,
+		bareMetalItems,
+		billing.CatalogPricingInputTemplateDefaults{
+			ComputeInstances:   computeDefaults,
+			Clusters:           clusterDefaults,
+			BareMetalInstances: bareMetalDefaults,
+		},
+	)
 	total, ok := catalogPricingInputTotal(len(items))
 	if !ok {
 		return nil, grpcstatus.Error(grpccodes.Internal, "too many catalog pricing inputs")

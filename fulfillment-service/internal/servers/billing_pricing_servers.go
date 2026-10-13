@@ -265,7 +265,13 @@ func (s *billingPricingService) pricingRequestsForConfiguration(
 		if item == nil {
 			return nil, grpcstatus.Error(grpccodes.NotFound, "catalog item was not found")
 		}
-		requests := computeCatalogPricingRequests([]*publicv1.ComputeInstanceCatalogItem{item})
+		templateDefaults, err := catalogPricingDefaultsForEstimate(ctx, s.computeItems, item.GetTemplate().GetId())
+		if err != nil {
+			return nil, catalogPricingItemError(err)
+		}
+		requests := computeCatalogPricingRequestsWithTemplateDefaults(
+			[]*publicv1.ComputeInstanceCatalogItem{item}, map[string]map[string]string{item.GetId(): templateDefaults},
+		)
 		requests, err = billing.ApplyComputeInstancePricingConfiguration(requests[0], spec, item.GetFields())
 		if err != nil {
 			return nil, grpcstatus.Error(grpccodes.InvalidArgument, "resource configuration is not allowed by the catalog item")
@@ -290,7 +296,13 @@ func (s *billingPricingService) pricingRequestsForConfiguration(
 		if item == nil {
 			return nil, grpcstatus.Error(grpccodes.NotFound, "catalog item was not found")
 		}
-		requests := clusterCatalogPricingRequests([]*publicv1.ClusterCatalogItem{item})
+		templateDefaults, err := catalogPricingDefaultsForEstimate(ctx, s.clusterItems, item.GetTemplate().GetId())
+		if err != nil {
+			return nil, catalogPricingItemError(err)
+		}
+		requests := clusterCatalogPricingRequestsWithTemplateDefaults(
+			[]*publicv1.ClusterCatalogItem{item}, map[string]map[string]string{item.GetId(): templateDefaults},
+		)
 		requests, err = billing.ApplyClusterPricingConfiguration(requests[0], spec, item.GetFields())
 		if err != nil {
 			return nil, grpcstatus.Error(grpccodes.InvalidArgument, "resource configuration is not allowed by the catalog item")
@@ -315,7 +327,13 @@ func (s *billingPricingService) pricingRequestsForConfiguration(
 		if item == nil {
 			return nil, grpcstatus.Error(grpccodes.NotFound, "catalog item was not found")
 		}
-		requests := bareMetalCatalogPricingRequests([]*publicv1.BareMetalInstanceCatalogItem{item})
+		templateDefaults, err := catalogPricingDefaultsForEstimate(ctx, s.bareMetalItems, item.GetTemplate().GetId())
+		if err != nil {
+			return nil, catalogPricingItemError(err)
+		}
+		requests := bareMetalCatalogPricingRequestsWithTemplateDefaults(
+			[]*publicv1.BareMetalInstanceCatalogItem{item}, map[string]map[string]string{item.GetId(): templateDefaults},
+		)
 		request, err := billing.ApplyBareMetalPricingConfiguration(requests[0], spec, item.GetFields())
 		if err != nil {
 			return nil, grpcstatus.Error(grpccodes.InvalidArgument, "resource configuration is not allowed by the catalog item")
