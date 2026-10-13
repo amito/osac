@@ -305,7 +305,7 @@ func (s *PrivateTenantBillingAssignmentsServer) prepareNewAssignment(
 
 func (s *PrivateTenantBillingAssignmentsServer) validateBillingAccount(ctx context.Context, id string) error {
 	if s.provider == nil {
-		return grpcstatus.Error(grpccodes.FailedPrecondition, "billing provider is not configured")
+		return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_NOT_CONFIGURED")
 	}
 	account, err := s.accountStore.GetAccount(ctx, id)
 	if errors.Is(err, billing.ErrAccountNotFound) {

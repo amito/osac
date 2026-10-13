@@ -21,10 +21,12 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	grpccodes "google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/billing"
 	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
@@ -47,9 +49,11 @@ type PrivateBillingProviderStatusesServerBuilder struct {
 
 type PrivateBillingProviderStatusesServer struct {
 	privatev1.UnimplementedBillingProviderStatusesServer
-	logger      *slog.Logger
-	providerKey string
-	provider    billing.Provider
+	logger              *slog.Logger
+	providerKey         string
+	provider            billing.Provider
+	lastSuccessfulMu    sync.RWMutex
+	lastSuccessfulCheck time.Time
 }
 
 var _ privatev1.BillingProviderStatusesServer = (*PrivateBillingProviderStatusesServer)(nil)
@@ -85,11 +89,24 @@ func (s *PrivateBillingProviderStatusesServer) Get(
 	_ *privatev1.BillingProviderStatusesGetRequest,
 ) (*privatev1.BillingProviderStatusesGetResponse, error) {
 	status := billing.ResolveProviderStatus(ctx, s.providerKey, s.provider)
+	if status.State == billing.ProviderStateAvailable {
+		s.lastSuccessfulMu.Lock()
+		s.lastSuccessfulCheck = time.Now().UTC()
+		s.lastSuccessfulMu.Unlock()
+	}
+	s.lastSuccessfulMu.RLock()
+	lastSuccessfulCheck := s.lastSuccessfulCheck
+	s.lastSuccessfulMu.RUnlock()
+	var lastSuccessfulCheckTimestamp *timestamppb.Timestamp
+	if !lastSuccessfulCheck.IsZero() {
+		lastSuccessfulCheckTimestamp = timestamppb.New(lastSuccessfulCheck)
+	}
 	object := privatev1.BillingProviderStatus_builder{
 		State:                 privateProviderState(status.State),
 		ProviderKey:           status.ProviderKey,
 		Message:               status.Message,
 		SupportedCapabilities: privateProviderCapabilities(status.Capabilities),
+		LastSuccessfulCheck:   lastSuccessfulCheckTimestamp,
 	}.Build()
 	return privatev1.BillingProviderStatusesGetResponse_builder{Object: object}.Build(), nil
 }
@@ -218,7 +235,7 @@ func (s *PrivateBillingAccountsServer) List(
 	request *privatev1.BillingAccountsListRequest,
 ) (*privatev1.BillingAccountsListResponse, error) {
 	if s.provider == nil {
-		return nil, grpcstatus.Error(grpccodes.FailedPrecondition, "billing provider is not configured")
+		return nil, grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_NOT_CONFIGURED")
 	}
 	if request.GetOffset() < 0 || request.GetLimit() < 0 {
 		return nil, grpcstatus.Error(grpccodes.InvalidArgument, "offset and limit must not be negative")

@@ -29,6 +29,7 @@ import (
 	"github.com/osac-project/osac/fulfillment-service/internal/database/dao"
 	"github.com/osac-project/osac/fulfillment-service/internal/utils"
 	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
+	publicv1 "github.com/osac-project/osac/proto/gen/osac/public/v1"
 )
 
 type PrivateComputeInstanceCatalogItemsServerBuilder struct {
@@ -37,6 +38,7 @@ type PrivateComputeInstanceCatalogItemsServerBuilder struct {
 	tenancyLogic      auth.TenancyLogic
 	metricsRegisterer prometheus.Registerer
 	filterDesc        protoreflect.MessageDescriptor
+	pricingResolver   *CatalogPricingResolver
 }
 
 var _ privatev1.ComputeInstanceCatalogItemsServer = (*PrivateComputeInstanceCatalogItemsServer)(nil)
@@ -51,6 +53,8 @@ type PrivateComputeInstanceCatalogItemsServer struct {
 	storageTiersDao   *dao.GenericDAO[*privatev1.StorageTier]
 	subnetsDao        *dao.GenericDAO[*privatev1.Subnet]
 	securityGroupsDao *dao.GenericDAO[*privatev1.SecurityGroup]
+	outMapper         *GenericMapper[*privatev1.ComputeInstanceCatalogItem, *publicv1.ComputeInstanceCatalogItem]
+	pricingResolver   *CatalogPricingResolver
 }
 
 func NewPrivateComputeInstanceCatalogItemsServer() *PrivateComputeInstanceCatalogItemsServerBuilder {
@@ -77,6 +81,11 @@ func (b *PrivateComputeInstanceCatalogItemsServerBuilder) SetMetricsRegisterer(v
 	return b
 }
 
+func (b *PrivateComputeInstanceCatalogItemsServerBuilder) SetPricingResolver(value *CatalogPricingResolver) *PrivateComputeInstanceCatalogItemsServerBuilder {
+	b.pricingResolver = value
+	return b
+}
+
 // SetFilterDesc sets the protobuf descriptor used to validate public CEL filters. When omitted, the private Catalog
 // Item descriptor is used.
 func (b *PrivateComputeInstanceCatalogItemsServerBuilder) SetFilterDesc(value protoreflect.MessageDescriptor) *PrivateComputeInstanceCatalogItemsServerBuilder {
@@ -91,6 +100,13 @@ func (b *PrivateComputeInstanceCatalogItemsServerBuilder) Build() (result *Priva
 	}
 	if b.tenancyLogic == nil {
 		err = errors.New("tenancy logic is mandatory")
+		return
+	}
+	outMapper, err := NewGenericMapper[*privatev1.ComputeInstanceCatalogItem, *publicv1.ComputeInstanceCatalogItem]().
+		SetLogger(b.logger).
+		SetStrict(false).
+		Build()
+	if err != nil {
 		return
 	}
 	templatesDao, err := dao.NewGenericDAO[*privatev1.ComputeInstanceTemplate]().
@@ -178,6 +194,8 @@ func (b *PrivateComputeInstanceCatalogItemsServerBuilder) Build() (result *Priva
 		storageTiersDao:   storageTiersDao,
 		subnetsDao:        subnetsDao,
 		securityGroupsDao: securityGroupsDao,
+		outMapper:         outMapper,
+		pricingResolver:   b.pricingResolver,
 	}
 	return
 }
@@ -247,9 +265,22 @@ func (s *PrivateComputeInstanceCatalogItemsServer) prepareCatalogItemCandidate(
 	if err := s.validateAndCanonicalizeTemplate(ctx, current, candidate); err != nil {
 		return nil, err
 	}
-	return validateAndCanonicalizeComputeInstanceCatalogItemPolicies(
+	warnings, err := validateAndCanonicalizeComputeInstanceCatalogItemPolicies(
 		ctx, candidate, s.instanceTypesDao, s.diskImagesDao, s.secretsDao, s.storageTiersDao, s.subnetsDao, s.securityGroupsDao,
 	)
+	if err != nil || !catalogItemNeedsBillingCoverage(s.pricingResolver, candidate.GetMetadata().GetTenant(), candidate.GetPublished()) {
+		return warnings, err
+	}
+	publicItem := &publicv1.ComputeInstanceCatalogItem{}
+	if err := s.outMapper.Copy(ctx, candidate, publicItem); err != nil {
+		s.generic.logger.ErrorContext(ctx, "Failed to map compute catalog item for billing coverage", slog.Any("error", err))
+		return nil, grpcstatus.Error(grpccodes.Internal, "failed to evaluate billing coverage for compute catalog item")
+	}
+	requests := computeCatalogPricingRequests([]*publicv1.ComputeInstanceCatalogItem{publicItem})
+	if err := checkCatalogItemBillingCoverage(ctx, s.pricingResolver, candidate.GetMetadata().GetTenant(), candidate.GetPublished(), requests); err != nil {
+		return nil, err
+	}
+	return warnings, nil
 }
 
 // validateAndCanonicalizeTemplate finds the Template named by this Catalog Item. A name lookup

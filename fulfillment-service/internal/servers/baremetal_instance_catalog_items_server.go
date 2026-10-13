@@ -113,6 +113,7 @@ func (b *BareMetalInstanceCatalogItemsServerBuilder) Build() (result *BareMetalI
 		SetAttributionLogic(b.attributionLogic).
 		SetTenancyLogic(b.tenancyLogic).
 		SetMetricsRegisterer(b.metricsRegisterer).
+		SetPricingResolver(b.pricingResolver).
 		SetFilterDesc((*publicv1.BareMetalInstanceCatalogItem)(nil).ProtoReflect().Descriptor()).
 		Build()
 	if err != nil {

@@ -108,6 +108,7 @@ func (b *ClusterCatalogItemsServerBuilder) Build() (result *ClusterCatalogItemsS
 		SetAttributionLogic(b.attributionLogic).
 		SetTenancyLogic(b.tenancyLogic).
 		SetMetricsRegisterer(b.metricsRegisterer).
+		SetPricingResolver(b.pricingResolver).
 		SetFilterDesc((*publicv1.ClusterCatalogItem)(nil).ProtoReflect().Descriptor()).
 		Build()
 	if err != nil {

@@ -21,6 +21,7 @@ package osac.private.v1;
 import "cleanapi/cleanapi.proto";
 import "google/api/annotations.proto";
 import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
 import "osac/private/v1/billing_account_type.proto";
 import "osac/private/v1/tenant_billing_assignment_type.proto";
 
@@ -36,6 +37,8 @@ message BillingProviderStatus {
   // Operations supported by the configured provider adapter. An absent
   // capability is unsupported by this OSAC deployment.
   repeated BillingProviderCapability supported_capabilities = 4;
+  // Time of the most recent successful health check of the configured provider.
+  google.protobuf.Timestamp last_successful_check = 5;
 }
 
 // BillingProviderState is the normalized health state of the billing provider.
