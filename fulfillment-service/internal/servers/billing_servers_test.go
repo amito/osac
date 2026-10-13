@@ -98,6 +98,7 @@ func TestBillingProviderStatusExposesProviderAdapterCapabilities(t *testing.T) {
 		State: billing.ProviderStateAvailable,
 		Capabilities: []billing.ProviderCapability{
 			billing.ProviderCapabilityPricing,
+			billing.ProviderCapabilityCosts,
 			billing.ProviderCapabilityInvoices,
 			"FUTURE_CAPABILITY",
 		},
@@ -113,6 +114,7 @@ func TestBillingProviderStatusExposesProviderAdapterCapabilities(t *testing.T) {
 	capabilities := response.GetObject().GetSupportedCapabilities()
 	want := []publicv1.BillingProviderCapability{
 		publicv1.BillingProviderCapability_BILLING_PROVIDER_CAPABILITY_PRICING,
+		publicv1.BillingProviderCapability_BILLING_PROVIDER_CAPABILITY_COSTS,
 		publicv1.BillingProviderCapability_BILLING_PROVIDER_CAPABILITY_INVOICES,
 	}
 	if len(capabilities) != len(want) {

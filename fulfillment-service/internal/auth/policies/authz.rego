@@ -201,6 +201,7 @@ allow if {
   grpc_method in {
     "/osac.public.v1.AddOnOperators/Get",
     "/osac.public.v1.AddOnOperators/List",
+    "/osac.public.v1.BillingCosts/List",
     "/osac.public.v1.BareMetalInstanceCatalogItems/Get",
     "/osac.public.v1.BareMetalInstanceCatalogItems/List",
     "/osac.public.v1.BareMetalInstanceTemplates/Get",
@@ -330,6 +331,8 @@ allow if {
     "/osac.public.v1.RoleBindings/List",
     "/osac.public.v1.RoleBindings/Update",
     "/osac.public.v1.RoleBindings/Delete",
+    "/osac.public.v1.BillingInvoices/Get",
+    "/osac.public.v1.BillingInvoices/List",
   }
 }
 
