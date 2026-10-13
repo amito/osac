@@ -94,7 +94,7 @@ func (r *CatalogPricingResolver) ResolveSelectedConfiguration(
 		}
 		for _, index := range indicesByService[service] {
 			component := &components[index]
-			match, matchErr := billing.ResolveRateCardItem(rateItems, service, account.CurrencyCode, component.Request.Dimensions)
+			match, matchErr := r.resolveRateCardItem(rateItems, service, account.CurrencyCode, component.Request.Dimensions)
 			switch {
 			case matchErr == nil:
 				component.Rate = &match

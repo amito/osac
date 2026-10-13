@@ -86,6 +86,7 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 	providerRateCardItemsBuilder := servers.NewProviderRateCardItemsServer().
 		SetLogger(deps.Logger).
 		SetProvider(deps.BillingProviderKey, rateCardProvider).
+		SetPricingResolver(catalogPricingResolver).
 		SetAccountStore(billingAccountStore)
 	billingInvoicesBuilder := servers.NewBillingInvoicesServer().
 		SetLogger(deps.Logger).

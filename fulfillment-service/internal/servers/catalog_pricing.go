@@ -36,6 +36,7 @@ const (
 	catalogPricingCacheTTL                = 5 * time.Minute
 	catalogPricingTimeout                 = 15 * time.Second
 	catalogPricingRetryCount              = billing.ProviderReadRetryCount
+	catalogPricingMaxConcurrency          = 4
 	catalogPricingCircuitFailureThreshold = 5
 	catalogPricingCircuitFailureWindow    = 30 * time.Second
 	catalogPricingCircuitOpenDuration     = 30 * time.Second
@@ -72,11 +73,12 @@ type CatalogPricingResolver struct {
 	accounts      catalogPricingAccountStore
 	now           func() time.Time
 
-	mu       sync.Mutex
-	cache    map[catalogRateCardKey]catalogRateCardEntry
-	inFlight map[catalogRateCardKey]*catalogRateCardLoad
-	circuit  catalogPricingCircuitBreaker
-	metrics  *catalogPricingMetrics
+	mu            sync.Mutex
+	cache         map[catalogRateCardKey]catalogRateCardEntry
+	inFlight      map[catalogRateCardKey]*catalogRateCardLoad
+	rateCardSlots chan struct{}
+	circuit       catalogPricingCircuitBreaker
+	metrics       *catalogPricingMetrics
 }
 
 type catalogRateCardKey struct {
@@ -113,6 +115,7 @@ func NewCatalogPricingResolver(
 		now:           time.Now,
 		cache:         make(map[catalogRateCardKey]catalogRateCardEntry),
 		inFlight:      make(map[catalogRateCardKey]*catalogRateCardLoad),
+		rateCardSlots: make(chan struct{}, catalogPricingMaxConcurrency),
 	}
 	if len(registerers) > 0 && registerers[0] != nil {
 		resolver.metrics = newCatalogPricingMetrics(registerers[0])
@@ -193,7 +196,7 @@ func (r *CatalogPricingResolver) Resolve(
 			continue
 		}
 		for _, lookup := range lookupsByService[service] {
-			matched, matchErr := billing.ResolveRateCardItem(rateItems, service, account.CurrencyCode, lookup.request.Dimensions)
+			matched, matchErr := r.resolveRateCardItem(rateItems, service, account.CurrencyCode, lookup.request.Dimensions)
 			if matchErr != nil {
 				failed[lookup.requestIndex] = true
 				continue
@@ -233,6 +236,30 @@ func catalogPricingComponents(request CatalogPricingRequest) []billing.CatalogPr
 	return []billing.CatalogPricingComponentRequest{{
 		Dimensions: request.Dimensions, Description: request.Description,
 	}}
+}
+
+func (r *CatalogPricingResolver) resolveRateCardItem(
+	items []billing.RateCardItem,
+	service, currency string,
+	dimensions map[string]string,
+) (billing.RateCardItem, error) {
+	item, err := billing.ResolveRateCardItem(items, service, currency, dimensions)
+	if r == nil || r.metrics == nil || r.metrics.resolutionOutcomes == nil {
+		return item, err
+	}
+	outcome := "resolved"
+	switch {
+	case errors.Is(err, billing.ErrRateCoverageGap):
+		outcome = "coverage_gap"
+	case errors.Is(err, billing.ErrAmbiguousRateCard):
+		outcome = "ambiguous"
+	case errors.Is(err, billing.ErrInvalidRateCard):
+		outcome = "invalid_rate_card"
+	case err != nil:
+		outcome = "error"
+	}
+	r.metrics.resolutionOutcomes.WithLabelValues(r.providerKey, outcome).Inc()
+	return item, err
 }
 
 // CheckCoverage requires a fresh rate-card lookup for every billable service in
@@ -310,7 +337,7 @@ func (r *CatalogPricingResolver) CheckCoverage(
 			return grpcstatus.Error(grpccodes.Unavailable, "BILLING_COVERAGE_UNAVAILABLE")
 		}
 		for _, request := range byService[service] {
-			_, err := billing.ResolveRateCardItem(rateItems, service, account.CurrencyCode, request.Dimensions)
+			_, err := r.resolveRateCardItem(rateItems, service, account.CurrencyCode, request.Dimensions)
 			switch {
 			case err == nil:
 				continue
@@ -351,35 +378,11 @@ func (r *CatalogPricingResolver) getFreshRateCardItems(
 	account billing.AssignedAccount,
 	service string,
 ) ([]billing.RateCardItem, error) {
-	allowed, probe := r.circuit.allow(r.now())
-	if !allowed {
-		if r.metrics != nil && r.metrics.lookupOutcomes != nil {
-			r.metrics.lookupOutcomes.WithLabelValues(r.providerKey, "circuit_open").Inc()
-		}
-		return nil, errors.New("billing pricing circuit is open")
-	}
-	startedAt := time.Now()
-	items, err := listRateCardsWithRetries(ctx, r.provider, billing.RateCardQuery{
+	return r.listFreshRateCardItems(ctx, billing.RateCardQuery{
 		AccountReference: account.ProviderAccountReference,
 		Service:          service,
 		CurrencyCode:     account.CurrencyCode,
 	})
-	if r.metrics != nil && r.metrics.lookupOutcomes != nil {
-		outcome := "success"
-		if err != nil {
-			outcome = "error"
-		}
-		r.metrics.lookupOutcomes.WithLabelValues(r.providerKey, outcome).Inc()
-	}
-	if r.metrics != nil && r.metrics.lookupDuration != nil {
-		r.metrics.lookupDuration.WithLabelValues(r.providerKey).Observe(time.Since(startedAt).Seconds())
-	}
-	if err != nil {
-		r.circuit.recordFailure(r.now(), probe)
-		return nil, err
-	}
-	r.circuit.recordSuccess(probe)
-	return items, nil
 }
 
 func (r *CatalogPricingResolver) getRateCardItems(
@@ -419,17 +422,6 @@ func (r *CatalogPricingResolver) getRateCardItems(
 			return nil, false
 		}
 	}
-	allowed, probe := r.circuit.allow(now)
-	if !allowed {
-		if r.metrics != nil && r.metrics.lookupOutcomes != nil {
-			r.metrics.lookupOutcomes.WithLabelValues(r.providerKey, "circuit_open").Inc()
-		}
-		r.mu.Unlock()
-		if hasEntry {
-			return entry.items, true
-		}
-		return nil, false
-	}
 	loading := &catalogRateCardLoad{done: make(chan struct{})}
 	r.inFlight[key] = loading
 	r.mu.Unlock()
@@ -439,13 +431,63 @@ func (r *CatalogPricingResolver) getRateCardItems(
 		Service:          service,
 		CurrencyCode:     account.CurrencyCode,
 	}
-	startedAt := time.Now()
-	items, err := listRateCardsWithRetries(ctx, r.provider, query)
+	items, err := r.listFreshRateCardItems(ctx, query)
 	if err == nil && items == nil {
 		// A provider may represent an empty rate card with a nil slice. Keep that
 		// distinct from nil returned after a failed lookup, which means unavailable.
 		items = []billing.RateCardItem{}
 	}
+	return r.finishRateCardLoad(key, loading, items, err)
+}
+
+func (r *CatalogPricingResolver) finishRateCardLoad(
+	key catalogRateCardKey,
+	loading *catalogRateCardLoad,
+	items []billing.RateCardItem,
+	loadErr error,
+) ([]billing.RateCardItem, bool) {
+	r.mu.Lock()
+	loading.items = items
+	loading.err = loadErr
+	if loadErr == nil {
+		r.cache[key] = catalogRateCardEntry{items: items, fetchedAt: r.now()}
+	}
+	delete(r.inFlight, key)
+	close(loading.done)
+	if loadErr == nil {
+		r.mu.Unlock()
+		return items, false
+	}
+	entry, hasEntry := r.cache[key]
+	r.mu.Unlock()
+	if hasEntry {
+		return entry.items, true
+	}
+	return nil, false
+}
+
+func listRateCardsWithRetries(ctx context.Context, provider billing.RateCardProvider, query billing.RateCardQuery) ([]billing.RateCardItem, error) {
+	return billing.RetryProviderRead(ctx, func(ctx context.Context) ([]billing.RateCardItem, error) {
+		return provider.ListRateCardItems(ctx, query)
+	})
+}
+
+func (r *CatalogPricingResolver) listFreshRateCardItems(ctx context.Context, query billing.RateCardQuery) ([]billing.RateCardItem, error) {
+	release, err := r.acquireRateCardSlot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	allowed, probe := r.circuit.allow(r.now())
+	if !allowed {
+		if r.metrics != nil && r.metrics.lookupOutcomes != nil {
+			r.metrics.lookupOutcomes.WithLabelValues(r.providerKey, "circuit_open").Inc()
+		}
+		return nil, errors.New("billing pricing circuit is open")
+	}
+	startedAt := time.Now()
+	items, err := listRateCardsWithRetries(ctx, r.provider, query)
 	if r.metrics != nil && r.metrics.lookupOutcomes != nil {
 		outcome := "success"
 		if err != nil {
@@ -458,34 +500,22 @@ func (r *CatalogPricingResolver) getRateCardItems(
 	}
 	if err != nil {
 		r.circuit.recordFailure(r.now(), probe)
-	} else {
-		r.circuit.recordSuccess(probe)
+		return nil, err
 	}
-
-	r.mu.Lock()
-	loading.items = items
-	loading.err = err
-	if err == nil {
-		r.cache[key] = catalogRateCardEntry{items: items, fetchedAt: r.now()}
-	}
-	delete(r.inFlight, key)
-	close(loading.done)
-	if err == nil {
-		r.mu.Unlock()
-		return items, false
-	}
-	entry, hasEntry = r.cache[key]
-	r.mu.Unlock()
-	if hasEntry {
-		return entry.items, true
-	}
-	return nil, false
+	r.circuit.recordSuccess(probe)
+	return items, nil
 }
 
-func listRateCardsWithRetries(ctx context.Context, provider billing.RateCardProvider, query billing.RateCardQuery) ([]billing.RateCardItem, error) {
-	return billing.RetryProviderRead(ctx, func(ctx context.Context) ([]billing.RateCardItem, error) {
-		return provider.ListRateCardItems(ctx, query)
-	})
+func (r *CatalogPricingResolver) acquireRateCardSlot(ctx context.Context) (func(), error) {
+	if r.rateCardSlots == nil {
+		return func() {}, nil
+	}
+	select {
+	case r.rateCardSlots <- struct{}{}:
+		return func() { <-r.rateCardSlots }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 type catalogPricingCircuitBreaker struct {
@@ -574,9 +604,10 @@ func resolveCatalogPricing(
 }
 
 type catalogPricingMetrics struct {
-	lookupOutcomes *prometheus.CounterVec
-	lookupDuration *prometheus.HistogramVec
-	results        *prometheus.CounterVec
+	lookupOutcomes     *prometheus.CounterVec
+	lookupDuration     *prometheus.HistogramVec
+	resolutionOutcomes *prometheus.CounterVec
+	results            *prometheus.CounterVec
 }
 
 func newCatalogPricingMetrics(registerer prometheus.Registerer) *catalogPricingMetrics {
@@ -594,8 +625,13 @@ func newCatalogPricingMetrics(registerer prometheus.Registerer) *catalogPricingM
 		Name: "osac_billing_catalog_pricing_results_total",
 		Help: "Catalog pricing results by configured provider and freshness state.",
 	}, []string{"provider", "status"})
+	resolutionOutcomes := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "osac_billing_rate_resolution_outcomes_total",
+		Help: "Provider rate resolution outcomes by configured provider and result.",
+	}, []string{"provider", "outcome"})
 	metrics.lookupOutcomes = registerCatalogPricingCounter(registerer, lookupOutcomes)
 	metrics.lookupDuration = registerCatalogPricingHistogram(registerer, lookupDuration)
+	metrics.resolutionOutcomes = registerCatalogPricingCounter(registerer, resolutionOutcomes)
 	metrics.results = registerCatalogPricingCounter(registerer, results)
 	return metrics
 }
