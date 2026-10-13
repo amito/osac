@@ -126,22 +126,6 @@ func (f *Function) Reconcile(ctx context.Context, assignment *privatev1.TenantBi
 		return f.markPending(ctx, assignment.GetId(), "INVALID_ASSIGNMENT", errors.New("assignment tenant or account is missing"))
 	}
 
-	accounts, err := f.listAssignments(ctx, tenantID)
-	if err != nil {
-		return f.markPending(ctx, assignment.GetId(), "ASSIGNMENT_LOOKUP_FAILED", err)
-	}
-	for _, previous := range accounts {
-		if previous.GetId() == assignment.GetId() || previous.GetSpec().GetBillingAccountId() == targetAccountID {
-			continue
-		}
-		if previous.GetStatus().GetEffectiveTo() == nil {
-			continue
-		}
-		if err = f.clearHistoricalLink(ctx, previous, tenantID); err != nil {
-			return f.markPending(ctx, assignment.GetId(), "PREVIOUS_ACCOUNT_UNLINK_FAILED", err)
-		}
-	}
-
 	target, err := f.getProviderAccount(ctx, targetAccountID)
 	if err != nil {
 		return f.markPending(ctx, assignment.GetId(), "PROVIDER_UNAVAILABLE", err)
@@ -167,6 +151,24 @@ func (f *Function) Reconcile(ctx context.Context, assignment *privatev1.TenantBi
 	}
 	if target.ExternalID != tenantID {
 		return f.markPending(ctx, assignment.GetId(), "LINK_NOT_VERIFIED", errors.New("provider did not confirm tenant link"))
+	}
+	// Keep the previous provider link until the replacement account is verified.
+	// If lookup or linking of the new account fails, the old billing association
+	// remains usable while this assignment stays pending.
+	accounts, err := f.listAssignments(ctx, tenantID)
+	if err != nil {
+		return f.markPending(ctx, assignment.GetId(), "ASSIGNMENT_LOOKUP_FAILED", err)
+	}
+	for _, previous := range accounts {
+		if previous.GetId() == assignment.GetId() || previous.GetSpec().GetBillingAccountId() == targetAccountID {
+			continue
+		}
+		if previous.GetStatus().GetEffectiveTo() == nil {
+			continue
+		}
+		if err = f.clearHistoricalLink(ctx, previous, tenantID); err != nil {
+			return f.markPending(ctx, assignment.GetId(), "PREVIOUS_ACCOUNT_UNLINK_FAILED", err)
+		}
 	}
 	_, err = f.assignments.UpdateStatus(ctx, privatev1.TenantBillingAssignmentsUpdateStatusRequest_builder{
 		Id:              assignment.GetId(),
