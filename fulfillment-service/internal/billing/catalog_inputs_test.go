@@ -138,8 +138,8 @@ func TestCatalogPricingInputsIncludesClusterAndBareMetalValues(t *testing.T) {
 		Id:       "baremetal-1",
 		Metadata: publicv1.Metadata_builder{Name: "bm-standard-item"}.Build(),
 		Fields: publicv1.BareMetalInstanceCatalogItemFields_builder{
-			InstanceType: publicv1.BareMetalInstanceTypeLocalReferenceFieldPolicy_builder{
-				Locked: publicv1.BareMetalInstanceTypeLocalReference_builder{Name: "bm-standard"}.Build(),
+			InstanceType: publicv1.BareMetalInstanceTypeReferenceFieldPolicy_builder{
+				Locked: publicv1.BareMetalInstanceTypeReference_builder{Name: "bm-standard"}.Build(),
 			}.Build(),
 		}.Build(),
 	}.Build()
