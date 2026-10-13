@@ -21,6 +21,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/pflag"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/billing"
@@ -45,7 +46,7 @@ func (c *Config) AddFlags(flags *pflag.FlagSet) {
 }
 
 // Build validates the optional settings and constructs the selected provider.
-func (c Config) Build() (string, billing.Provider, error) {
+func (c Config) Build(registerers ...prometheus.Registerer) (string, billing.Provider, error) {
 	if c.ProviderKey == "" {
 		if c.M360APIURL != "" || c.M360APIVersion != "" || c.M360APIKeyFile != "" {
 			return "", nil, errors.New("M360 settings require billing-provider=m360")
@@ -63,10 +64,13 @@ func (c Config) Build() (string, billing.Provider, error) {
 	if err != nil {
 		return "", nil, errors.New("failed to read M360 API key file")
 	}
+	var registerer prometheus.Registerer
+	if len(registerers) > 0 {
+		registerer = registerers[0]
+	}
 	provider, err := m360.NewClient(m360.Config{
-		BaseURL:    c.M360APIURL,
-		APIVersion: c.M360APIVersion,
-		APIKey:     strings.TrimSpace(string(key)),
+		BaseURL: c.M360APIURL, APIVersion: c.M360APIVersion,
+		APIKey: strings.TrimSpace(string(key)), MetricsRegisterer: registerer,
 	})
 	if err != nil {
 		return "", nil, err

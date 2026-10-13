@@ -235,7 +235,7 @@ func (c *runnerContext) run(cmd *cobra.Command, argv []string) error { //nolint:
 	if err := c.args.services.Validate(); err != nil {
 		return fmt.Errorf("invalid service flags: %w", err)
 	}
-	billingProviderKey, billingProvider, err := c.args.billing.Build()
+	billingProviderKey, billingProvider, err := c.args.billing.Build(prometheus.DefaultRegisterer)
 	if err != nil {
 		return fmt.Errorf("invalid billing provider configuration: %w", err)
 	}
