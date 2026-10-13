@@ -225,6 +225,14 @@ func (s *billingPricingService) resolve(
 	if err := auth.ValidateTenantAssignment(ctx, s.tenancy, tenantID); err != nil {
 		return "", nil, convertTenantErrorToGRPC(ctx, err, s.logger, tenantID)
 	}
+	visibility, err := s.tenancy.DetermineVisibility(ctx)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "failed to determine billing project visibility", slog.Any("error", err))
+		return "", nil, grpcstatus.Error(grpccodes.Internal, "failed to determine project visibility")
+	}
+	if visibility == nil || !visibility.IsProjectVisible(tenantID, configuration.GetProject()) {
+		return "", nil, grpcstatus.Error(grpccodes.PermissionDenied, "billing project is not accessible")
+	}
 	if s.resolver == nil {
 		return "", nil, grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_NOT_CONFIGURED")
 	}
