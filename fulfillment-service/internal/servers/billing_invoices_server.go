@@ -180,7 +180,7 @@ func (s *BillingInvoicesServer) Get(ctx context.Context,
 		s.logger.ErrorContext(ctx, "failed to retrieve provider invoice")
 		return nil, grpcstatus.Error(grpccodes.Unavailable, "provider invoice is unavailable")
 	}
-	if invoice.ID != request.GetId() || invoice.Number != request.GetId() {
+	if invoice.ID != request.GetId() {
 		s.logger.ErrorContext(ctx, "provider invoice lookup returned a mismatched invoice")
 		return nil, grpcstatus.Error(grpccodes.Unavailable, "provider invoice is unavailable")
 	}
