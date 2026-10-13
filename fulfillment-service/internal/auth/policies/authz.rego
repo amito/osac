@@ -33,6 +33,12 @@ admin_groups := {
   "admins",
 }
 
+# Cloud Infrastructure Admins can inspect deployment-wide provider health but
+# do not inherit Cloud Provider Admin or ordinary client API permissions.
+cloud_infrastructure_admin_groups := {
+  "cloud-infrastructure-admins",
+}
+
 # Tenant admin roles - users with these roles can manage users in their tenant
 tenant_admin_roles := {
   "tenant-admin",
@@ -126,6 +132,12 @@ is_admin if {
   group in admin_groups
 }
 
+default is_cloud_infrastructure_admin = false
+is_cloud_infrastructure_admin if {
+  some group in subject_groups
+  group in cloud_infrastructure_admin_groups
+}
+
 # Check if an account is a tenant admin (can manage users AND IdP in their tenant):
 default is_tenant_admin = false
 is_tenant_admin if {
@@ -167,6 +179,7 @@ is_csi if {
 default is_client = false
 is_client if {
   not is_admin
+  not is_cloud_infrastructure_admin
   not is_tenant_admin
   not is_tenant_idp_manager
   not is_csi
@@ -419,6 +432,13 @@ billing_service_prefixes := {
 is_billing_service_method if {
   some prefix in billing_service_prefixes
   startswith(grpc_method, prefix)
+}
+
+# Cloud Infrastructure Admins may read normalized deployment-wide provider
+# status, including when billing is not configured.
+allow if {
+  is_cloud_infrastructure_admin
+  grpc_method == "/osac.public.v1.BillingProviderStatuses/Get"
 }
 
 # Billing methods are admin-only unless another explicit tenant rule above
