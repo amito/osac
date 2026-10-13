@@ -45,6 +45,7 @@ type ProviderRateCardItemsServerBuilder struct {
 	logger      *slog.Logger
 	providerKey string
 	provider    billing.RateCardProvider
+	resolver    *CatalogPricingResolver
 	store       assignedBillingAccountStore
 	catalog     catalogPricingInputsLister
 }
@@ -54,6 +55,7 @@ type ProviderRateCardItemsServer struct {
 	logger      *slog.Logger
 	providerKey string
 	provider    billing.RateCardProvider
+	resolver    *CatalogPricingResolver
 	store       assignedBillingAccountStore
 	catalog     catalogPricingInputsLister
 }
@@ -75,6 +77,11 @@ func (b *ProviderRateCardItemsServerBuilder) SetProvider(providerKey string, val
 	return b
 }
 
+func (b *ProviderRateCardItemsServerBuilder) SetPricingResolver(value *CatalogPricingResolver) *ProviderRateCardItemsServerBuilder {
+	b.resolver = value
+	return b
+}
+
 func (b *ProviderRateCardItemsServerBuilder) SetAccountStore(value assignedBillingAccountStore) *ProviderRateCardItemsServerBuilder {
 	b.store = value
 	return b
@@ -93,6 +100,7 @@ func (b *ProviderRateCardItemsServerBuilder) Build() (*ProviderRateCardItemsServ
 		logger:      b.logger,
 		providerKey: b.providerKey,
 		provider:    b.provider,
+		resolver:    b.resolver,
 		store:       b.store,
 		catalog:     b.catalog,
 	}, nil
@@ -138,9 +146,14 @@ func (s *ProviderRateCardItemsServer) List(ctx context.Context,
 			query.CurrencyCode = accountCurrency
 		}
 	}
-	items, err := billing.RetryProviderRead(ctx, func(ctx context.Context) ([]billing.RateCardItem, error) {
-		return s.provider.ListRateCardItems(ctx, query)
-	})
+	var items []billing.RateCardItem
+	if s.resolver != nil {
+		items, err = s.resolver.listFreshRateCardItems(ctx, query)
+	} else {
+		items, err = billing.RetryProviderRead(ctx, func(ctx context.Context) ([]billing.RateCardItem, error) {
+			return s.provider.ListRateCardItems(ctx, query)
+		})
+	}
 	if err != nil {
 		s.logger.ErrorContext(ctx, "failed to list provider rate-card items", slog.Any("error", err))
 		return nil, grpcstatus.Error(grpccodes.Unavailable, "provider rate-card items are unavailable")
