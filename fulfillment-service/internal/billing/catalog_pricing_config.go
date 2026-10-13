@@ -27,9 +27,18 @@ import (
 type CatalogPricingRequest struct {
 	Service      string
 	Dimensions   map[string]string
+	Components   []CatalogPricingComponentRequest
 	Description  string
 	PriceMayVary bool
 	Supported    bool
+}
+
+// CatalogPricingComponentRequest describes one component of a catalog item's
+// default configuration when the item contains multiple independently rated
+// components, such as additional disks or cluster node sets.
+type CatalogPricingComponentRequest struct {
+	Dimensions  map[string]string
+	Description string
 }
 
 var ErrInvalidPricingConfiguration = errors.New("pricing configuration is invalid for the catalog item")
@@ -47,6 +56,7 @@ func ApplyComputeInstancePricingConfiguration(
 	if request.Dimensions == nil {
 		request.Dimensions = make(map[string]string)
 	}
+	request.Components = nil
 	request.Supported = true
 	delete(request.Dimensions, "additional_disk_size_gib")
 	delete(request.Dimensions, "additional_storage_tier")
@@ -135,6 +145,7 @@ func ApplyClusterPricingConfiguration(
 	if request.Dimensions == nil {
 		request.Dimensions = make(map[string]string)
 	}
+	request.Components = nil
 	request.Supported = true
 	if err := applyReferencePricingSelection(request.Dimensions, "release_image", spec.GetVersion().GetName(), fields.GetVersion().GetLocked().GetName(), fields.GetVersion().GetEditable() != nil); err != nil {
 		return nil, err

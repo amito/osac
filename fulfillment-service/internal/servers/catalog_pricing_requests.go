@@ -17,6 +17,7 @@ limitations under the License.
 package servers
 
 import (
+	"sort"
 	"strconv"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/billing"
@@ -197,20 +198,43 @@ func addComputeAdditionalDiskPricingDimensions(request *CatalogPricingRequest, p
 	if disks == nil {
 		return editable != nil
 	}
-	if len(disks.GetItems()) > 1 {
-		request.Supported = false
+	items := disks.GetItems()
+	if len(items) == 0 {
 		return editable != nil
 	}
-	if len(disks.GetItems()) == 1 && disks.GetItems()[0] != nil {
-		disk := disks.GetItems()[0]
-		if disk.HasSizeGib() {
-			request.Dimensions["additional_disk_size_gib"] = strconv.FormatInt(int64(disk.GetSizeGib()), 10)
+	if len(items) == 1 {
+		disk := items[0]
+		if disk == nil {
+			request.Supported = false
+			return editable != nil
 		}
-		if tier := disk.GetStorageTier(); tier != nil && tier.GetName() != "" {
-			request.Dimensions["additional_storage_tier"] = tier.GetName()
+		addComputeDiskDimensions(request.Dimensions, disk)
+		return editable != nil
+	}
+	request.Components = make([]billing.CatalogPricingComponentRequest, 0, len(items))
+	for index, disk := range items {
+		if disk == nil {
+			request.Supported = false
+			request.Components = nil
+			return editable != nil
 		}
+		dimensions := cloneCatalogPricingDimensions(request.Dimensions)
+		addComputeDiskDimensions(dimensions, disk)
+		request.Components = append(request.Components, billing.CatalogPricingComponentRequest{
+			Dimensions:  dimensions,
+			Description: request.Description + " additional disk " + strconv.Itoa(index+1),
+		})
 	}
 	return editable != nil
+}
+
+func addComputeDiskDimensions(dimensions map[string]string, disk *publicv1.ComputeInstanceDisk) {
+	if disk.HasSizeGib() {
+		dimensions["additional_disk_size_gib"] = strconv.FormatInt(int64(disk.GetSizeGib()), 10)
+	}
+	if tier := disk.GetStorageTier(); tier != nil && tier.GetName() != "" {
+		dimensions["additional_storage_tier"] = tier.GetName()
+	}
 }
 
 func addClusterNodeSetPricingDimensions(request *CatalogPricingRequest, policy *publicv1.ClusterNodeSetMapPolicy) bool {
@@ -225,25 +249,64 @@ func addClusterNodeSetPricingDimensions(request *CatalogPricingRequest, policy *
 		nodeSets = editable.GetDefaultValue()
 	}
 	if nodeSets == nil {
-		return editable != nil
-	}
-	items := nodeSets.GetItems()
-	if len(items) > 1 {
 		request.Supported = false
 		return editable != nil
 	}
-	for _, nodeSet := range items {
+	items := nodeSets.GetItems()
+	if len(items) == 0 {
+		request.Supported = false
+		return editable != nil
+	}
+	if len(items) == 1 {
+		var nodeSet *publicv1.ClusterCatalogNodeSet
+		for _, onlyNodeSet := range items {
+			nodeSet = onlyNodeSet
+		}
 		if nodeSet == nil {
-			continue
+			request.Supported = false
+			return editable != nil
 		}
-		if instanceType := nodeSet.GetBaremetalInstanceType(); instanceType != nil && instanceType.GetName() != "" {
-			request.Dimensions["baremetal_instance_type"] = instanceType.GetName()
+		addClusterNodeSetDimensions(request.Dimensions, nodeSet)
+		return editable != nil
+	}
+	names := make([]string, 0, len(items))
+	for name := range items {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	request.Components = make([]billing.CatalogPricingComponentRequest, 0, len(names))
+	for _, name := range names {
+		nodeSet := items[name]
+		if nodeSet == nil {
+			request.Supported = false
+			request.Components = nil
+			return editable != nil
 		}
-		if nodeSet.GetSize() > 0 {
-			request.Dimensions["node_count"] = strconv.FormatInt(int64(nodeSet.GetSize()), 10)
-		}
+		dimensions := cloneCatalogPricingDimensions(request.Dimensions)
+		addClusterNodeSetDimensions(dimensions, nodeSet)
+		request.Components = append(request.Components, billing.CatalogPricingComponentRequest{
+			Dimensions:  dimensions,
+			Description: request.Description + " " + name,
+		})
 	}
 	return editable != nil
+}
+
+func addClusterNodeSetDimensions(dimensions map[string]string, nodeSet *publicv1.ClusterCatalogNodeSet) {
+	if instanceType := nodeSet.GetBaremetalInstanceType(); instanceType != nil && instanceType.GetName() != "" {
+		dimensions["baremetal_instance_type"] = instanceType.GetName()
+	}
+	if nodeSet.GetSize() > 0 {
+		dimensions["node_count"] = strconv.FormatInt(int64(nodeSet.GetSize()), 10)
+	}
+}
+
+func cloneCatalogPricingDimensions(dimensions map[string]string) map[string]string {
+	cloned := make(map[string]string, len(dimensions))
+	for key, value := range dimensions {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func catalogPriceDescription(title, fallback string) string {

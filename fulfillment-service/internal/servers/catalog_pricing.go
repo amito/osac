@@ -55,6 +55,11 @@ func catalogPricingEnrichmentDisabled(ctx context.Context) bool {
 // CatalogPricingRequest describes one billable catalog or selected configuration.
 type CatalogPricingRequest = billing.CatalogPricingRequest
 
+type catalogPricingLookup struct {
+	request      billing.CatalogPricingComponentRequest
+	requestIndex int
+}
+
 type catalogPricingAccountStore interface {
 	GetAssignedAccount(context.Context, string) (billing.AssignedAccount, error)
 }
@@ -152,40 +157,82 @@ func (r *CatalogPricingResolver) Resolve(
 		return results
 	}
 
-	indicesByService := make(map[string][]int)
-	for i, request := range requests {
-		if request.Supported && request.Service != "" {
-			indicesByService[request.Service] = append(indicesByService[request.Service], i)
-		}
-	}
-	for service, indices := range indicesByService {
-		rateItems, stale := r.getRateCardItems(ctx, account, service)
-		if rateItems == nil {
+	lookupsByService := make(map[string][]catalogPricingLookup)
+	expected := make([]int, len(requests))
+	failed := make([]bool, len(requests))
+	staleResults := make([]bool, len(requests))
+	components := make([][]*publicv1.CatalogPriceComponent, len(requests))
+	for index, request := range requests {
+		if !request.Supported || request.Service == "" {
+			failed[index] = true
 			continue
 		}
-		for _, index := range indices {
-			request := requests[index]
-			matched, matchErr := billing.ResolveRateCardItem(rateItems, service, account.CurrencyCode, request.Dimensions)
-			if matchErr != nil {
-				continue
-			}
-			status := publicv1.CatalogPricingStatus_CATALOG_PRICING_STATUS_CURRENT
-			if stale {
-				status = publicv1.CatalogPricingStatus_CATALOG_PRICING_STATUS_STALE
-			}
-			results[index] = publicv1.CatalogItemPricing_builder{
-				Status:       status,
-				CurrencyCode: &account.CurrencyCode,
-				PriceMayVary: request.PriceMayVary,
-				Components: []*publicv1.CatalogPriceComponent{publicv1.CatalogPriceComponent_builder{
-					Amount:      matched.Amount,
-					Unit:        string(matched.Unit),
-					Description: request.Description,
-				}.Build()},
-			}.Build()
+		componentRequests := catalogPricingComponents(request)
+		if len(componentRequests) == 0 {
+			failed[index] = true
+			continue
+		}
+		expected[index] = len(componentRequests)
+		for _, componentRequest := range componentRequests {
+			lookupsByService[request.Service] = append(lookupsByService[request.Service], catalogPricingLookup{
+				request: componentRequest, requestIndex: index,
+			})
 		}
 	}
+	services := make([]string, 0, len(lookupsByService))
+	for service := range lookupsByService {
+		services = append(services, service)
+	}
+	sort.Strings(services)
+	for _, service := range services {
+		rateItems, usedStale := r.getRateCardItems(ctx, account, service)
+		if rateItems == nil {
+			for _, lookup := range lookupsByService[service] {
+				failed[lookup.requestIndex] = true
+			}
+			continue
+		}
+		for _, lookup := range lookupsByService[service] {
+			matched, matchErr := billing.ResolveRateCardItem(rateItems, service, account.CurrencyCode, lookup.request.Dimensions)
+			if matchErr != nil {
+				failed[lookup.requestIndex] = true
+				continue
+			}
+			description := lookup.request.Description
+			if description == "" {
+				description = requests[lookup.requestIndex].Description
+			}
+			components[lookup.requestIndex] = append(components[lookup.requestIndex], publicv1.CatalogPriceComponent_builder{
+				Amount: matched.Amount, Unit: string(matched.Unit), Description: description,
+			}.Build())
+			staleResults[lookup.requestIndex] = staleResults[lookup.requestIndex] || usedStale
+		}
+	}
+	for index, request := range requests {
+		if failed[index] || expected[index] == 0 || len(components[index]) != expected[index] {
+			continue
+		}
+		status := publicv1.CatalogPricingStatus_CATALOG_PRICING_STATUS_CURRENT
+		if staleResults[index] {
+			status = publicv1.CatalogPricingStatus_CATALOG_PRICING_STATUS_STALE
+		}
+		results[index] = publicv1.CatalogItemPricing_builder{
+			Status:       status,
+			CurrencyCode: &account.CurrencyCode,
+			PriceMayVary: request.PriceMayVary,
+			Components:   components[index],
+		}.Build()
+	}
 	return results
+}
+
+func catalogPricingComponents(request CatalogPricingRequest) []billing.CatalogPricingComponentRequest {
+	if len(request.Components) != 0 {
+		return request.Components
+	}
+	return []billing.CatalogPricingComponentRequest{{
+		Dimensions: request.Dimensions, Description: request.Description,
+	}}
 }
 
 // CheckCoverage requires a fresh rate-card lookup for every billable service in
@@ -238,12 +285,16 @@ func (r *CatalogPricingResolver) CheckCoverage(
 		return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_ACCOUNT_UNAVAILABLE")
 	}
 
-	byService := make(map[string][]CatalogPricingRequest)
+	byService := make(map[string][]billing.CatalogPricingComponentRequest)
 	for _, request := range requests {
 		if !request.Supported || request.Service == "" {
 			return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_CONFIGURATION_UNSUPPORTED")
 		}
-		byService[request.Service] = append(byService[request.Service], request)
+		components := catalogPricingComponents(request)
+		if len(components) == 0 {
+			return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_CONFIGURATION_UNSUPPORTED")
+		}
+		byService[request.Service] = append(byService[request.Service], components...)
 	}
 	services := make([]string, 0, len(byService))
 	for service := range byService {
