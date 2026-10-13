@@ -16,13 +16,14 @@ package billing
 
 import (
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 
 	publicv1 "github.com/osac-project/osac/proto/gen/osac/public/v1"
 )
 
-// CatalogPricingRequest describes one resource configuration to resolve.
+// CatalogPricingRequest describes one billable resource component to resolve.
 type CatalogPricingRequest struct {
 	Service      string
 	Dimensions   map[string]string
@@ -33,24 +34,27 @@ type CatalogPricingRequest struct {
 
 var ErrInvalidPricingConfiguration = errors.New("pricing configuration is invalid for the catalog item")
 
-// ApplyComputeInstancePricingConfiguration overlays the billable values chosen
-// for a compute instance on the catalog item's locked and default values.
+// ApplyComputeInstancePricingConfiguration overlays selected values and returns
+// one pricing request per additional disk, or one for the instance otherwise.
 func ApplyComputeInstancePricingConfiguration(
 	request CatalogPricingRequest,
 	spec *publicv1.ComputeInstanceSpec,
 	fields *publicv1.ComputeInstanceCatalogItemFields,
-) (CatalogPricingRequest, error) {
+) ([]CatalogPricingRequest, error) {
 	if spec == nil || fields == nil {
-		return request, ErrInvalidPricingConfiguration
+		return nil, ErrInvalidPricingConfiguration
 	}
 	if request.Dimensions == nil {
 		request.Dimensions = make(map[string]string)
 	}
+	request.Supported = true
+	delete(request.Dimensions, "additional_disk_size_gib")
+	delete(request.Dimensions, "additional_storage_tier")
 	if err := applyReferencePricingSelection(request.Dimensions, "image_ref", spec.GetDiskImage().GetName(), fields.GetDiskImage().GetLocked().GetName(), fields.GetDiskImage().GetEditable() != nil); err != nil {
-		return request, err
+		return nil, err
 	}
 	if err := applyReferencePricingSelection(request.Dimensions, "instance_type", spec.GetInstanceType().GetName(), fields.GetInstanceType().GetLocked().GetName(), fields.GetInstanceType().GetEditable() != nil); err != nil {
-		return request, err
+		return nil, err
 	}
 	if disk := spec.GetBootDisk(); disk != nil {
 		policy := fields.GetBootDisk()
@@ -58,83 +62,133 @@ func ApplyComputeInstancePricingConfiguration(
 			lockedSize := policy.GetSizeGib().GetLocked()
 			selectedSize := disk.GetSizeGib()
 			if policy.GetSizeGib().HasLocked() && lockedSize != selectedSize {
-				return request, ErrInvalidPricingConfiguration
+				return nil, ErrInvalidPricingConfiguration
 			}
 			if !policy.GetSizeGib().HasLocked() && policy.GetSizeGib().GetEditable() == nil {
-				return request, ErrInvalidPricingConfiguration
+				return nil, ErrInvalidPricingConfiguration
 			}
 			request.Dimensions["boot_disk_size_gib"] = strconv.FormatInt(int64(selectedSize), 10)
 		}
 		if tier := disk.GetStorageTier().GetName(); tier != "" {
 			if err := applyReferencePricingSelection(request.Dimensions, "storage_tier", tier, policy.GetStorageTier().GetLocked().GetName(), policy.GetStorageTier().GetEditable() != nil); err != nil {
-				return request, err
+				return nil, err
 			}
 		}
 	}
 	additionalDisks := spec.GetAdditionalDisks()
-	if len(additionalDisks) > 1 {
-		request.Supported = false
-		return request, nil
-	}
-	if len(additionalDisks) == 1 && additionalDisks[0] != nil {
-		policy := fields.GetAdditionalDisks()
-		if policy == nil {
-			return request, ErrInvalidPricingConfiguration
-		}
+	policy := fields.GetAdditionalDisks()
+	if len(additionalDisks) == 0 && policy != nil {
 		if locked := policy.GetLocked(); locked != nil {
-			items := locked.GetItems()
-			if len(items) != 1 || items[0].GetSizeGib() != additionalDisks[0].GetSizeGib() || items[0].GetStorageTier().GetName() != additionalDisks[0].GetStorageTier().GetName() {
-				return request, ErrInvalidPricingConfiguration
-			}
-		} else if policy.GetEditable() == nil {
-			return request, ErrInvalidPricingConfiguration
-		}
-		if additionalDisks[0].HasSizeGib() {
-			request.Dimensions["additional_disk_size_gib"] = strconv.FormatInt(int64(additionalDisks[0].GetSizeGib()), 10)
-		}
-		if tier := additionalDisks[0].GetStorageTier().GetName(); tier != "" {
-			request.Dimensions["additional_storage_tier"] = tier
+			additionalDisks = locked.GetItems()
+		} else if editable := policy.GetEditable(); editable != nil {
+			additionalDisks = editable.GetDefaultValue().GetItems()
 		}
 	}
-	return request, nil
+	if len(additionalDisks) == 0 {
+		return []CatalogPricingRequest{request}, nil
+	}
+	if policy == nil {
+		return nil, ErrInvalidPricingConfiguration
+	}
+	if locked := policy.GetLocked(); locked != nil {
+		items := locked.GetItems()
+		if len(items) != len(additionalDisks) {
+			return nil, ErrInvalidPricingConfiguration
+		}
+		for index, disk := range additionalDisks {
+			if disk == nil || items[index] == nil || items[index].GetSizeGib() != disk.GetSizeGib() || items[index].GetStorageTier().GetName() != disk.GetStorageTier().GetName() {
+				return nil, ErrInvalidPricingConfiguration
+			}
+		}
+	} else if policy.GetEditable() == nil {
+		return nil, ErrInvalidPricingConfiguration
+	}
+	requests := make([]CatalogPricingRequest, 0, len(additionalDisks))
+	for index, disk := range additionalDisks {
+		if disk == nil {
+			return nil, ErrInvalidPricingConfiguration
+		}
+		component := request
+		component.Dimensions = clonePricingDimensions(request.Dimensions)
+		component.Description = strings.TrimSpace(request.Description + " additional disk " + strconv.Itoa(index+1))
+		if disk.HasSizeGib() {
+			component.Dimensions["additional_disk_size_gib"] = strconv.FormatInt(int64(disk.GetSizeGib()), 10)
+		}
+		if tier := disk.GetStorageTier().GetName(); tier != "" {
+			component.Dimensions["additional_storage_tier"] = tier
+		}
+		requests = append(requests, component)
+	}
+	return requests, nil
 }
 
-// ApplyClusterPricingConfiguration overlays the selected cluster version and
-// node set on the catalog item's locked and default values.
+// ApplyClusterPricingConfiguration overlays selected values and returns one
+// pricing request per node set, or one for the catalog defaults otherwise.
 func ApplyClusterPricingConfiguration(
 	request CatalogPricingRequest,
 	spec *publicv1.ClusterSpec,
 	fields *publicv1.ClusterCatalogItemFields,
-) (CatalogPricingRequest, error) {
+) ([]CatalogPricingRequest, error) {
 	if spec == nil || fields == nil {
-		return request, ErrInvalidPricingConfiguration
+		return nil, ErrInvalidPricingConfiguration
 	}
 	if request.Dimensions == nil {
 		request.Dimensions = make(map[string]string)
 	}
+	request.Supported = true
 	if err := applyReferencePricingSelection(request.Dimensions, "release_image", spec.GetVersion().GetName(), fields.GetVersion().GetLocked().GetName(), fields.GetVersion().GetEditable() != nil); err != nil {
-		return request, err
+		return nil, err
 	}
 	nodeSets := spec.GetNodeSets()
-	if len(nodeSets) > 1 {
-		request.Supported = false
-		return request, nil
+	policy := fields.GetNodeSets()
+	if len(nodeSets) == 0 && policy != nil {
+		defaults := policy.GetLocked()
+		if defaults == nil && policy.GetEditable() != nil {
+			defaults = policy.GetEditable().GetDefaultValue()
+		}
+		if defaults != nil {
+			nodeSets = make(map[string]*publicv1.ClusterNodeSet, len(defaults.GetItems()))
+			for name, nodeSet := range defaults.GetItems() {
+				if nodeSet == nil {
+					return nil, ErrInvalidPricingConfiguration
+				}
+				size := nodeSet.GetSize()
+				nodeSets[name] = publicv1.ClusterNodeSet_builder{
+					Size:                  &size,
+					BaremetalInstanceType: nodeSet.GetBaremetalInstanceType(),
+				}.Build()
+			}
+		}
 	}
-	for _, nodeSet := range nodeSets {
-		if nodeSet == nil {
-			continue
-		}
-		if err := validateClusterNodeSetSelection(fields.GetNodeSets(), nodeSet); err != nil {
-			return request, err
-		}
+	if len(nodeSets) == 0 {
+		request.Supported = false
+		return []CatalogPricingRequest{request}, nil
+	}
+	if err := validateClusterNodeSetsSelection(policy, nodeSets); err != nil {
+		return nil, err
+	}
+	delete(request.Dimensions, "baremetal_instance_type")
+	delete(request.Dimensions, "node_count")
+	names := make([]string, 0, len(nodeSets))
+	for name := range nodeSets {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	requests := make([]CatalogPricingRequest, 0, len(names))
+	for _, name := range names {
+		nodeSet := nodeSets[name]
+		component := request
+		component.Dimensions = clonePricingDimensions(request.Dimensions)
+		component.Description = strings.TrimSpace(request.Description + " " + name)
 		if instanceType := nodeSet.GetBaremetalInstanceType().GetName(); instanceType != "" {
-			request.Dimensions["baremetal_instance_type"] = instanceType
+			component.Dimensions["baremetal_instance_type"] = instanceType
 		}
 		if nodeSet.HasSize() {
-			request.Dimensions["node_count"] = strconv.FormatInt(int64(nodeSet.GetSize()), 10)
+			component.Dimensions["node_count"] = strconv.FormatInt(int64(nodeSet.GetSize()), 10)
 		}
+		requests = append(requests, component)
 	}
-	return request, nil
+	return requests, nil
 }
 
 // ApplyBareMetalPricingConfiguration overlays the selected bare-metal type and
@@ -178,16 +232,22 @@ func applyReferencePricingSelection(dimensions map[string]string, dimension, sel
 	return nil
 }
 
-func validateClusterNodeSetSelection(policy *publicv1.ClusterNodeSetMapPolicy, selected *publicv1.ClusterNodeSet) error {
-	if policy == nil || selected == nil {
+func validateClusterNodeSetsSelection(policy *publicv1.ClusterNodeSetMapPolicy, selected map[string]*publicv1.ClusterNodeSet) error {
+	if policy == nil {
 		return ErrInvalidPricingConfiguration
 	}
-	if locked := policy.GetLocked(); locked != nil {
-		if len(locked.GetItems()) != 1 {
+	for _, nodeSet := range selected {
+		if nodeSet == nil {
 			return ErrInvalidPricingConfiguration
 		}
-		for _, value := range locked.GetItems() {
-			if value.GetSize() != selected.GetSize() || value.GetBaremetalInstanceType().GetName() != selected.GetBaremetalInstanceType().GetName() {
+	}
+	if locked := policy.GetLocked(); locked != nil {
+		if len(locked.GetItems()) != len(selected) {
+			return ErrInvalidPricingConfiguration
+		}
+		for name, expected := range locked.GetItems() {
+			actual := selected[name]
+			if expected == nil || actual == nil || expected.GetSize() != actual.GetSize() || expected.GetBaremetalInstanceType().GetName() != actual.GetBaremetalInstanceType().GetName() {
 				return ErrInvalidPricingConfiguration
 			}
 		}
@@ -197,4 +257,12 @@ func validateClusterNodeSetSelection(policy *publicv1.ClusterNodeSetMapPolicy, s
 		return ErrInvalidPricingConfiguration
 	}
 	return nil
+}
+
+func clonePricingDimensions(dimensions map[string]string) map[string]string {
+	cloned := make(map[string]string, len(dimensions))
+	for key, value := range dimensions {
+		cloned[key] = value
+	}
+	return cloned
 }

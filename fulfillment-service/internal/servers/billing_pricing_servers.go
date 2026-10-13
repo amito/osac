@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math/big"
 	"strings"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/auth"
@@ -147,36 +148,66 @@ func (s *PriceEstimatesServer) Create(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	if len(components) != 1 || components[0].Rate == nil {
-		if len(components) != 0 && components[0].Gap {
-			return nil, grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_COVERAGE_GAP")
-		}
+	if len(components) == 0 {
 		return nil, grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_CONFIGURATION_UNSUPPORTED")
 	}
-	component := components[0]
-	rate := component.Rate
-	hourly, monthly, err := billing.NormalizeRecurringRate(rate.Amount, rate.Unit)
-	if err != nil {
-		return nil, grpcstatus.Error(grpccodes.Unimplemented, "PROVIDER_RATE_UNIT_UNSUPPORTED")
+	for _, component := range components {
+		if component.Gap {
+			return nil, grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_COVERAGE_GAP")
+		}
+	}
+	for _, component := range components {
+		if component.Rate == nil {
+			return nil, grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_CONFIGURATION_UNSUPPORTED")
+		}
 	}
 	status := publicv1.PriceEstimateStatus_PRICE_ESTIMATE_STATUS_CURRENT
-	if component.Stale {
-		status = publicv1.PriceEstimateStatus_PRICE_ESTIMATE_STATUS_STALE
-	}
-	return publicv1.PriceEstimatesCreateResponse_builder{
-		CurrencyCode: currency,
-		Components: []*publicv1.PriceEstimateComponent{publicv1.PriceEstimateComponent_builder{
+	hourlyTotal := new(big.Rat)
+	monthlyTotal := new(big.Rat)
+	estimateComponents := make([]*publicv1.PriceEstimateComponent, 0, len(components))
+	for _, component := range components {
+		rate := component.Rate
+		hourly, monthly, err := billing.NormalizeRecurringRate(rate.Amount, rate.Unit)
+		if err != nil {
+			return nil, grpcstatus.Error(grpccodes.Unimplemented, "PROVIDER_RATE_UNIT_UNSUPPORTED")
+		}
+		if !addEstimateAmount(hourlyTotal, hourly) || !addEstimateAmount(monthlyTotal, monthly) {
+			return nil, grpcstatus.Error(grpccodes.Internal, "BILLING_ESTIMATE_INVALID_RATE")
+		}
+		if component.Stale {
+			status = publicv1.PriceEstimateStatus_PRICE_ESTIMATE_STATUS_STALE
+		}
+		estimateComponents = append(estimateComponents, publicv1.PriceEstimateComponent_builder{
 			Service:       component.Request.Service,
 			Description:   component.Request.Description,
 			RateAmount:    rate.Amount,
 			RateUnit:      string(rate.Unit),
 			HourlyAmount:  &hourly,
 			MonthlyAmount: &monthly,
-		}.Build()},
-		HourlyAmount:  hourly,
-		MonthlyAmount: monthly,
+		}.Build())
+	}
+	return publicv1.PriceEstimatesCreateResponse_builder{
+		CurrencyCode:  currency,
+		Components:    estimateComponents,
+		HourlyAmount:  formatEstimateAmount(hourlyTotal),
+		MonthlyAmount: formatEstimateAmount(monthlyTotal),
 		Status:        status,
 	}.Build(), nil
+}
+
+func addEstimateAmount(total *big.Rat, amount string) bool {
+	value, ok := new(big.Rat).SetString(amount)
+	if !ok {
+		return false
+	}
+	total.Add(total, value)
+	return true
+}
+
+func formatEstimateAmount(value *big.Rat) string {
+	amount := value.FloatString(6)
+	amount = strings.TrimRight(amount, "0")
+	return strings.TrimRight(amount, ".")
 }
 
 func (s *billingPricingService) resolve(
@@ -197,93 +228,93 @@ func (s *billingPricingService) resolve(
 	if s.resolver == nil {
 		return "", nil, grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_NOT_CONFIGURED")
 	}
-	request, err := s.pricingRequestForConfiguration(withoutCatalogPricing(ctx), configuration)
+	requests, err := s.pricingRequestsForConfiguration(withoutCatalogPricing(ctx), configuration)
 	if err != nil {
 		return "", nil, err
 	}
-	return s.resolver.ResolveSelectedConfiguration(ctx, tenantID, []CatalogPricingRequest{request})
+	return s.resolver.ResolveSelectedConfiguration(ctx, tenantID, requests)
 }
 
-func (s *billingPricingService) pricingRequestForConfiguration(
+func (s *billingPricingService) pricingRequestsForConfiguration(
 	ctx context.Context,
 	configuration *publicv1.BillingPricingConfiguration,
-) (CatalogPricingRequest, error) {
+) ([]CatalogPricingRequest, error) {
 	if spec := configuration.GetComputeInstance(); spec != nil {
 		if s.computeItems == nil {
-			return CatalogPricingRequest{}, grpcstatus.Error(grpccodes.Unimplemented, "VMaaS is not enabled")
+			return nil, grpcstatus.Error(grpccodes.Unimplemented, "VMaaS is not enabled")
 		}
 		if spec.GetCatalogItem().GetId() == "" {
-			return CatalogPricingRequest{}, grpcstatus.Error(grpccodes.InvalidArgument, "compute instance catalog item is required")
+			return nil, grpcstatus.Error(grpccodes.InvalidArgument, "compute instance catalog item is required")
 		}
 		response, err := s.computeItems.Get(ctx, publicv1.ComputeInstanceCatalogItemsGetRequest_builder{Id: spec.GetCatalogItem().GetId()}.Build())
 		if err != nil {
-			return CatalogPricingRequest{}, catalogPricingItemError(err)
+			return nil, catalogPricingItemError(err)
 		}
 		if response == nil {
-			return CatalogPricingRequest{}, grpcstatus.Error(grpccodes.NotFound, "catalog item was not found")
+			return nil, grpcstatus.Error(grpccodes.NotFound, "catalog item was not found")
 		}
 		item := response.GetObject()
 		if item == nil {
-			return CatalogPricingRequest{}, grpcstatus.Error(grpccodes.NotFound, "catalog item was not found")
+			return nil, grpcstatus.Error(grpccodes.NotFound, "catalog item was not found")
 		}
 		requests := computeCatalogPricingRequests([]*publicv1.ComputeInstanceCatalogItem{item})
-		request, err := billing.ApplyComputeInstancePricingConfiguration(requests[0], spec, item.GetFields())
+		requests, err = billing.ApplyComputeInstancePricingConfiguration(requests[0], spec, item.GetFields())
 		if err != nil {
-			return CatalogPricingRequest{}, grpcstatus.Error(grpccodes.InvalidArgument, "resource configuration is not allowed by the catalog item")
+			return nil, grpcstatus.Error(grpccodes.InvalidArgument, "resource configuration is not allowed by the catalog item")
 		}
-		return request, nil
+		return requests, nil
 	}
 	if spec := configuration.GetCluster(); spec != nil {
 		if s.clusterItems == nil {
-			return CatalogPricingRequest{}, grpcstatus.Error(grpccodes.Unimplemented, "CaaS is not enabled")
+			return nil, grpcstatus.Error(grpccodes.Unimplemented, "CaaS is not enabled")
 		}
 		if spec.GetCatalogItem().GetId() == "" {
-			return CatalogPricingRequest{}, grpcstatus.Error(grpccodes.InvalidArgument, "cluster catalog item is required")
+			return nil, grpcstatus.Error(grpccodes.InvalidArgument, "cluster catalog item is required")
 		}
 		response, err := s.clusterItems.Get(ctx, publicv1.ClusterCatalogItemsGetRequest_builder{Id: spec.GetCatalogItem().GetId()}.Build())
 		if err != nil {
-			return CatalogPricingRequest{}, catalogPricingItemError(err)
+			return nil, catalogPricingItemError(err)
 		}
 		if response == nil {
-			return CatalogPricingRequest{}, grpcstatus.Error(grpccodes.NotFound, "catalog item was not found")
+			return nil, grpcstatus.Error(grpccodes.NotFound, "catalog item was not found")
 		}
 		item := response.GetObject()
 		if item == nil {
-			return CatalogPricingRequest{}, grpcstatus.Error(grpccodes.NotFound, "catalog item was not found")
+			return nil, grpcstatus.Error(grpccodes.NotFound, "catalog item was not found")
 		}
 		requests := clusterCatalogPricingRequests([]*publicv1.ClusterCatalogItem{item})
-		request, err := billing.ApplyClusterPricingConfiguration(requests[0], spec, item.GetFields())
+		requests, err = billing.ApplyClusterPricingConfiguration(requests[0], spec, item.GetFields())
 		if err != nil {
-			return CatalogPricingRequest{}, grpcstatus.Error(grpccodes.InvalidArgument, "resource configuration is not allowed by the catalog item")
+			return nil, grpcstatus.Error(grpccodes.InvalidArgument, "resource configuration is not allowed by the catalog item")
 		}
-		return request, nil
+		return requests, nil
 	}
 	if spec := configuration.GetBareMetalInstance(); spec != nil {
 		if s.bareMetalItems == nil {
-			return CatalogPricingRequest{}, grpcstatus.Error(grpccodes.Unimplemented, "BMaaS is not enabled")
+			return nil, grpcstatus.Error(grpccodes.Unimplemented, "BMaaS is not enabled")
 		}
 		if spec.GetCatalogItem().GetId() == "" {
-			return CatalogPricingRequest{}, grpcstatus.Error(grpccodes.InvalidArgument, "bare metal catalog item is required")
+			return nil, grpcstatus.Error(grpccodes.InvalidArgument, "bare metal catalog item is required")
 		}
 		response, err := s.bareMetalItems.Get(ctx, publicv1.BareMetalInstanceCatalogItemsGetRequest_builder{Id: spec.GetCatalogItem().GetId()}.Build())
 		if err != nil {
-			return CatalogPricingRequest{}, catalogPricingItemError(err)
+			return nil, catalogPricingItemError(err)
 		}
 		if response == nil {
-			return CatalogPricingRequest{}, grpcstatus.Error(grpccodes.NotFound, "catalog item was not found")
+			return nil, grpcstatus.Error(grpccodes.NotFound, "catalog item was not found")
 		}
 		item := response.GetObject()
 		if item == nil {
-			return CatalogPricingRequest{}, grpcstatus.Error(grpccodes.NotFound, "catalog item was not found")
+			return nil, grpcstatus.Error(grpccodes.NotFound, "catalog item was not found")
 		}
 		requests := bareMetalCatalogPricingRequests([]*publicv1.BareMetalInstanceCatalogItem{item})
 		request, err := billing.ApplyBareMetalPricingConfiguration(requests[0], spec, item.GetFields())
 		if err != nil {
-			return CatalogPricingRequest{}, grpcstatus.Error(grpccodes.InvalidArgument, "resource configuration is not allowed by the catalog item")
+			return nil, grpcstatus.Error(grpccodes.InvalidArgument, "resource configuration is not allowed by the catalog item")
 		}
-		return request, nil
+		return []CatalogPricingRequest{request}, nil
 	}
-	return CatalogPricingRequest{}, grpcstatus.Error(grpccodes.InvalidArgument, "resource configuration is required")
+	return nil, grpcstatus.Error(grpccodes.InvalidArgument, "resource configuration is required")
 }
 
 func catalogPricingItemError(err error) error {
