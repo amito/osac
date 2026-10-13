@@ -37,6 +37,7 @@ var _ = Describe("billing account store", func() {
 
 		first, err := store.SyncAccounts(ctx, "m360", []billing.Account{providerAccount}, observedAt)
 		Expect(err).NotTo(HaveOccurred())
+		providerAccount.Currency = "EUR"
 		second, err := store.SyncAccounts(ctx, "m360", []billing.Account{providerAccount}, observedAt.Add(time.Minute))
 		Expect(err).NotTo(HaveOccurred())
 
@@ -45,6 +46,10 @@ var _ = Describe("billing account store", func() {
 		Expect(first[0].GetId()).NotTo(Equal("m360-account-123"))
 		Expect(second[0].GetId()).To(Equal(first[0].GetId()))
 		Expect(second[0].GetProviderAccountReference()).To(Equal("m360-account-123"))
+		Expect(second[0].GetBaseCurrency()).To(Equal("USD"))
 		Expect(second[0].GetStatusObservedAt().AsTime()).To(Equal(observedAt.Add(time.Minute)))
+		stored, err := store.GetAccount(ctx, second[0].GetId())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(stored.GetBaseCurrency()).To(Equal("USD"))
 	})
 })

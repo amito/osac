@@ -35,7 +35,7 @@ import (
 const (
 	catalogPricingCacheTTL                = 5 * time.Minute
 	catalogPricingTimeout                 = 15 * time.Second
-	catalogPricingRetryCount              = 3
+	catalogPricingRetryCount              = billing.ProviderReadRetryCount
 	catalogPricingCircuitFailureThreshold = 5
 	catalogPricingCircuitFailureWindow    = 30 * time.Second
 	catalogPricingCircuitOpenDuration     = 30 * time.Second
@@ -225,7 +225,9 @@ func (r *CatalogPricingResolver) CheckCoverage(
 	if account.ProviderKey != r.providerKey || !assignmentIsConnected(account.ConnectionState) || account.ProviderAccountReference == "" || account.CurrencyCode == "" {
 		return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_ACCOUNT_UNAVAILABLE")
 	}
-	providerAccount, err := r.accountStatus.GetAccount(ctx, account.ProviderAccountReference)
+	providerAccount, err := billing.RetryProviderRead(ctx, func(ctx context.Context) (billing.Account, error) {
+		return r.accountStatus.GetAccount(ctx, account.ProviderAccountReference)
+	})
 	if err != nil {
 		if ctx.Err() != nil {
 			return grpcstatus.Error(grpccodes.DeadlineExceeded, "BILLING_COVERAGE_TIMEOUT")
@@ -430,25 +432,9 @@ func (r *CatalogPricingResolver) getRateCardItems(
 }
 
 func listRateCardsWithRetries(ctx context.Context, provider billing.RateCardProvider, query billing.RateCardQuery) ([]billing.RateCardItem, error) {
-	var lastErr error
-	for attempt := 0; attempt <= catalogPricingRetryCount; attempt++ {
-		items, err := provider.ListRateCardItems(ctx, query)
-		if err == nil {
-			return items, nil
-		}
-		lastErr = err
-		if attempt == catalogPricingRetryCount {
-			break
-		}
-		timer := time.NewTimer(time.Duration(1<<attempt) * 100 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
-	}
-	return nil, lastErr
+	return billing.RetryProviderRead(ctx, func(ctx context.Context) ([]billing.RateCardItem, error) {
+		return provider.ListRateCardItems(ctx, query)
+	})
 }
 
 type catalogPricingCircuitBreaker struct {

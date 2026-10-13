@@ -113,6 +113,40 @@ var _ = Describe("M360 billing account client", func() {
 		Expect(client.UpdateAccountExternalID(context.Background(), "account-7", "tenant-old", "tenant-a")).To(Succeed())
 	})
 
+	It("retries the account read before updating its external ID", func() {
+		getAttempts := 0
+		putAttempts := 0
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			Expect(request.URL.Path).To(Equal("/api/v1/external/accounts/account-7"))
+			if request.Method == http.MethodGet {
+				getAttempts++
+				if getAttempts == 1 {
+					http.Error(writer, "temporarily unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				writer.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(writer, `{"success":true,"status":200,"data":{"Id":"account-7","Name":"Acme","ExternalId":"tenant-old"}}`)
+				return
+			}
+			Expect(request.Method).To(Equal(http.MethodPut))
+			putAttempts++
+			writer.WriteHeader(http.StatusOK)
+		}))
+		DeferCleanup(server.Close)
+
+		client, err := NewClient(Config{
+			BaseURL:    server.URL,
+			APIKey:     "test-token",
+			APIVersion: "v1",
+			HTTPClient: server.Client(),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(client.UpdateAccountExternalID(context.Background(), "account-7", "tenant-old", "tenant-a")).To(Succeed())
+		Expect(getAttempts).To(Equal(2))
+		Expect(putAttempts).To(Equal(1))
+	})
+
 	It("does not update an account whose external ID changed since it was read", func() {
 		putRequested := false
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

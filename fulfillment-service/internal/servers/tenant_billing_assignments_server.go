@@ -187,9 +187,14 @@ func (s *PrivateTenantBillingAssignmentsServer) Update(ctx context.Context,
 		return nil, err
 	}
 
-	now := timestamppb.New(time.Now().UTC())
+	effectiveAt := timestamppb.New(time.Now().UTC())
+	next, err := newTenantBillingAssignment(requested, current.GetSpec().GetTenantId(),
+		requested.GetSpec().GetBillingAccountId(), effectiveAt)
+	if err != nil {
+		return nil, err
+	}
 	closed := proto.Clone(current).(*privatev1.TenantBillingAssignment)
-	closed.GetStatus().SetEffectiveTo(now)
+	closed.GetStatus().SetEffectiveTo(effectiveAt)
 	if request.GetLock() && requested.GetMetadata() != nil {
 		closed.GetMetadata().SetVersion(requested.GetMetadata().GetVersion())
 	}
@@ -203,11 +208,6 @@ func (s *PrivateTenantBillingAssignmentsServer) Update(ctx context.Context,
 		return nil, err
 	}
 
-	next, err := s.prepareNewAssignment(ctx, requested, current.GetSpec().GetTenantId(),
-		requested.GetSpec().GetBillingAccountId())
-	if err != nil {
-		return nil, err
-	}
 	createRequest := privatev1.TenantBillingAssignmentsCreateRequest_builder{Object: next}.Build()
 	var createResponse *privatev1.TenantBillingAssignmentsCreateResponse
 	if err = s.generic.Create(ctx, createRequest, &createResponse); err != nil {
@@ -273,11 +273,23 @@ func (s *PrivateTenantBillingAssignmentsServer) prepareNewAssignment(
 	tenantID string,
 	accountID string,
 ) (*privatev1.TenantBillingAssignment, error) {
-	if tenantID == "" || accountID == "" {
-		return nil, grpcstatus.Error(grpccodes.InvalidArgument, "assignment tenant and billing account are required")
-	}
 	if err := s.validateBillingAccount(ctx, accountID); err != nil {
 		return nil, err
+	}
+	return newTenantBillingAssignment(requested, tenantID, accountID, timestamppb.New(time.Now().UTC()))
+}
+
+func newTenantBillingAssignment(
+	requested *privatev1.TenantBillingAssignment,
+	tenantID string,
+	accountID string,
+	effectiveFrom *timestamppb.Timestamp,
+) (*privatev1.TenantBillingAssignment, error) {
+	if requested == nil || requested.GetSpec() == nil || tenantID == "" || accountID == "" {
+		return nil, grpcstatus.Error(grpccodes.InvalidArgument, "assignment tenant and billing account are required")
+	}
+	if effectiveFrom == nil {
+		effectiveFrom = timestamppb.New(time.Now().UTC())
 	}
 	assignment := proto.Clone(requested).(*privatev1.TenantBillingAssignment)
 	id := uuid.New()
@@ -298,7 +310,7 @@ func (s *PrivateTenantBillingAssignmentsServer) prepareNewAssignment(
 	}.Build())
 	assignment.SetStatus(privatev1.TenantBillingAssignmentStatus_builder{
 		ConnectionState: privatev1.TenantBillingAssignmentConnectionState_TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_PENDING,
-		EffectiveFrom:   timestamppb.New(time.Now().UTC()),
+		EffectiveFrom:   proto.Clone(effectiveFrom).(*timestamppb.Timestamp),
 	}.Build())
 	return assignment, nil
 }
@@ -318,7 +330,9 @@ func (s *PrivateTenantBillingAssignmentsServer) validateBillingAccount(ctx conte
 	if account.GetState() != privatev1.BillingAccountState_BILLING_ACCOUNT_STATE_ACTIVE {
 		return grpcstatus.Error(grpccodes.FailedPrecondition, "billing account is not active")
 	}
-	providerAccount, err := s.provider.GetAccount(ctx, account.GetProviderAccountReference())
+	providerAccount, err := billing.RetryProviderRead(ctx, func(ctx context.Context) (billing.Account, error) {
+		return s.provider.GetAccount(ctx, account.GetProviderAccountReference())
+	})
 	if err != nil {
 		s.logger.ErrorContext(ctx, "failed to verify billing account state")
 		return grpcstatus.Error(grpccodes.Unavailable, "billing account state could not be verified")

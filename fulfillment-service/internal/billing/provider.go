@@ -91,7 +91,7 @@ func ResolveProviderStatus(ctx context.Context, providerKey string, provider Pro
 	if provider == nil {
 		return ProviderStatus{State: ProviderStateNotConfigured}
 	}
-	status, err := provider.GetStatus(ctx)
+	status, err := RetryProviderRead(ctx, provider.GetStatus)
 	status.ProviderKey = providerKey
 	if err != nil {
 		return ProviderStatus{

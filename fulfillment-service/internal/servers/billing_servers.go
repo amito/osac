@@ -243,7 +243,7 @@ func (s *PrivateBillingAccountsServer) List(
 	if strings.TrimSpace(request.GetFilter()) != "" || strings.TrimSpace(request.GetOrder()) != "" {
 		return nil, grpcstatus.Error(grpccodes.InvalidArgument, "billing account filtering and ordering are not supported")
 	}
-	accounts, err := s.provider.ListAccounts(ctx)
+	accounts, err := billing.RetryProviderRead(ctx, s.provider.ListAccounts)
 	if err != nil {
 		s.logger.ErrorContext(ctx, "failed to discover billing accounts")
 		return nil, grpcstatus.Error(grpccodes.Unavailable, "billing account discovery failed")

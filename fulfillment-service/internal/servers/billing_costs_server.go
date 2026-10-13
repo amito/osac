@@ -133,10 +133,12 @@ func (s *BillingCostsServer) List(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	costs, err := s.provider.ListCosts(ctx, billing.CostQuery{
-		AccountReference: account.ProviderAccountReference,
-		FromDate:         request.GetFromDate(),
-		ToDate:           request.GetToDate(),
+	costs, err := billing.RetryProviderRead(ctx, func(ctx context.Context) ([]billing.Cost, error) {
+		return s.provider.ListCosts(ctx, billing.CostQuery{
+			AccountReference: account.ProviderAccountReference,
+			FromDate:         request.GetFromDate(),
+			ToDate:           request.GetToDate(),
+		})
 	})
 	if err != nil {
 		s.logger.ErrorContext(ctx, "failed to list provider costs")
