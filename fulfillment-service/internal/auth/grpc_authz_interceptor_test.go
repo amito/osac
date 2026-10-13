@@ -935,6 +935,37 @@ var _ = Describe("Rego authorization interceptor", func() {
 			Expect(handled).To(BeFalse())
 		})
 
+		It("allows tenant users and cloud provider admins to query pricing and estimates", func(ctx context.Context) {
+			methods := []string{
+				"/osac.public.v1.PricingQueries/Create",
+				"/osac.public.v1.PriceEstimates/Create",
+			}
+			identities := []struct {
+				name  string
+				claim jwt.MapClaims
+			}{
+				{name: "tenant-user"},
+				{name: "provider-admin", claim: jwt.MapClaims{"groups": []any{"admins"}}},
+			}
+			for _, identity := range identities {
+				for _, method := range methods {
+					ctx = ContextWithToken(ctx, createKeycloakUserToken("tenant-a", identity.name, identity.claim))
+					handled := false
+					_, err := interceptor.UnaryServer(
+						ctx,
+						nil,
+						&grpc.UnaryServerInfo{FullMethod: method},
+						func(context.Context, any) (any, error) {
+							handled = true
+							return nil, nil
+						},
+					)
+					Expect(err).NotTo(HaveOccurred(), "%s should be allowed to %s", identity.name, method)
+					Expect(handled).To(BeTrue())
+				}
+			}
+		})
+
 		It("allows tenant admins to read their billing invoices", func(ctx context.Context) {
 			token := createKeycloakUserToken("tenant-a", "tenant-admin-user", jwt.MapClaims{
 				"realm_access": map[string]any{"roles": []any{"tenant-admin"}},

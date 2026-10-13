@@ -52,14 +52,8 @@ func catalogPricingEnrichmentDisabled(ctx context.Context) bool {
 	return ctx.Value(catalogPricingEnrichmentDisabledKey{}) == true
 }
 
-// CatalogPricingRequest describes one catalog item's default billable configuration.
-type CatalogPricingRequest struct {
-	Service      string
-	Dimensions   map[string]string
-	Description  string
-	PriceMayVary bool
-	Supported    bool
-}
+// CatalogPricingRequest describes one billable catalog or selected configuration.
+type CatalogPricingRequest = billing.CatalogPricingRequest
 
 type catalogPricingAccountStore interface {
 	GetAssignedAccount(context.Context, string) (billing.AssignedAccount, error)
@@ -67,10 +61,11 @@ type catalogPricingAccountStore interface {
 
 // CatalogPricingResolver applies provider rates to catalog default configurations.
 type CatalogPricingResolver struct {
-	providerKey string
-	provider    billing.RateCardProvider
-	accounts    catalogPricingAccountStore
-	now         func() time.Time
+	providerKey   string
+	provider      billing.RateCardProvider
+	accountStatus billing.AccountStatusProvider
+	accounts      catalogPricingAccountStore
+	now           func() time.Time
 
 	mu       sync.Mutex
 	cache    map[catalogRateCardKey]catalogRateCardEntry
@@ -104,13 +99,15 @@ func NewCatalogPricingResolver(
 	accounts catalogPricingAccountStore,
 	registerers ...prometheus.Registerer,
 ) *CatalogPricingResolver {
+	accountStatus, _ := provider.(billing.AccountStatusProvider)
 	resolver := &CatalogPricingResolver{
-		providerKey: providerKey,
-		provider:    provider,
-		accounts:    accounts,
-		now:         time.Now,
-		cache:       make(map[catalogRateCardKey]catalogRateCardEntry),
-		inFlight:    make(map[catalogRateCardKey]*catalogRateCardLoad),
+		providerKey:   providerKey,
+		provider:      provider,
+		accountStatus: accountStatus,
+		accounts:      accounts,
+		now:           time.Now,
+		cache:         make(map[catalogRateCardKey]catalogRateCardEntry),
+		inFlight:      make(map[catalogRateCardKey]*catalogRateCardLoad),
 	}
 	if len(registerers) > 0 && registerers[0] != nil {
 		resolver.metrics = newCatalogPricingMetrics(registerers[0])
@@ -208,6 +205,9 @@ func (r *CatalogPricingResolver) CheckCoverage(
 	if r.provider == nil || r.accounts == nil || r.providerKey == "" {
 		return grpcstatus.Error(grpccodes.Unavailable, "BILLING_COVERAGE_UNAVAILABLE")
 	}
+	if r.accountStatus == nil {
+		return grpcstatus.Error(grpccodes.Unavailable, "BILLING_ACCOUNT_STATUS_UNAVAILABLE")
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, billingCoverageTimeout)
 	defer cancel()
@@ -223,6 +223,16 @@ func (r *CatalogPricingResolver) CheckCoverage(
 	}
 	account.CurrencyCode = strings.ToUpper(strings.TrimSpace(account.CurrencyCode))
 	if account.ProviderKey != r.providerKey || !assignmentIsConnected(account.ConnectionState) || account.ProviderAccountReference == "" || account.CurrencyCode == "" {
+		return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_ACCOUNT_UNAVAILABLE")
+	}
+	providerAccount, err := r.accountStatus.GetAccount(ctx, account.ProviderAccountReference)
+	if err != nil {
+		if ctx.Err() != nil {
+			return grpcstatus.Error(grpccodes.DeadlineExceeded, "BILLING_COVERAGE_TIMEOUT")
+		}
+		return grpcstatus.Error(grpccodes.Unavailable, "BILLING_ACCOUNT_STATUS_UNAVAILABLE")
+	}
+	if providerAccount.Reference != account.ProviderAccountReference || providerAccount.State != billing.AccountStateActive {
 		return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_ACCOUNT_UNAVAILABLE")
 	}
 
@@ -261,6 +271,26 @@ func (r *CatalogPricingResolver) CheckCoverage(
 		}
 	}
 	return nil
+}
+
+// checkCatalogItemBillingCoverage requires current coverage when a tenant-owned
+// catalog item is offered for provisioning. Shared and system catalog items have
+// no single tenant account to check; their launches are checked for each tenant.
+func checkCatalogItemBillingCoverage(
+	ctx context.Context,
+	resolver *CatalogPricingResolver,
+	tenantID string,
+	published bool,
+	requests []CatalogPricingRequest,
+) error {
+	if !catalogItemNeedsBillingCoverage(resolver, tenantID, published) {
+		return nil
+	}
+	return resolver.CheckCoverage(ctx, tenantID, requests)
+}
+
+func catalogItemNeedsBillingCoverage(resolver *CatalogPricingResolver, tenantID string, published bool) bool {
+	return published && resolver != nil && tenantID != auth.SharedTenant && tenantID != auth.SystemTenant
 }
 
 func (r *CatalogPricingResolver) getFreshRateCardItems(
@@ -358,6 +388,11 @@ func (r *CatalogPricingResolver) getRateCardItems(
 	}
 	startedAt := time.Now()
 	items, err := listRateCardsWithRetries(ctx, r.provider, query)
+	if err == nil && items == nil {
+		// A provider may represent an empty rate card with a nil slice. Keep that
+		// distinct from nil returned after a failed lookup, which means unavailable.
+		items = []billing.RateCardItem{}
+	}
 	if r.metrics != nil && r.metrics.lookupOutcomes != nil {
 		outcome := "success"
 		if err != nil {

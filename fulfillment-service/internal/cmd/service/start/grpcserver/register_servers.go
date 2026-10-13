@@ -73,6 +73,9 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 	catalogPricingInputsBuilder := servers.NewCatalogPricingInputsServer().SetLogger(deps.Logger)
 	rateCardProvider, _ := deps.BillingProvider.(billing.RateCardProvider)
 	var catalogPricingResolver *servers.CatalogPricingResolver
+	var computeCatalogItems publicv1.ComputeInstanceCatalogItemsServer
+	var clusterCatalogItems publicv1.ClusterCatalogItemsServer
+	var bareMetalCatalogItems publicv1.BareMetalInstanceCatalogItemsServer
 	if deps.BillingProvider != nil {
 		catalogPricingResolver = servers.NewCatalogPricingResolver(deps.BillingProviderKey, rateCardProvider, billingAccountStore, deps.MetricsRegisterer)
 	}
@@ -204,6 +207,7 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 			return nil, fmt.Errorf("failed to create cluster catalog items server: %w", err)
 		}
 		publicv1.RegisterClusterCatalogItemsServer(registrar, clusterCatalogItemsServer)
+		clusterCatalogItems = clusterCatalogItemsServer
 		catalogPricingInputsBuilder.SetClusterCatalogItems(clusterCatalogItemsServer)
 	}
 
@@ -220,6 +224,7 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 			return nil, fmt.Errorf("failed to create compute instance catalog items server: %w", err)
 		}
 		publicv1.RegisterComputeInstanceCatalogItemsServer(registrar, computeInstanceCatalogItemsServer)
+		computeCatalogItems = computeInstanceCatalogItemsServer
 		catalogPricingInputsBuilder.SetComputeInstanceCatalogItems(computeInstanceCatalogItemsServer)
 	}
 
@@ -411,6 +416,7 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 			return nil, fmt.Errorf("failed to create bare metal instance catalog items server: %w", err)
 		}
 		publicv1.RegisterBareMetalInstanceCatalogItemsServer(registrar, bareMetalInstanceCatalogItemsServer)
+		bareMetalCatalogItems = bareMetalInstanceCatalogItemsServer
 		catalogPricingInputsBuilder.SetBareMetalInstanceCatalogItems(bareMetalInstanceCatalogItemsServer)
 
 		deps.Logger.InfoContext(ctx, "Creating bare metal instances server")
@@ -1125,6 +1131,20 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 		return nil, fmt.Errorf("failed to create billing exports server: %w", err)
 	}
 	publicv1.RegisterBillingExportsServer(registrar, billingExportsServer)
+
+	billingPricingServers, err := servers.NewBillingPricingServers(
+		deps.Logger,
+		deps.TenancyLogic,
+		catalogPricingResolver,
+		computeCatalogItems,
+		clusterCatalogItems,
+		bareMetalCatalogItems,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create billing pricing servers: %w", err)
+	}
+	publicv1.RegisterPricingQueriesServer(registrar, billingPricingServers.PricingQueries)
+	publicv1.RegisterPriceEstimatesServer(registrar, billingPricingServers.PriceEstimates)
 
 	return &ResourceServers{
 		PrivateHubsServer:             privateHubsServer,

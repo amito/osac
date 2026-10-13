@@ -31,16 +31,18 @@ import (
 	publicv1 "github.com/osac-project/osac/proto/gen/osac/public/v1"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 type billingProviderStub struct {
-	status   billing.ProviderStatus
-	accounts []billing.Account
-	listErr  error
+	status    billing.ProviderStatus
+	statusErr error
+	accounts  []billing.Account
+	listErr   error
 }
 
 func (p *billingProviderStub) GetStatus(context.Context) (billing.ProviderStatus, error) {
-	return p.status, nil
+	return p.status, p.statusErr
 }
 
 func (p *billingProviderStub) ListAccounts(context.Context) ([]billing.Account, error) {
@@ -91,6 +93,9 @@ func TestBillingProviderStatusReportsNotConfigured(t *testing.T) {
 	if len(response.GetObject().GetSupportedCapabilities()) != 0 {
 		t.Fatalf("unconfigured provider advertised capabilities: %v", response.GetObject().GetSupportedCapabilities())
 	}
+	if response.GetObject().GetLastSuccessfulCheck() != nil {
+		t.Fatal("unconfigured provider returned a successful health-check time")
+	}
 }
 
 func TestBillingProviderStatusExposesProviderAdapterCapabilities(t *testing.T) {
@@ -127,6 +132,34 @@ func TestBillingProviderStatusExposesProviderAdapterCapabilities(t *testing.T) {
 	}
 }
 
+func TestBillingProviderStatusRetainsLastSuccessfulCheckAfterFailure(t *testing.T) {
+	provider := &billingProviderStub{status: billing.ProviderStatus{State: billing.ProviderStateAvailable}}
+	server, err := NewBillingProviderStatusesServer().SetLogger(newBillingTestLogger()).SetProvider("m360", provider).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := server.Get(context.Background(), &publicv1.BillingProviderStatusesGetRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstCheck := first.GetObject().GetLastSuccessfulCheck()
+	if firstCheck == nil {
+		t.Fatal("successful provider check did not return last_successful_check")
+	}
+	provider.statusErr = errors.New("provider response details must not escape")
+	second, err := server.Get(context.Background(), &publicv1.BillingProviderStatusesGetRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := second.GetObject().GetState(); got != publicv1.BillingProviderState_BILLING_PROVIDER_STATE_UNAVAILABLE {
+		t.Fatalf("state after failed check = %v, want UNAVAILABLE", got)
+	}
+	secondCheck := second.GetObject().GetLastSuccessfulCheck()
+	if !proto.Equal(firstCheck, secondCheck) {
+		t.Fatalf("last_successful_check changed after failed check: first=%v second=%v", firstCheck, secondCheck)
+	}
+}
+
 func TestBillingAssignmentsBuildWithoutDeleteRPC(t *testing.T) {
 	logger := newBillingTestLogger()
 	tenancy, err := auth.NewDefaultTenancyLogic().SetLogger(logger).Build()
@@ -158,6 +191,42 @@ func TestBillingAccountsRequireConfiguredProvider(t *testing.T) {
 	_, err = server.List(context.Background(), &privatev1.BillingAccountsListRequest{})
 	if got := grpcstatus.Code(err); got != codes.FailedPrecondition {
 		t.Fatalf("status = %v, want FAILED_PRECONDITION; err=%v", got, err)
+	}
+	if got := grpcstatus.Convert(err).Message(); got != "BILLING_NOT_CONFIGURED" {
+		t.Fatalf("message = %q, want BILLING_NOT_CONFIGURED", got)
+	}
+}
+
+func TestBillingAssignmentCreateRequiresConfiguredProvider(t *testing.T) {
+	logger := newBillingTestLogger()
+	tenancy, err := auth.NewDefaultTenancyLogic().SetLogger(logger).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	attribution, err := auth.NewSystemAttributionLogic().Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewPrivateTenantBillingAssignmentsServer().SetLogger(logger).
+		SetAttributionLogic(attribution).SetTenancyLogic(tenancy).
+		SetAccountStore(&billingAccountStoreStub{}).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := privatev1.TenantBillingAssignmentsCreateRequest_builder{
+		Object: privatev1.TenantBillingAssignment_builder{
+			Spec: privatev1.TenantBillingAssignmentSpec_builder{
+				TenantId:         "tenant-1",
+				BillingAccountId: "account-1",
+			}.Build(),
+		}.Build(),
+	}.Build()
+	_, err = server.Create(context.Background(), request)
+	if got := grpcstatus.Code(err); got != codes.FailedPrecondition {
+		t.Fatalf("status = %v, want FAILED_PRECONDITION; err=%v", got, err)
+	}
+	if got := grpcstatus.Convert(err).Message(); got != "BILLING_NOT_CONFIGURED" {
+		t.Fatalf("message = %q, want BILLING_NOT_CONFIGURED", got)
 	}
 }
 

@@ -41,12 +41,16 @@ func (s *catalogPricingAccountStoreStub) GetAssignedAccount(_ context.Context, t
 }
 
 type catalogPricingRateCardProviderStub struct {
-	items      []billing.RateCardItem
-	err        error
-	failures   int
-	failureErr error
-	calls      int
-	queries    []billing.RateCardQuery
+	items        []billing.RateCardItem
+	err          error
+	failures     int
+	failureErr   error
+	calls        int
+	queries      []billing.RateCardQuery
+	account      billing.Account
+	accountErr   error
+	accountSet   bool
+	accountCalls int
 }
 
 func (s *catalogPricingRateCardProviderStub) ListRateCardItems(_ context.Context, query billing.RateCardQuery) ([]billing.RateCardItem, error) {
@@ -56,6 +60,20 @@ func (s *catalogPricingRateCardProviderStub) ListRateCardItems(_ context.Context
 		return nil, s.failureErr
 	}
 	return s.items, s.err
+}
+
+func (s *catalogPricingRateCardProviderStub) GetAccount(_ context.Context, reference string) (billing.Account, error) {
+	s.accountCalls++
+	if s.accountErr != nil {
+		return billing.Account{}, s.accountErr
+	}
+	if !s.accountSet {
+		return billing.Account{Reference: reference, State: billing.AccountStateActive}, nil
+	}
+	if s.account.Reference == "" {
+		s.account.Reference = reference
+	}
+	return s.account, nil
 }
 
 func TestCatalogPricingResolverReturnsCurrentPrice(t *testing.T) {

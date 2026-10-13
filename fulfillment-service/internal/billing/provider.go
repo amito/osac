@@ -79,6 +79,12 @@ type Provider interface {
 	UpdateAccountExternalID(ctx context.Context, reference, expectedExternalID, newExternalID string) error
 }
 
+// AccountStatusProvider reads the current status of one provider account. Billing
+// gates use it to avoid authorizing publication or launch from stale OSAC state.
+type AccountStatusProvider interface {
+	GetAccount(context.Context, string) (Account, error)
+}
+
 // ResolveProviderStatus returns a safe, provider-neutral status for the
 // deployment. Provider error text is deliberately not returned to clients.
 func ResolveProviderStatus(ctx context.Context, providerKey string, provider Provider) ProviderStatus {

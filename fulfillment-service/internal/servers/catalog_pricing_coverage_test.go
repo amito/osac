@@ -27,6 +27,14 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+type catalogPricingRateCardOnlyProvider struct{}
+
+func (catalogPricingRateCardOnlyProvider) ListRateCardItems(context.Context, billing.RateCardQuery) ([]billing.RateCardItem, error) {
+	return []billing.RateCardItem{{
+		Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "3.00", Unit: billing.RateUnitHour,
+	}}, nil
+}
+
 func TestCatalogPricingResolverCheckCoverageUsesFreshProviderRates(t *testing.T) {
 	store := &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
 		ProviderKey: "m360", ProviderAccountReference: "native-account", CurrencyCode: "USD", ConnectionState: "CONNECTED",
@@ -85,6 +93,69 @@ func TestCatalogPricingResolverCheckCoverageRequiresConnectedAssignment(t *testi
 	}
 	if provider.calls != 0 {
 		t.Fatalf("provider calls = %d, want no provider calls without assignment", provider.calls)
+	}
+}
+
+func TestCatalogPricingResolverCheckCoverageRequiresCurrentActiveAccount(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		state billing.AccountState
+	}{
+		{name: "inactive", state: billing.AccountStateInactive},
+		{name: "unknown", state: billing.AccountStateUnknown},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
+				ProviderKey: "m360", ProviderAccountReference: "native-account", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+			}}
+			provider := &catalogPricingRateCardProviderStub{
+				items:   []billing.RateCardItem{{Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "3.00", Unit: billing.RateUnitHour}},
+				account: billing.Account{Reference: "native-account", State: test.state}, accountSet: true,
+			}
+			resolver := NewCatalogPricingResolver("m360", provider, store)
+
+			err := resolver.CheckCoverage(context.Background(), "tenant-a", []CatalogPricingRequest{{
+				Service: billing.ServiceComputeInstance, Supported: true,
+			}})
+			if status.Code(err) != codes.FailedPrecondition || status.Convert(err).Message() != "BILLING_ACCOUNT_UNAVAILABLE" {
+				t.Fatalf("CheckCoverage() error = %v, want BILLING_ACCOUNT_UNAVAILABLE", err)
+			}
+			if provider.accountCalls != 1 || provider.calls != 0 {
+				t.Fatalf("account/rate-card calls = (%d, %d), want current account check and no rate-card lookup", provider.accountCalls, provider.calls)
+			}
+		})
+	}
+}
+
+func TestCatalogPricingResolverCheckCoverageFailsClosedWhenAccountStatusCannotBeRead(t *testing.T) {
+	provider := &catalogPricingRateCardProviderStub{
+		accountErr: errors.New("provider account details unavailable"),
+	}
+	resolver := NewCatalogPricingResolver("m360", provider, &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
+		ProviderKey: "m360", ProviderAccountReference: "native-account", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+	}})
+
+	err := resolver.CheckCoverage(context.Background(), "tenant-a", []CatalogPricingRequest{{
+		Service: billing.ServiceComputeInstance, Supported: true,
+	}})
+	if status.Code(err) != codes.Unavailable || status.Convert(err).Message() != "BILLING_ACCOUNT_STATUS_UNAVAILABLE" {
+		t.Fatalf("CheckCoverage() error = %v, want sanitized BILLING_ACCOUNT_STATUS_UNAVAILABLE", err)
+	}
+	if strings.Contains(status.Convert(err).Message(), "provider account details unavailable") || provider.calls != 0 {
+		t.Fatalf("CheckCoverage() leaked account status error or queried rates: %v, calls=%d", err, provider.calls)
+	}
+}
+
+func TestCatalogPricingResolverCheckCoverageRequiresAccountStatusCapability(t *testing.T) {
+	resolver := NewCatalogPricingResolver("m360", catalogPricingRateCardOnlyProvider{}, &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
+		ProviderKey: "m360", ProviderAccountReference: "native-account", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+	}})
+
+	err := resolver.CheckCoverage(context.Background(), "tenant-a", []CatalogPricingRequest{{
+		Service: billing.ServiceComputeInstance, Supported: true,
+	}})
+	if status.Code(err) != codes.Unavailable || status.Convert(err).Message() != "BILLING_ACCOUNT_STATUS_UNAVAILABLE" {
+		t.Fatalf("CheckCoverage() error = %v, want fail-closed status when provider cannot read accounts", err)
 	}
 }
 
