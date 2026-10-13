@@ -231,7 +231,7 @@ func (r *runnerContext) run(cmd *cobra.Command, argv []string) error { //nolint:
 
 	// Save the flags:
 	r.flags = cmd.Flags()
-	_, r.billingProvider, err = r.args.billing.Build()
+	_, r.billingProvider, err = r.args.billing.Build(prometheus.DefaultRegisterer)
 	if err != nil {
 		return fmt.Errorf("invalid billing provider configuration: %w", err)
 	}
@@ -422,6 +422,7 @@ func (r *runnerContext) run(cmd *cobra.Command, argv []string) error { //nolint:
 		SetLogger(r.logger).
 		SetConnection(r.client).
 		SetProvider(r.billingProvider).
+		SetMetricsRegisterer(metricsRegisterer).
 		Build()
 	if err != nil {
 		return fmt.Errorf("failed to create billing assignment reconciler function: %w", err)

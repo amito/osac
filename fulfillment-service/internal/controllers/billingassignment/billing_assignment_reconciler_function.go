@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"strconv"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/billing"
@@ -42,6 +43,7 @@ type FunctionBuilder struct {
 	logger      *slog.Logger
 	connection  *grpc.ClientConn
 	provider    billing.Provider
+	metrics     prometheus.Registerer
 	assignments assignmentsClient
 	accounts    accountsClient
 }
@@ -49,6 +51,7 @@ type FunctionBuilder struct {
 type Function struct {
 	logger      *slog.Logger
 	provider    billing.Provider
+	metrics     *assignmentSyncMetrics
 	assignments assignmentsClient
 	accounts    accountsClient
 }
@@ -72,6 +75,11 @@ func (b *FunctionBuilder) SetProvider(value billing.Provider) *FunctionBuilder {
 	return b
 }
 
+func (b *FunctionBuilder) SetMetricsRegisterer(value prometheus.Registerer) *FunctionBuilder {
+	b.metrics = value
+	return b
+}
+
 func (b *FunctionBuilder) SetClients(assignments assignmentsClient, accounts accountsClient) *FunctionBuilder {
 	b.assignments = assignments
 	b.accounts = accounts
@@ -92,6 +100,7 @@ func (b *FunctionBuilder) Build() (*Function, error) {
 	return &Function{
 		logger:      b.logger,
 		provider:    b.provider,
+		metrics:     newAssignmentSyncMetrics(b.metrics),
 		assignments: b.assignments,
 		accounts:    b.accounts,
 	}, nil
@@ -164,6 +173,7 @@ func (f *Function) Reconcile(ctx context.Context, assignment *privatev1.TenantBi
 		ConnectionState: privatev1.TenantBillingAssignmentConnectionState_TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_CONNECTED,
 	}.Build())
 	if err != nil {
+		f.metrics.recordFailure("status_update_failed")
 		return fmt.Errorf("failed to save verified tenant billing assignment state: %w", err)
 	}
 	return nil
@@ -229,6 +239,7 @@ func (f *Function) getProviderAccount(ctx context.Context, accountID string) (bi
 }
 
 func (f *Function) markPending(ctx context.Context, id, reason string, cause error) error {
+	f.metrics.recordFailure(reason)
 	_, err := f.assignments.UpdateStatus(ctx, privatev1.TenantBillingAssignmentsUpdateStatusRequest_builder{
 		Id:              id,
 		ConnectionState: privatev1.TenantBillingAssignmentConnectionState_TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_PENDING,

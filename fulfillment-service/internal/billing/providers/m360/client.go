@@ -25,9 +25,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/osac-project/osac-metering/shared/m360http"
 	"github.com/osac-project/osac/fulfillment-service/internal/billing"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 const (
@@ -38,15 +40,17 @@ const (
 // Config contains the M360 connection settings. The API key is loaded by the
 // service from its configured Secret and is never included in errors.
 type Config struct {
-	BaseURL    string
-	APIVersion string
-	APIKey     string
-	HTTPClient *http.Client
+	BaseURL           string
+	APIVersion        string
+	APIKey            string
+	HTTPClient        *http.Client
+	MetricsRegisterer prometheus.Registerer
 }
 
 // Client translates the M360 external account API into OSAC's billing model.
 type Client struct {
 	transport *m360http.Client
+	metrics   *requestMetrics
 	updateMu  sync.Mutex
 }
 
@@ -60,7 +64,7 @@ func NewClient(config Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{transport: transport}, nil
+	return &Client{transport: transport, metrics: newRequestMetrics(config.MetricsRegisterer)}, nil
 }
 
 // ListAccounts returns all accounts, following M360's zero-based pagination.
@@ -163,7 +167,11 @@ func (c *Client) apiURL(segments ...string) *url.URL {
 	return c.transport.Endpoint("external", segments...)
 }
 
-func (c *Client) requestJSON(ctx context.Context, method string, endpoint *url.URL, body any, response any) error {
+func (c *Client) requestJSON(ctx context.Context, method string, endpoint *url.URL, body any, response any) (resultErr error) {
+	startedAt := time.Now()
+	if c.metrics != nil {
+		defer func() { c.metrics.record(m360Operation(endpoint), time.Since(startedAt), resultErr) }()
+	}
 	var requestBody io.Reader
 	contentType := ""
 	if body != nil {
