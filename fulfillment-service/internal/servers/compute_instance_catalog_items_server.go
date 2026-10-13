@@ -152,7 +152,7 @@ func (s *ComputeInstanceCatalogItemsServer) List(ctx context.Context,
 		}
 		publicItems[i] = publicItem
 	}
-	for i, pricing := range resolveCatalogPricing(ctx, s.tenancyLogic, s.pricingResolver, computeCatalogPricingRequests(publicItems)) {
+	for i, pricing := range resolveCatalogPricing(ctx, s.tenancyLogic, s.pricingResolver, computeCatalogPricingRequestsForServer(ctx, s, publicItems)) {
 		publicItems[i].SetPricing(pricing)
 	}
 
@@ -179,7 +179,7 @@ func (s *ComputeInstanceCatalogItemsServer) Get(ctx context.Context,
 		s.logger.ErrorContext(ctx, "Failed to map private compute instance catalog item to public", slog.Any("error", err))
 		return nil, grpcstatus.Errorf(grpccodes.Internal, "failed to process compute instance catalog item")
 	}
-	pricing := resolveCatalogPricing(ctx, s.tenancyLogic, s.pricingResolver, computeCatalogPricingRequests([]*publicv1.ComputeInstanceCatalogItem{publicCatalogItem}))
+	pricing := resolveCatalogPricing(ctx, s.tenancyLogic, s.pricingResolver, computeCatalogPricingRequestsForServer(ctx, s, []*publicv1.ComputeInstanceCatalogItem{publicCatalogItem}))
 	if len(pricing) != 0 {
 		publicCatalogItem.SetPricing(pricing[0])
 	}

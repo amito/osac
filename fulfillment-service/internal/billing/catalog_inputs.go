@@ -38,6 +38,14 @@ type catalogPricingInputCollector struct {
 	values map[catalogPricingInputKey]map[string]*publicv1.CatalogPricingInputSource
 }
 
+// CatalogPricingInputTemplateDefaults carries the billable defaults inherited
+// by catalog items from their referenced templates, keyed by catalog item ID.
+type CatalogPricingInputTemplateDefaults struct {
+	ComputeInstances   map[string]map[string]string
+	Clusters           map[string]map[string]string
+	BareMetalInstances map[string]map[string]string
+}
+
 // CatalogPricingInputsFromCatalog projects catalog-configured values into a
 // provider-independent inventory. Rows are grouped by service, dimension, and
 // value or open-ended selection, with contributing catalog items retained.
@@ -46,12 +54,24 @@ func CatalogPricingInputsFromCatalog(
 	clusterItems []*publicv1.ClusterCatalogItem,
 	bareMetalItems []*publicv1.BareMetalInstanceCatalogItem,
 ) []*publicv1.CatalogPricingInput {
+	return CatalogPricingInputsFromCatalogWithTemplateDefaults(computeItems, clusterItems, bareMetalItems, CatalogPricingInputTemplateDefaults{})
+}
+
+// CatalogPricingInputsFromCatalogWithTemplateDefaults projects catalog policy
+// values and effective template defaults into the provider-independent input
+// inventory.
+func CatalogPricingInputsFromCatalogWithTemplateDefaults(
+	computeItems []*publicv1.ComputeInstanceCatalogItem,
+	clusterItems []*publicv1.ClusterCatalogItem,
+	bareMetalItems []*publicv1.BareMetalInstanceCatalogItem,
+	templateDefaults CatalogPricingInputTemplateDefaults,
+) []*publicv1.CatalogPricingInput {
 	collector := catalogPricingInputCollector{
 		values: map[catalogPricingInputKey]map[string]*publicv1.CatalogPricingInputSource{},
 	}
-	collector.addComputeItems(computeItems)
-	collector.addClusterItems(clusterItems)
-	collector.addBareMetalItems(bareMetalItems)
+	collector.addComputeItems(computeItems, templateDefaults.ComputeInstances)
+	collector.addClusterItems(clusterItems, templateDefaults.Clusters)
+	collector.addBareMetalItems(bareMetalItems, templateDefaults.BareMetalInstances)
 	return collector.items()
 }
 
@@ -86,41 +106,51 @@ func (c *catalogPricingInputCollector) addPolicy(service, dimension string, valu
 	}
 }
 
-func (c *catalogPricingInputCollector) addComputeItems(computeItems []*publicv1.ComputeInstanceCatalogItem) {
+func (c *catalogPricingInputCollector) addComputeItems(
+	computeItems []*publicv1.ComputeInstanceCatalogItem,
+	templateDefaults map[string]map[string]string,
+) {
 	for _, catalogItem := range computeItems {
 		if catalogItem == nil {
 			continue
 		}
 		source := computeCatalogSource(catalogItem)
 		fields := catalogItem.GetFields()
-		if fields == nil {
-			continue
-		}
-		values, anyValue := diskImagePolicyValues(fields.GetDiskImage())
-		c.addPolicy(ServiceComputeInstance, "image_ref", values, anyValue, source)
-		values, anyValue = instanceTypePolicyValues(fields.GetInstanceType())
-		c.addPolicy(ServiceComputeInstance, "instance_type", values, anyValue, source)
-		if bootDisk := fields.GetBootDisk(); bootDisk != nil {
-			values, anyValue = int32PolicyValues(bootDisk.GetSizeGib())
-			c.addPolicy(ServiceComputeInstance, "boot_disk_size_gib", values, anyValue, source)
-			values, anyValue = storageTierPolicyValues(bootDisk.GetStorageTier())
-			c.addPolicy(ServiceComputeInstance, "storage_tier", values, anyValue, source)
-		}
-		disks, anyDisks := computeDiskPolicyValues(fields.GetAdditionalDisks())
-		for _, disk := range disks {
-			if disk.size != nil {
-				c.add(ServiceComputeInstance, "additional_disk_size_gib", strconv.FormatInt(int64(*disk.size), 10), source)
+		if fields != nil {
+			values, anyValue := diskImagePolicyValues(fields.GetDiskImage())
+			c.addPolicy(ServiceComputeInstance, "image_ref", values, anyValue, source)
+			values, anyValue = instanceTypePolicyValues(fields.GetInstanceType())
+			c.addPolicy(ServiceComputeInstance, "instance_type", values, anyValue, source)
+			if bootDisk := fields.GetBootDisk(); bootDisk != nil {
+				values, anyValue = int32PolicyValues(bootDisk.GetSizeGib())
+				c.addPolicy(ServiceComputeInstance, "boot_disk_size_gib", values, anyValue, source)
+				values, anyValue = storageTierPolicyValues(bootDisk.GetStorageTier())
+				c.addPolicy(ServiceComputeInstance, "storage_tier", values, anyValue, source)
 			}
-			c.add(ServiceComputeInstance, "additional_storage_tier", disk.storageTier, source)
+			disks, anyDisks := computeDiskPolicyValues(fields.GetAdditionalDisks())
+			for _, disk := range disks {
+				if disk.size != nil {
+					c.add(ServiceComputeInstance, "additional_disk_size_gib", strconv.FormatInt(int64(*disk.size), 10), source)
+				}
+				c.add(ServiceComputeInstance, "additional_storage_tier", disk.storageTier, source)
+			}
+			if anyDisks {
+				c.addAny(ServiceComputeInstance, "additional_disk_size_gib", source)
+				c.addAny(ServiceComputeInstance, "additional_storage_tier", source)
+			}
 		}
-		if anyDisks {
-			c.addAny(ServiceComputeInstance, "additional_disk_size_gib", source)
-			c.addAny(ServiceComputeInstance, "additional_storage_tier", source)
+		for dimension, value := range templateDefaults[catalogItem.GetId()] {
+			if !computeCatalogPolicyOverrides(fields, dimension) {
+				c.add(ServiceComputeInstance, dimension, value, source)
+			}
 		}
 	}
 }
 
-func (c *catalogPricingInputCollector) addClusterItems(clusterItems []*publicv1.ClusterCatalogItem) {
+func (c *catalogPricingInputCollector) addClusterItems(
+	clusterItems []*publicv1.ClusterCatalogItem,
+	templateDefaults map[string]map[string]string,
+) {
 	for _, catalogItem := range clusterItems {
 		if catalogItem == nil {
 			continue
@@ -130,26 +160,33 @@ func (c *catalogPricingInputCollector) addClusterItems(clusterItems []*publicv1.
 			c.add(ServiceCluster, "cluster_template", template.GetName(), source)
 		}
 		fields := catalogItem.GetFields()
-		if fields == nil {
-			continue
-		}
-		values, anyValue := clusterVersionPolicyValues(fields.GetVersion())
-		c.addPolicy(ServiceCluster, "release_image", values, anyValue, source)
-		nodeSets, anyNodeSet := clusterNodeSetPolicyValues(fields.GetNodeSets())
-		for _, nodeSet := range nodeSets {
-			c.add(ServiceCluster, "baremetal_instance_type", nodeSet.instanceType, source)
-			if nodeSet.size > 0 {
-				c.add(ServiceCluster, "node_count", strconv.FormatInt(int64(nodeSet.size), 10), source)
+		if fields != nil {
+			values, anyValue := clusterVersionPolicyValues(fields.GetVersion())
+			c.addPolicy(ServiceCluster, "release_image", values, anyValue, source)
+			nodeSets, anyNodeSet := clusterNodeSetPolicyValues(fields.GetNodeSets())
+			for _, nodeSet := range nodeSets {
+				c.add(ServiceCluster, "baremetal_instance_type", nodeSet.instanceType, source)
+				if nodeSet.size > 0 {
+					c.add(ServiceCluster, "node_count", strconv.FormatInt(int64(nodeSet.size), 10), source)
+				}
+			}
+			if anyNodeSet {
+				c.addAny(ServiceCluster, "baremetal_instance_type", source)
+				c.addAny(ServiceCluster, "node_count", source)
 			}
 		}
-		if anyNodeSet {
-			c.addAny(ServiceCluster, "baremetal_instance_type", source)
-			c.addAny(ServiceCluster, "node_count", source)
+		for dimension, value := range templateDefaults[catalogItem.GetId()] {
+			if !clusterCatalogPolicyOverrides(fields, dimension) {
+				c.add(ServiceCluster, dimension, value, source)
+			}
 		}
 	}
 }
 
-func (c *catalogPricingInputCollector) addBareMetalItems(bareMetalItems []*publicv1.BareMetalInstanceCatalogItem) {
+func (c *catalogPricingInputCollector) addBareMetalItems(
+	bareMetalItems []*publicv1.BareMetalInstanceCatalogItem,
+	templateDefaults map[string]map[string]string,
+) {
 	for _, catalogItem := range bareMetalItems {
 		if catalogItem == nil {
 			continue
@@ -157,13 +194,63 @@ func (c *catalogPricingInputCollector) addBareMetalItems(bareMetalItems []*publi
 		source := bareMetalCatalogSource(catalogItem)
 		c.add(ServiceBareMetalInstance, "catalog_item", source.GetName(), source)
 		fields := catalogItem.GetFields()
-		if fields == nil {
-			continue
+		if fields != nil {
+			values, anyValue := bareMetalInstanceTypePolicyValues(fields.GetInstanceType())
+			c.addPolicy(ServiceBareMetalInstance, "bm_instance_type", values, anyValue, source)
+			values, anyValue = diskImagePolicyValues(fields.GetDiskImage())
+			c.addPolicy(ServiceBareMetalInstance, "image_ref", values, anyValue, source)
 		}
-		values, anyValue := bareMetalInstanceTypePolicyValues(fields.GetInstanceType())
-		c.addPolicy(ServiceBareMetalInstance, "bm_instance_type", values, anyValue, source)
-		values, anyValue = diskImagePolicyValues(fields.GetDiskImage())
-		c.addPolicy(ServiceBareMetalInstance, "image_ref", values, anyValue, source)
+		for dimension, value := range templateDefaults[catalogItem.GetId()] {
+			if !bareMetalCatalogPolicyOverrides(fields, dimension) {
+				c.add(ServiceBareMetalInstance, dimension, value, source)
+			}
+		}
+	}
+}
+
+func computeCatalogPolicyOverrides(fields *publicv1.ComputeInstanceCatalogItemFields, dimension string) bool {
+	if fields == nil {
+		return false
+	}
+	switch dimension {
+	case "image_ref":
+		policy := fields.GetDiskImage()
+		return policy != nil && (policy.GetLocked() != nil || policy.GetEditable().GetDefaultValue() != nil)
+	case "instance_type":
+		policy := fields.GetInstanceType()
+		return policy != nil && (policy.GetLocked() != nil || policy.GetEditable().GetDefaultValue() != nil)
+	case "boot_disk_size_gib":
+		policy := fields.GetBootDisk().GetSizeGib()
+		return policy != nil && (policy.HasLocked() || policy.GetEditable() != nil && policy.GetEditable().HasDefaultValue())
+	case "storage_tier":
+		policy := fields.GetBootDisk().GetStorageTier()
+		return policy != nil && (policy.GetLocked() != nil || policy.GetEditable().GetDefaultValue() != nil)
+	default:
+		return false
+	}
+}
+
+func clusterCatalogPolicyOverrides(fields *publicv1.ClusterCatalogItemFields, dimension string) bool {
+	if fields == nil || dimension != "release_image" {
+		return false
+	}
+	policy := fields.GetVersion()
+	return policy != nil && (policy.GetLocked() != nil || policy.GetEditable().GetDefaultValue() != nil)
+}
+
+func bareMetalCatalogPolicyOverrides(fields *publicv1.BareMetalInstanceCatalogItemFields, dimension string) bool {
+	if fields == nil {
+		return false
+	}
+	switch dimension {
+	case "bm_instance_type":
+		policy := fields.GetInstanceType()
+		return policy != nil && (policy.GetLocked() != nil || policy.GetEditable().GetDefaultValue() != nil)
+	case "image_ref":
+		policy := fields.GetDiskImage()
+		return policy != nil && (policy.GetLocked() != nil || policy.GetEditable().GetDefaultValue() != nil)
+	default:
+		return false
 	}
 }
 
