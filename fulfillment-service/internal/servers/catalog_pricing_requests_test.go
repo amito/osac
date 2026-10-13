@@ -47,10 +47,10 @@ func TestComputeCatalogPricingRequestUsesLockedAndDefaultValues(t *testing.T) {
 }
 
 func TestBareMetalCatalogPricingRequestUsesCatalogAndResourceValues(t *testing.T) {
-	instanceType := publicv1.BareMetalInstanceTypeLocalReference_builder{Name: "gpu-node"}.Build()
+	instanceType := publicv1.BareMetalInstanceTypeReference_builder{Name: "gpu-node"}.Build()
 	image := publicv1.DiskImageReference_builder{Name: "rhel-9.6"}.Build()
 	fields := publicv1.BareMetalInstanceCatalogItemFields_builder{
-		InstanceType: publicv1.BareMetalInstanceTypeLocalReferenceFieldPolicy_builder{Locked: instanceType}.Build(),
+		InstanceType: publicv1.BareMetalInstanceTypeReferenceFieldPolicy_builder{Locked: instanceType}.Build(),
 		DiskImage:    publicv1.DiskImageReferenceFieldPolicy_builder{Locked: image}.Build(),
 	}.Build()
 	metadata := publicv1.Metadata_builder{Name: "gpu"}.Build()

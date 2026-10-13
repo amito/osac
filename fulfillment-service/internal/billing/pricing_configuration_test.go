@@ -109,7 +109,7 @@ func TestApplyBareMetalPricingConfigurationUsesSelectedValues(t *testing.T) {
 		Supported:  true,
 	}
 	fields := publicv1.BareMetalInstanceCatalogItemFields_builder{
-		InstanceType: publicv1.BareMetalInstanceTypeLocalReferenceFieldPolicy_builder{Editable: publicv1.EditableBareMetalInstanceTypeLocalReferenceField_builder{}.Build()}.Build(),
+		InstanceType: publicv1.BareMetalInstanceTypeReferenceFieldPolicy_builder{Editable: publicv1.EditableBareMetalInstanceTypeReferenceField_builder{}.Build()}.Build(),
 		DiskImage:    publicv1.DiskImageReferenceFieldPolicy_builder{Editable: publicv1.EditableDiskImageReferenceField_builder{}.Build()}.Build(),
 	}.Build()
 	instanceType := publicv1.BareMetalInstanceTypeReference_builder{Name: "large"}.Build()

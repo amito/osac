@@ -181,13 +181,13 @@ func addStorageTierPricingDimension(dimensions map[string]string, dimension stri
 	return addReferencePricingDimension(dimensions, dimension, locked.GetName(), defaultValue.GetName(), editable != nil, defaultValue != nil)
 }
 
-func addBareMetalInstanceTypePricingDimension(dimensions map[string]string, dimension string, policy *publicv1.BareMetalInstanceTypeLocalReferenceFieldPolicy) bool {
+func addBareMetalInstanceTypePricingDimension(dimensions map[string]string, dimension string, policy *publicv1.BareMetalInstanceTypeReferenceFieldPolicy) bool {
 	if policy == nil {
 		return false
 	}
 	locked := policy.GetLocked()
 	editable := policy.GetEditable()
-	var defaultValue *publicv1.BareMetalInstanceTypeLocalReference
+	var defaultValue *publicv1.BareMetalInstanceTypeReference
 	if editable != nil {
 		defaultValue = editable.GetDefaultValue()
 	}

@@ -375,7 +375,7 @@ func clusterVersionPolicyValues(policy *publicv1.ClusterVersionReferenceFieldPol
 	return nil, false
 }
 
-func bareMetalInstanceTypePolicyValues(policy *publicv1.BareMetalInstanceTypeLocalReferenceFieldPolicy) ([]string, bool) {
+func bareMetalInstanceTypePolicyValues(policy *publicv1.BareMetalInstanceTypeReferenceFieldPolicy) ([]string, bool) {
 	if policy == nil {
 		return nil, false
 	}
