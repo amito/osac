@@ -22,19 +22,17 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"path"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
+	"github.com/osac-project/osac-metering/shared/m360http"
 	"github.com/osac-project/osac/fulfillment-service/internal/billing"
 )
 
 const (
-	defaultHTTPTimeout = 15 * time.Second
-	accountPageSize    = 20
-	maxResponseBytes   = 4 << 20
+	accountPageSize  = 20
+	maxResponseBytes = 4 << 20
 )
 
 // Config contains the M360 connection settings. The API key is loaded by the
@@ -48,38 +46,21 @@ type Config struct {
 
 // Client translates the M360 external account API into OSAC's billing model.
 type Client struct {
-	baseURL    *url.URL
-	apiVersion string
-	apiKey     string
-	httpClient *http.Client
-	updateMu   sync.Mutex
+	transport *m360http.Client
+	updateMu  sync.Mutex
 }
 
 var _ billing.Provider = (*Client)(nil)
 
 // NewClient creates a billing client for the M360 external API.
 func NewClient(config Config) (*Client, error) {
-	baseURL, err := url.Parse(strings.TrimSpace(config.BaseURL))
-	if err != nil || baseURL.Host == "" || (baseURL.Scheme != "http" && baseURL.Scheme != "https") {
-		return nil, errors.New("M360 API URL must be an absolute HTTP(S) URL")
+	transport, err := m360http.NewClient(m360http.Config{
+		BaseURL: config.BaseURL, APIVersion: config.APIVersion, APIKey: config.APIKey, HTTPClient: config.HTTPClient,
+	})
+	if err != nil {
+		return nil, err
 	}
-	if strings.TrimSpace(config.APIVersion) == "" || strings.ContainsAny(config.APIVersion, "/?#") {
-		return nil, errors.New("M360 API version is invalid")
-	}
-	if strings.TrimSpace(config.APIKey) == "" {
-		return nil, errors.New("M360 API key is required")
-	}
-	httpClient := config.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
-	}
-
-	return &Client{
-		baseURL:    baseURL,
-		apiVersion: config.APIVersion,
-		apiKey:     config.APIKey,
-		httpClient: httpClient,
-	}, nil
+	return &Client{transport: transport}, nil
 }
 
 // ListAccounts returns all accounts, following M360's zero-based pagination.
@@ -173,37 +154,29 @@ func (c *Client) getAccountsPage(ctx context.Context, page, size int, response *
 }
 
 func (c *Client) accountURL(reference string) *url.URL {
-	return c.apiURL("accounts", url.PathEscape(reference))
+	return c.apiURL("accounts", reference)
 }
 
 func (c *Client) apiURL(segments ...string) *url.URL {
-	result := *c.baseURL
-	allSegments := []string{strings.TrimSuffix(result.Path, "/"), "api", c.apiVersion, "external"}
-	allSegments = append(allSegments, segments...)
-	result.Path = path.Join(allSegments...)
-	result.RawPath = ""
-	return &result
+	return c.transport.Endpoint("external", segments...)
 }
 
 func (c *Client) requestJSON(ctx context.Context, method string, endpoint *url.URL, body any, response any) error {
 	var requestBody io.Reader
+	contentType := ""
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
 			return errors.New("failed to encode M360 request")
 		}
 		requestBody = strings.NewReader(string(encoded))
+		contentType = "application/json"
 	}
-	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), requestBody)
+	request, err := c.transport.NewRequest(ctx, method, endpoint, requestBody, contentType)
 	if err != nil {
 		return errors.New("failed to create M360 request")
 	}
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("Authorization", "Bearer "+c.apiKey)
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	result, err := c.httpClient.Do(request)
+	result, err := c.transport.Do(request)
 	if err != nil {
 		return errors.New("M360 API request failed")
 	}

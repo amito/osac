@@ -357,9 +357,78 @@ allow if {
   }
 }
 
-# Allow everything to admins:
+admin_billing_methods := {
+  "/osac.public.v1.BillingProviderStatuses/Get",
+  "/osac.public.v1.BillingAccounts/List",
+  "/osac.public.v1.TenantBillingAssignments/List",
+  "/osac.public.v1.TenantBillingAssignments/Get",
+  "/osac.public.v1.TenantBillingAssignments/Create",
+  "/osac.public.v1.TenantBillingAssignments/Update",
+  "/osac.public.v1.CatalogPricingInputs/List",
+  "/osac.public.v1.ProviderRateCardItems/List",
+  "/osac.public.v1.BillingCosts/List",
+  "/osac.public.v1.BillingInvoices/List",
+  "/osac.public.v1.BillingInvoices/Get",
+  "/osac.public.v1.DraftCharges/List",
+  "/osac.public.v1.BillingExports/Create",
+  "/osac.public.v1.BillingExports/Get",
+  "/osac.private.v1.BillingProviderStatuses/Get",
+  "/osac.private.v1.BillingAccounts/List",
+  "/osac.private.v1.BillingAccounts/Get",
+  "/osac.private.v1.TenantBillingAssignments/List",
+  "/osac.private.v1.TenantBillingAssignments/Get",
+  "/osac.private.v1.TenantBillingAssignments/Create",
+  "/osac.private.v1.TenantBillingAssignments/Update",
+  "/osac.private.v1.TenantBillingAssignments/Signal",
+  "/osac.private.v1.TenantBillingAssignments/UpdateStatus",
+  "/osac.private.v1.CatalogPricingInputs/List",
+  "/osac.private.v1.ProviderRateCardItems/List",
+  "/osac.private.v1.BillingCosts/List",
+  "/osac.private.v1.BillingInvoices/List",
+  "/osac.private.v1.BillingInvoices/Get",
+  "/osac.private.v1.DraftCharges/List",
+  "/osac.private.v1.BillingExports/Create",
+  "/osac.private.v1.BillingExports/Get",
+}
+
+is_admin_billing_method if {
+  grpc_method in admin_billing_methods
+}
+
+billing_service_prefixes := {
+  "/osac.public.v1.Billing",
+  "/osac.private.v1.Billing",
+  "/osac.public.v1.TenantBillingAssignments",
+  "/osac.private.v1.TenantBillingAssignments",
+  "/osac.public.v1.CatalogPricingInputs",
+  "/osac.public.v1.ProviderRateCardItems",
+  "/osac.public.v1.DraftCharges",
+  "/osac.public.v1.PricingQueries",
+  "/osac.public.v1.PriceEstimates",
+  "/osac.private.v1.CatalogPricingInputs",
+  "/osac.private.v1.ProviderRateCardItems",
+  "/osac.private.v1.DraftCharges",
+  "/osac.private.v1.PricingQueries",
+  "/osac.private.v1.PriceEstimates",
+}
+
+is_billing_service_method if {
+  some prefix in billing_service_prefixes
+  startswith(grpc_method, prefix)
+}
+
+# Billing methods are admin-only unless another explicit tenant rule above
+# allows them. Keep each provider-admin method in admin_billing_methods.
 allow if {
   is_admin
+  is_admin_billing_method
+}
+
+# Allow admins to use non-billing APIs. Billing APIs are restricted to the
+# explicit allow-list above.
+allow if {
+  is_admin
+  not is_billing_service_method
 }
 
 # The CSI driver identity may only manage volumes through the private Volume API

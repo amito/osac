@@ -78,6 +78,8 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 	}
 	invoiceProvider, _ := deps.BillingProvider.(billing.InvoiceProvider)
 	costProvider, _ := deps.BillingProvider.(billing.CostProvider)
+	draftChargeProvider, _ := deps.BillingProvider.(billing.DraftChargeProvider)
+	billingExportProvider, _ := deps.BillingProvider.(billing.BillingExportProvider)
 	providerRateCardItemsBuilder := servers.NewProviderRateCardItemsServer().
 		SetLogger(deps.Logger).
 		SetProvider(deps.BillingProviderKey, rateCardProvider).
@@ -90,6 +92,16 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 	billingCostsBuilder := servers.NewBillingCostsServer().
 		SetLogger(deps.Logger).
 		SetProvider(deps.BillingProviderKey, costProvider).
+		SetAccountStore(billingAccountStore).
+		SetTenancyLogic(deps.TenancyLogic)
+	draftChargesBuilder := servers.NewDraftChargesServer().
+		SetLogger(deps.Logger).
+		SetProvider(deps.BillingProviderKey, draftChargeProvider).
+		SetAccountStore(billingAccountStore).
+		SetTenancyLogic(deps.TenancyLogic)
+	billingExportsBuilder := servers.NewBillingExportsServer().
+		SetLogger(deps.Logger).
+		SetProvider(deps.BillingProviderKey, billingExportProvider).
 		SetAccountStore(billingAccountStore).
 		SetTenancyLogic(deps.TenancyLogic)
 	publicBillingProviderStatuses, err := servers.NewBillingProviderStatusesServer().
@@ -270,6 +282,7 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 			SetAttributionLogic(deps.PublicAttributionLogic).
 			SetTenancyLogic(deps.TenancyLogic).
 			SetMetricsRegisterer(deps.MetricsRegisterer).
+			SetPricingResolver(catalogPricingResolver).
 			Build()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create clusters server: %w", err)
@@ -282,6 +295,7 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 			SetAttributionLogic(deps.PrivateAttributionLogic).
 			SetTenancyLogic(deps.TenancyLogic).
 			SetMetricsRegisterer(deps.MetricsRegisterer).
+			SetPricingResolver(catalogPricingResolver).
 			Build()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create private clusters server: %w", err)
@@ -323,6 +337,7 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 			SetTenancyLogic(deps.TenancyLogic).
 			SetMetricsRegisterer(deps.MetricsRegisterer).
 			SetSecretStore(deps.SecretStore).
+			SetPricingResolver(catalogPricingResolver).
 			Build()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create compute instances server: %w", err)
@@ -336,6 +351,7 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 			SetTenancyLogic(deps.TenancyLogic).
 			SetMetricsRegisterer(deps.MetricsRegisterer).
 			SetSecretStore(deps.SecretStore).
+			SetPricingResolver(catalogPricingResolver).
 			Build()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create private compute instances server: %w", err)
@@ -404,6 +420,7 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 			SetTenancyLogic(deps.TenancyLogic).
 			SetMetricsRegisterer(deps.MetricsRegisterer).
 			SetSecretStore(deps.SecretStore).
+			SetPricingResolver(catalogPricingResolver).
 			Build()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create bare metal instances server: %w", err)
@@ -441,6 +458,7 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 			SetTenancyLogic(deps.TenancyLogic).
 			SetMetricsRegisterer(deps.MetricsRegisterer).
 			SetSecretStore(deps.SecretStore).
+			SetPricingResolver(catalogPricingResolver).
 			Build()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create private bare metal instances server: %w", err)
@@ -1095,6 +1113,18 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 		return nil, fmt.Errorf("failed to create billing costs server: %w", err)
 	}
 	publicv1.RegisterBillingCostsServer(registrar, billingCostsServer)
+
+	draftChargesServer, err := draftChargesBuilder.Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create draft charges server: %w", err)
+	}
+	publicv1.RegisterDraftChargesServer(registrar, draftChargesServer)
+
+	billingExportsServer, err := billingExportsBuilder.Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create billing exports server: %w", err)
+	}
+	publicv1.RegisterBillingExportsServer(registrar, billingExportsServer)
 
 	return &ResourceServers{
 		PrivateHubsServer:             privateHubsServer,

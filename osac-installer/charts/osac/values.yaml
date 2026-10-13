@@ -24,6 +24,16 @@ global:
     # Enable only when tenant CSI trust support is deployed.
     enabled: false
     tenantNamespace: osac-csi
+  # Shared M360 connection for fulfillment and the metering adapter.
+  # The API key is read from this existing Secret; never put credentials here.
+  billing:
+    provider: ""
+    m360:
+      apiUrl: ""
+      apiVersion: ""
+      apiKeySecret:
+        name: ""
+        key: api-key
   # --- Service Enablement ---
   # Controls which service tiers are active across all OSAC components.
   # When all are true (the default), OSAC operates as a full-stack cloud.

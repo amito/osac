@@ -6,8 +6,12 @@
   "properties": {
     "global": {
       "type": "object",
-      "description": "Values propagated unchanged into every subchart, shared between the umbrella chart's own templates and its subcharts. Use global.networking as the primary networking configuration API.",
+      "description": "Values propagated unchanged into every subchart, shared between the umbrella chart's own templates and its subcharts. Use global.billing and global.networking for shared provider and network configuration.",
       "properties": {
+        "billing": {
+          "$ref": "#/properties/service/properties/billing",
+          "description": "Optional billing provider connection shared by Fulfillment and the metering adapter. When billing.provider is m360, the existing API-key Secret must be created in the OSAC namespace."
+        },
         "clusterDomain": {
           "type": "string",
           "description": "OpenShift cluster ingress domain (e.g. apps.mycluster.example.com). Backs the tpl-templated defaults for service.auth.issuerUrl, service.idp.url, and service.vault.keycloakIssuerUrl. Set via --set global.clusterDomain=$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}'). Leave empty on platforms (e.g. kind) that set those three values explicitly instead."
@@ -679,7 +683,7 @@
         },
         "billing": {
           "type": "object",
-          "description": "Optional external billing provider configuration",
+          "description": "Optional fulfillment-chart billing configuration. global.billing takes precedence and is shared with the metering adapter.",
           "properties": {
             "provider": {
               "type": "string",

@@ -316,6 +316,8 @@ func buildHandlerList() []handlerRegistrar {
 		publicv1.RegisterBillingAccountsHandler,
 		publicv1.RegisterBillingInvoicesHandler,
 		publicv1.RegisterBillingCostsHandler,
+		publicv1.RegisterDraftChargesHandler,
+		publicv1.RegisterBillingExportsHandler,
 		publicv1.RegisterTenantBillingAssignmentsHandler,
 		publicv1.RegisterVirtualNetworksHandler,
 		publicv1.RegisterSubnetsHandler,

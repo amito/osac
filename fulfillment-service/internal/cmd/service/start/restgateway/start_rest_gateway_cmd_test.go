@@ -97,6 +97,8 @@ var bmaasHandlers = []string{
 var sharedHandlers = []string{
 	"public/v1.RegisterCapabilitiesHandler",
 	"public/v1.RegisterBillingCostsHandler",
+	"public/v1.RegisterDraftChargesHandler",
+	"public/v1.RegisterBillingExportsHandler",
 	"public/v1.RegisterVirtualNetworksHandler",
 	"public/v1.RegisterSubnetsHandler",
 	"public/v1.RegisterSecurityGroupsHandler",

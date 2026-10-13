@@ -46,6 +46,7 @@ type PrivateClustersServerBuilder struct {
 	metricsRegisterer            prometheus.Registerer
 	filterDesc                   protoreflect.MessageDescriptor
 	addOnOperatorResolverFactory addOnOperatorResolverFactory
+	pricingResolver              *CatalogPricingResolver
 }
 
 var _ privatev1.ClustersServer = (*PrivateClustersServer)(nil)
@@ -68,6 +69,7 @@ type PrivateClustersServer struct {
 	generic                   *GenericServer[*privatev1.Cluster]
 	lifecycle                 *externalIPLifecycle
 	bareMetalInstanceTypesDao *dao.GenericDAO[*privatev1.BareMetalInstanceType]
+	pricingResolver           *CatalogPricingResolver
 }
 
 func NewPrivateClustersServer() *PrivateClustersServerBuilder {
@@ -106,6 +108,11 @@ func (b *PrivateClustersServerBuilder) SetFilterDesc(value protoreflect.MessageD
 // SetAddOnOperatorResolverFactory sets the resolver policy used with the server-owned DAO.
 func (b *PrivateClustersServerBuilder) SetAddOnOperatorResolverFactory(value addOnOperatorResolverFactory) *PrivateClustersServerBuilder {
 	b.addOnOperatorResolverFactory = value
+	return b
+}
+
+func (b *PrivateClustersServerBuilder) SetPricingResolver(value *CatalogPricingResolver) *PrivateClustersServerBuilder {
+	b.pricingResolver = value
 	return b
 }
 
@@ -274,6 +281,7 @@ func (b *PrivateClustersServerBuilder) Build() (result *PrivateClustersServer, e
 		secretsDao:                secretsDao,
 		addOnOperators:            addOnOperators,
 		generic:                   generic,
+		pricingResolver:           b.pricingResolver,
 	}
 	result.lifecycle = newExternalIPLifecycle(
 		externalIPDao,
@@ -302,7 +310,13 @@ func (s *PrivateClustersServer) Get(ctx context.Context,
 
 func (s *PrivateClustersServer) Create(ctx context.Context, request *privatev1.ClustersCreateRequest) (response *privatev1.ClustersCreateResponse, err error) {
 	err = s.generic.CreateWithCandidatePreparation(ctx, request, &response, func(ctx context.Context, _ *privatev1.Cluster, candidate *privatev1.Cluster) error {
-		return s.prepareCreate(ctx, candidate)
+		if err := s.prepareCreate(ctx, candidate); err != nil {
+			return err
+		}
+		if s.pricingResolver == nil {
+			return nil
+		}
+		return s.pricingResolver.CheckCoverage(ctx, candidate.GetMetadata().GetTenant(), clusterCoverageRequests(candidate))
 	})
 	if err != nil {
 		return

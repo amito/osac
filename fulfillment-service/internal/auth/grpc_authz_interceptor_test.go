@@ -816,6 +816,9 @@ var _ = Describe("Rego authorization interceptor", func() {
 				"/osac.public.v1.TenantBillingAssignments/Get",
 				"/osac.public.v1.TenantBillingAssignments/Create",
 				"/osac.public.v1.TenantBillingAssignments/Update",
+				"/osac.public.v1.DraftCharges/List",
+				"/osac.public.v1.BillingExports/Create",
+				"/osac.public.v1.BillingExports/Get",
 				"/osac.private.v1.BillingAccounts/Get",
 				"/osac.private.v1.TenantBillingAssignments/Signal",
 				"/osac.private.v1.TenantBillingAssignments/UpdateStatus",
@@ -869,6 +872,25 @@ var _ = Describe("Rego authorization interceptor", func() {
 				Expect(err).ToNot(HaveOccurred(), "%s should be allowed to provider admins", method)
 				Expect(handled).To(BeTrue())
 			}
+		})
+
+		It("denies unlisted billing methods even to cloud provider admins", func(ctx context.Context) {
+			ctx = ContextWithToken(ctx, createKeycloakUserToken("tenant-a", "provider-admin", jwt.MapClaims{
+				"groups": []any{"admins"},
+			}))
+			handled := false
+			_, err := interceptor.UnaryServer(
+				ctx,
+				nil,
+				&grpc.UnaryServerInfo{FullMethod: "/osac.public.v1.BillingAccounts/Delete"},
+				func(ctx context.Context, req any) (any, error) {
+					handled = true
+					return nil, nil
+				},
+			)
+			Expect(err).To(HaveOccurred())
+			Expect(grpcstatus.Code(err)).To(Equal(grpccodes.PermissionDenied))
+			Expect(handled).To(BeFalse())
 		})
 
 		It("allows tenant admins to read their billing invoices", func(ctx context.Context) {

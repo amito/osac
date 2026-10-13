@@ -36,6 +36,18 @@ billing:
       name: ""
       key: api-key
 
+# The umbrella chart sets this shared value for both Fulfillment and metering.
+# Direct installs can continue using the chart-local `billing` block above.
+global:
+  billing:
+    provider: ""
+    m360:
+      apiUrl: ""
+      apiVersion: ""
+      apiKeySecret:
+        name: ""
+        key: api-key
+
 # The event publisher requires a Kafka backend. Disable it for API-only deployments.
 eventPublisher:
   enabled: true
