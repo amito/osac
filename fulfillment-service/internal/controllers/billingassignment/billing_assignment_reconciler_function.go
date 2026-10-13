@@ -219,7 +219,9 @@ func (f *Function) getProviderAccount(ctx context.Context, accountID string) (bi
 	if account == nil || account.GetProviderAccountReference() == "" {
 		return billing.Account{}, errors.New("OSAC billing account has no provider reference")
 	}
-	result, err := f.provider.GetAccount(ctx, account.GetProviderAccountReference())
+	result, err := billing.RetryProviderRead(ctx, func(ctx context.Context) (billing.Account, error) {
+		return f.provider.GetAccount(ctx, account.GetProviderAccountReference())
+	})
 	if err != nil {
 		return billing.Account{}, errors.New("provider account lookup failed")
 	}

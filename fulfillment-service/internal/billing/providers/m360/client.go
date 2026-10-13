@@ -127,7 +127,9 @@ func (c *Client) UpdateAccountExternalID(ctx context.Context, reference, expecte
 	c.updateMu.Lock()
 	defer c.updateMu.Unlock()
 
-	current, err := c.GetAccount(ctx, reference)
+	current, err := billing.RetryProviderRead(ctx, func(ctx context.Context) (billing.Account, error) {
+		return c.GetAccount(ctx, reference)
+	})
 	if err != nil {
 		return err
 	}

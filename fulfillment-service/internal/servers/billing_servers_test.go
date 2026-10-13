@@ -32,6 +32,7 @@ import (
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type billingProviderStub struct {
@@ -310,5 +311,24 @@ func TestBillingAccountDiscoveryRedactsProviderErrors(t *testing.T) {
 	}
 	if err != nil && (strings.Contains(err.Error(), "provider-secret-id") || strings.Contains(err.Error(), "HTTP response body")) {
 		t.Fatalf("provider error was not redacted: %v", err)
+	}
+}
+
+func TestNewTenantBillingAssignmentUsesEffectiveTimeSuppliedByCaller(t *testing.T) {
+	effectiveAt := timestamppb.New(time.Date(2026, 10, 13, 12, 30, 0, 0, time.UTC))
+	requested := privatev1.TenantBillingAssignment_builder{
+		Metadata: privatev1.Metadata_builder{Tenant: "tenant-a"}.Build(),
+		Spec: privatev1.TenantBillingAssignmentSpec_builder{
+			TenantId:         "tenant-a",
+			BillingAccountId: "account-b",
+		}.Build(),
+	}.Build()
+
+	got, err := newTenantBillingAssignment(requested, "tenant-a", "account-b", effectiveAt)
+	if err != nil {
+		t.Fatalf("newTenantBillingAssignment() error = %v", err)
+	}
+	if !proto.Equal(got.GetStatus().GetEffectiveFrom(), effectiveAt) {
+		t.Fatalf("effective_from = %v, want shared transition time %v", got.GetStatus().GetEffectiveFrom(), effectiveAt)
 	}
 }

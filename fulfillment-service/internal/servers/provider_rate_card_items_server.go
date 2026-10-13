@@ -138,7 +138,9 @@ func (s *ProviderRateCardItemsServer) List(ctx context.Context,
 			query.CurrencyCode = accountCurrency
 		}
 	}
-	items, err := s.provider.ListRateCardItems(ctx, query)
+	items, err := billing.RetryProviderRead(ctx, func(ctx context.Context) ([]billing.RateCardItem, error) {
+		return s.provider.ListRateCardItems(ctx, query)
+	})
 	if err != nil {
 		s.logger.ErrorContext(ctx, "failed to list provider rate-card items", slog.Any("error", err))
 		return nil, grpcstatus.Error(grpccodes.Unavailable, "provider rate-card items are unavailable")

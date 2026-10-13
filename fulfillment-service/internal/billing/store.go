@@ -51,8 +51,8 @@ func NewAccountStore() *AccountStore {
 	return &AccountStore{}
 }
 
-// SyncAccounts inserts or refreshes discovered provider accounts and returns
-// them with their stable OSAC identifiers.
+// SyncAccounts inserts or refreshes discovered provider accounts, preserves
+// their first known currency, and returns them with stable OSAC identifiers.
 func (s *AccountStore) SyncAccounts(
 	ctx context.Context,
 	providerKey string,
@@ -76,22 +76,23 @@ func (s *AccountStore) SyncAccounts(
 			return nil, errors.New("provider account ID and display name are required")
 		}
 		id := uuid.New()
-		var storedID string
+		var storedID, storedCurrency string
 		if err = tx.QueryRow(ctx, `
 			insert into billing_accounts (
 				id, provider_key, provider_account_reference, display_name, base_currency, state, status_observed_at
 			) values ($1, $2, $3, $4, $5, $6, $7)
 			on conflict (provider_key, provider_account_reference) do update set
 				display_name = excluded.display_name,
-				base_currency = case when excluded.base_currency = '' then billing_accounts.base_currency
-					else excluded.base_currency end,
+				base_currency = case when billing_accounts.base_currency = '' then excluded.base_currency
+					else billing_accounts.base_currency end,
 				state = excluded.state,
 				status_observed_at = excluded.status_observed_at
-			returning id
+			returning id, base_currency
 		`, id, providerKey, account.Reference, account.DisplayName, account.Currency,
-			accountStateName(account.State), observedAt).Scan(&storedID); err != nil {
+			accountStateName(account.State), observedAt).Scan(&storedID, &storedCurrency); err != nil {
 			return nil, fmt.Errorf("failed to persist discovered billing account: %w", err)
 		}
+		account.Currency = storedCurrency
 		result = append(result, makeBillingAccount(storedID, providerKey, account, observedAt))
 	}
 	return result, nil
