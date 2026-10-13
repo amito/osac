@@ -52,6 +52,14 @@ service:
   variant: openshift
   externalHostname: fulfillment-api.example.com
   internalHostname: fulfillment-internal-api.example.com
+  billing:
+    provider: m360
+    m360:
+      apiUrl: https://m360.ci.example.com
+      apiVersion: v1
+      apiKeySecret:
+        name: ci-m360-credentials
+        key: api-key
   auth:
     issuerUrl: https://keycloak.keycloak.svc.cluster.local/realms/osac
     controllerCredentials:

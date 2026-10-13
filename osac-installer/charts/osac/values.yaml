@@ -166,6 +166,15 @@ service:
   controller:
     # Enable full synchronization in fulfillment controllers.
     sync: true
+  # Billing is optional. The M360 API key must already exist in this Secret.
+  billing:
+    provider: ""
+    m360:
+      apiUrl: ""
+      apiVersion: ""
+      apiKeySecret:
+        name: ""
+        key: api-key
   # [REQUIRED] Hostname for the external API Route (e.g. fulfillment-api-osac.apps.mycluster.example.com)
   externalHostname: ""
   # [REQUIRED] Hostname for the internal API Route (e.g. fulfillment-internal-api-osac.apps.mycluster.example.com)

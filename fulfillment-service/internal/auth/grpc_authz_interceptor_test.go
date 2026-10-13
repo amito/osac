@@ -848,6 +848,71 @@ var _ = Describe("Rego authorization interceptor", func() {
 			),
 		)
 
+		It("restricts billing APIs to cloud provider admins", func(ctx context.Context) {
+			billingMethods := []string{
+				"/osac.public.v1.BillingProviderStatuses/Get",
+				"/osac.public.v1.BillingAccounts/List",
+				"/osac.public.v1.CatalogPricingInputs/List",
+				"/osac.public.v1.ProviderRateCardItems/List",
+				"/osac.public.v1.TenantBillingAssignments/List",
+				"/osac.public.v1.TenantBillingAssignments/Get",
+				"/osac.public.v1.TenantBillingAssignments/Create",
+				"/osac.public.v1.TenantBillingAssignments/Update",
+				"/osac.private.v1.BillingAccounts/Get",
+				"/osac.private.v1.TenantBillingAssignments/Signal",
+				"/osac.private.v1.TenantBillingAssignments/UpdateStatus",
+			}
+			identities := []struct {
+				name  string
+				roles []any
+			}{
+				{name: "regular user"},
+				{name: "tenant admin", roles: []any{"tenant-admin"}},
+				{name: "tenant IdP manager", roles: []any{"tenant-idp-manager"}},
+			}
+			for _, identity := range identities {
+				for _, method := range billingMethods {
+					ctx = ContextWithToken(ctx, createKeycloakUserToken("tenant-a", identity.name, jwt.MapClaims{
+						"realm_access": map[string]any{"roles": identity.roles},
+					}))
+					handled := false
+					_, err := interceptor.UnaryServer(
+						ctx,
+						nil,
+						&grpc.UnaryServerInfo{FullMethod: method},
+						func(ctx context.Context, req any) (any, error) {
+							handled = true
+							return nil, nil
+						},
+					)
+					Expect(err).To(HaveOccurred(), "%s should be denied to %s", method, identity.name)
+					status, ok := grpcstatus.FromError(err)
+					Expect(ok).To(BeTrue())
+					Expect(status.Code()).To(Equal(grpccodes.PermissionDenied))
+					Expect(handled).To(BeFalse())
+				}
+			}
+
+			adminToken := createKeycloakUserToken("tenant-a", "provider-admin", jwt.MapClaims{
+				"groups": []any{"admins"},
+			})
+			for _, method := range billingMethods {
+				ctx = ContextWithToken(ctx, adminToken)
+				handled := false
+				_, err := interceptor.UnaryServer(
+					ctx,
+					nil,
+					&grpc.UnaryServerInfo{FullMethod: method},
+					func(ctx context.Context, req any) (any, error) {
+						handled = true
+						return nil, nil
+					},
+				)
+				Expect(err).ToNot(HaveOccurred(), "%s should be allowed to provider admins", method)
+				Expect(handled).To(BeTrue())
+			}
+		})
+
 		DescribeTable(
 			"Allows Keycloak users on the public Secrets API",
 			func(ctx context.Context, method string) {
