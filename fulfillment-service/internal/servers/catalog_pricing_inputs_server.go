@@ -111,6 +111,9 @@ func (s *CatalogPricingInputsServer) List(ctx context.Context,
 		return nil, grpcstatus.Error(grpccodes.InvalidArgument, "filter and order are not supported")
 	}
 
+	// This API inventories OSAC catalog values only. Its internal catalog reads
+	// must not trigger provider pricing lookups.
+	ctx = withoutCatalogPricing(ctx)
 	computeItems, err := listComputeCatalogItems(ctx, s.computeItems)
 	if err != nil {
 		return nil, s.listError(ctx, "compute instance", err)

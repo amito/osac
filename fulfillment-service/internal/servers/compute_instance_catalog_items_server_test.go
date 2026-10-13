@@ -144,6 +144,29 @@ var _ = Describe("Compute instance catalog items server", func() {
 			Expect(object.GetTemplate().GetId()).To(Equal("my-ci-template-id"))
 			Expect(object.GetPublished()).To(BeTrue())
 		})
+		It("does not persist client-supplied catalog pricing", func() {
+			requestPricing := publicv1.CatalogItemPricing_builder{
+				Status: publicv1.CatalogPricingStatus_CATALOG_PRICING_STATUS_CURRENT,
+				Components: []*publicv1.CatalogPriceComponent{
+					publicv1.CatalogPriceComponent_builder{Amount: "999.00", Unit: "hour", Description: "Compute"}.Build(),
+				},
+			}.Build()
+			response, err := server.Create(ctx, publicv1.ComputeInstanceCatalogItemsCreateRequest_builder{
+				Object: publicv1.ComputeInstanceCatalogItem_builder{
+					Metadata: publicv1.Metadata_builder{Name: fmt.Sprintf("test-%s", uuid.NewString()[:8])}.Build(),
+					Template: publicv1.ComputeInstanceTemplateReference_builder{Id: "my-ci-template-id"}.Build(),
+					Pricing:  requestPricing,
+				}.Build(),
+			}.Build())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(response.GetObject().GetPricing()).To(BeNil())
+
+			stored, err := server.delegate.Get(ctx, privatev1.ComputeInstanceCatalogItemsGetRequest_builder{
+				Id: response.GetObject().GetId(),
+			}.Build())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(stored.GetObject().GetPricing()).To(BeNil())
+		})
 		It("Updates object through the public API", func() {
 			createResponse, err := server.Create(ctx, publicv1.ComputeInstanceCatalogItemsCreateRequest_builder{
 				Object: publicv1.ComputeInstanceCatalogItem_builder{

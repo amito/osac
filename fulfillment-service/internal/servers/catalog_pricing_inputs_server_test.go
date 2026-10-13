@@ -44,7 +44,10 @@ func TestCatalogPricingInputsListPagesOutput(t *testing.T) {
 			}.Build(),
 		}.Build(),
 	}.Build()
-	lister := computeCatalogItemsListerFunc(func(_ context.Context, request *publicv1.ComputeInstanceCatalogItemsListRequest) (*publicv1.ComputeInstanceCatalogItemsListResponse, error) {
+	lister := computeCatalogItemsListerFunc(func(ctx context.Context, request *publicv1.ComputeInstanceCatalogItemsListRequest) (*publicv1.ComputeInstanceCatalogItemsListResponse, error) {
+		if !catalogPricingEnrichmentDisabled(ctx) {
+			t.Fatal("catalog pricing inventory list did not suppress provider price lookups")
+		}
 		if request.GetOffset() != 0 || request.GetLimit() != catalogPricingInputSourcePageSize {
 			t.Fatalf("source request offset/limit = %d/%d, want 0/%d", request.GetOffset(), request.GetLimit(), catalogPricingInputSourcePageSize)
 		}
