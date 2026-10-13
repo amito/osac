@@ -1,0 +1,243 @@
+/*
+Copyright (c) 2026 Red Hat Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package servers
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/osac-project/osac/fulfillment-service/internal/auth"
+	"github.com/osac-project/osac/fulfillment-service/internal/billing"
+	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
+	publicv1 "github.com/osac-project/osac/proto/gen/osac/public/v1"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
+)
+
+type billingProviderStub struct {
+	status   billing.ProviderStatus
+	accounts []billing.Account
+	listErr  error
+}
+
+func (p *billingProviderStub) GetStatus(context.Context) (billing.ProviderStatus, error) {
+	return p.status, nil
+}
+
+func (p *billingProviderStub) ListAccounts(context.Context) ([]billing.Account, error) {
+	return p.accounts, p.listErr
+}
+
+func (*billingProviderStub) GetAccount(context.Context, string) (billing.Account, error) {
+	return billing.Account{}, nil
+}
+
+func (*billingProviderStub) UpdateAccountExternalID(context.Context, string, string, string) error {
+	return nil
+}
+
+type billingAccountStoreStub struct {
+	accounts []*privatev1.BillingAccount
+	total    int32
+}
+
+func (*billingAccountStoreStub) SyncAccounts(context.Context, string, []billing.Account, time.Time) ([]*privatev1.BillingAccount, error) {
+	return nil, nil
+}
+
+func (s *billingAccountStoreStub) ListAccounts(context.Context, string, int32, int32) ([]*privatev1.BillingAccount, int32, error) {
+	return s.accounts, s.total, nil
+}
+
+func (*billingAccountStoreStub) GetAccount(context.Context, string) (*privatev1.BillingAccount, error) {
+	return nil, billing.ErrAccountNotFound
+}
+
+func newBillingTestLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func TestBillingProviderStatusReportsNotConfigured(t *testing.T) {
+	server, err := NewBillingProviderStatusesServer().SetLogger(newBillingTestLogger()).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := server.Get(context.Background(), &publicv1.BillingProviderStatusesGetRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := response.GetObject().GetState(); got != publicv1.BillingProviderState_BILLING_PROVIDER_STATE_NOT_CONFIGURED {
+		t.Fatalf("state = %v, want NOT_CONFIGURED", got)
+	}
+	if len(response.GetObject().GetSupportedCapabilities()) != 0 {
+		t.Fatalf("unconfigured provider advertised capabilities: %v", response.GetObject().GetSupportedCapabilities())
+	}
+}
+
+func TestBillingProviderStatusExposesProviderAdapterCapabilities(t *testing.T) {
+	provider := &billingProviderStub{status: billing.ProviderStatus{
+		State: billing.ProviderStateAvailable,
+		Capabilities: []billing.ProviderCapability{
+			billing.ProviderCapabilityPricing,
+			billing.ProviderCapabilityInvoices,
+			"FUTURE_CAPABILITY",
+		},
+	}}
+	server, err := NewBillingProviderStatusesServer().SetLogger(newBillingTestLogger()).SetProvider("m360", provider).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := server.Get(context.Background(), &publicv1.BillingProviderStatusesGetRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities := response.GetObject().GetSupportedCapabilities()
+	want := []publicv1.BillingProviderCapability{
+		publicv1.BillingProviderCapability_BILLING_PROVIDER_CAPABILITY_PRICING,
+		publicv1.BillingProviderCapability_BILLING_PROVIDER_CAPABILITY_INVOICES,
+	}
+	if len(capabilities) != len(want) {
+		t.Fatalf("capabilities = %v, want %v", capabilities, want)
+	}
+	for i := range want {
+		if capabilities[i] != want[i] {
+			t.Fatalf("capabilities = %v, want %v", capabilities, want)
+		}
+	}
+}
+
+func TestBillingAssignmentsBuildWithoutDeleteRPC(t *testing.T) {
+	logger := newBillingTestLogger()
+	tenancy, err := auth.NewDefaultTenancyLogic().SetLogger(logger).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	attribution, err := auth.NewSystemAttributionLogic().Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewPrivateTenantBillingAssignmentsServer().SetLogger(logger).
+		SetAttributionLogic(attribution).SetTenancyLogic(tenancy).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = server.generic.Delete(context.Background(), nil, nil); grpcstatus.Code(err) != codes.Unimplemented {
+		t.Fatalf("Delete error = %v, want Unimplemented", err)
+	}
+}
+
+func TestBillingAccountsRequireConfiguredProvider(t *testing.T) {
+	server, err := NewPrivateBillingAccountsServer().
+		SetLogger(newBillingTestLogger()).
+		SetStore(&billingAccountStoreStub{}).
+		Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = server.List(context.Background(), &privatev1.BillingAccountsListRequest{})
+	if got := grpcstatus.Code(err); got != codes.FailedPrecondition {
+		t.Fatalf("status = %v, want FAILED_PRECONDITION; err=%v", got, err)
+	}
+}
+
+func TestBillingAccountDiscoveryHidesProviderReferenceFromPublicResponse(t *testing.T) {
+	provider := &billingProviderStub{
+		accounts: []billing.Account{{
+			Reference:   "provider-secret-id",
+			DisplayName: "Acme",
+			State:       billing.AccountStateActive,
+		}},
+	}
+	store := &billingAccountStoreStub{
+		accounts: []*privatev1.BillingAccount{
+			privatev1.BillingAccount_builder{
+				Id:                       "osac-account-id",
+				ProviderKey:              "m360",
+				ProviderAccountReference: "provider-secret-id",
+				DisplayName:              "Acme",
+				State:                    privatev1.BillingAccountState_BILLING_ACCOUNT_STATE_ACTIVE,
+			}.Build(),
+		},
+		total: 1,
+	}
+	server, err := NewBillingAccountsServer().
+		SetLogger(newBillingTestLogger()).
+		SetProvider("m360", provider).
+		SetStore(store).
+		Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := server.List(context.Background(), &publicv1.BillingAccountsListRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := response.GetItems()[0].GetId(); got != "osac-account-id" {
+		t.Fatalf("account ID = %q, want opaque OSAC ID", got)
+	}
+	if got := response.GetItems()[0].String(); got == "" || strings.Contains(got, "provider-secret-id") {
+		t.Fatalf("public account response unexpectedly exposes provider reference: %s", got)
+	}
+}
+
+func TestBillingAccountListRejectsPublicFilterAndOrder(t *testing.T) {
+	server, err := NewBillingAccountsServer().
+		SetLogger(newBillingTestLogger()).
+		SetProvider("m360", &billingProviderStub{}).
+		SetStore(&billingAccountStoreStub{}).
+		Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, field := range []string{"filter", "order"} {
+		request := &publicv1.BillingAccountsListRequest{}
+		if field == "filter" {
+			request.SetFilter("this.spec.display_name == 'Acme'")
+		} else {
+			request.SetOrder("display_name")
+		}
+		_, err := server.List(context.Background(), request)
+		if got := grpcstatus.Code(err); got != codes.InvalidArgument {
+			t.Errorf("%s request status = %v, want INVALID_ARGUMENT; err=%v", field, got, err)
+		}
+	}
+}
+
+func TestBillingAccountDiscoveryRedactsProviderErrors(t *testing.T) {
+	provider := &billingProviderStub{listErr: errors.New("provider-secret-id: HTTP response body")}
+	server, err := NewPrivateBillingAccountsServer().
+		SetLogger(newBillingTestLogger()).
+		SetProvider("m360", provider).
+		SetStore(&billingAccountStoreStub{}).
+		Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = server.List(context.Background(), &privatev1.BillingAccountsListRequest{})
+	if got := grpcstatus.Code(err); got != codes.Unavailable {
+		t.Fatalf("status = %v, want UNAVAILABLE; err=%v", got, err)
+	}
+	if err != nil && (strings.Contains(err.Error(), "provider-secret-id") || strings.Contains(err.Error(), "HTTP response body")) {
+		t.Fatalf("provider error was not redacted: %v", err)
+	}
+}

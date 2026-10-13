@@ -677,6 +677,74 @@
           },
           "additionalProperties": false
         },
+        "billing": {
+          "type": "object",
+          "description": "Optional external billing provider configuration",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "description": "Billing provider; empty disables billing",
+              "enum": ["", "m360"],
+              "default": ""
+            },
+            "m360": {
+              "type": "object",
+              "properties": {
+                "apiUrl": {
+                  "type": "string",
+                  "description": "M360 API base URL"
+                },
+                "apiVersion": {
+                  "type": "string",
+                  "description": "M360 API version"
+                },
+                "apiKeySecret": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "description": "Existing Secret containing the M360 API key"
+                    },
+                    "key": {
+                      "type": "string",
+                      "description": "Secret key containing the M360 API key",
+                      "default": "api-key"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {"provider": {"const": "m360"}},
+                "required": ["provider"]
+              },
+              "then": {
+                "properties": {
+                  "m360": {
+                    "required": ["apiUrl", "apiVersion", "apiKeySecret"],
+                    "properties": {
+                      "apiUrl": {"type": "string", "minLength": 1},
+                      "apiVersion": {"type": "string", "minLength": 1},
+                      "apiKeySecret": {
+                        "required": ["name", "key"],
+                        "properties": {
+                          "name": {"type": "string", "minLength": 1},
+                          "key": {"type": "string", "minLength": 1}
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ],
+          "additionalProperties": false
+        },
         "externalHostname": {
           "type": "string",
           "minLength": 1,

@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/auth"
+	"github.com/osac-project/osac/fulfillment-service/internal/billing"
 	"github.com/osac-project/osac/fulfillment-service/internal/database/dao"
 	"github.com/osac-project/osac/fulfillment-service/internal/servers"
 	"github.com/osac-project/osac/fulfillment-service/internal/services"
@@ -49,6 +50,9 @@ type ResourceServerDeps struct {
 	PrivateUsersServer privatev1.UsersServer
 
 	Services *services.Flags
+
+	BillingProviderKey string
+	BillingProvider    billing.Provider
 }
 
 // ResourceServers exposes the constructed servers and shared infrastructure that code outside the
@@ -65,6 +69,75 @@ type ResourceServers struct {
 // same code path.
 func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistrar, //nolint:gocyclo
 	deps ResourceServerDeps) (*ResourceServers, error) {
+	billingAccountStore := billing.NewAccountStore()
+	catalogPricingInputsBuilder := servers.NewCatalogPricingInputsServer().SetLogger(deps.Logger)
+	rateCardProvider, _ := deps.BillingProvider.(billing.RateCardProvider)
+	providerRateCardItemsBuilder := servers.NewProviderRateCardItemsServer().
+		SetLogger(deps.Logger).
+		SetProvider(deps.BillingProviderKey, rateCardProvider).
+		SetAccountStore(billingAccountStore)
+	publicBillingProviderStatuses, err := servers.NewBillingProviderStatusesServer().
+		SetLogger(deps.Logger).
+		SetProvider(deps.BillingProviderKey, deps.BillingProvider).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create billing provider status server: %w", err)
+	}
+	publicv1.RegisterBillingProviderStatusesServer(registrar, publicBillingProviderStatuses)
+
+	privateBillingProviderStatuses, err := servers.NewPrivateBillingProviderStatusesServer().
+		SetLogger(deps.Logger).
+		SetProvider(deps.BillingProviderKey, deps.BillingProvider).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create private billing provider status server: %w", err)
+	}
+	privatev1.RegisterBillingProviderStatusesServer(registrar, privateBillingProviderStatuses)
+
+	publicBillingAccounts, err := servers.NewBillingAccountsServer().
+		SetLogger(deps.Logger).
+		SetProvider(deps.BillingProviderKey, deps.BillingProvider).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create billing accounts server: %w", err)
+	}
+	publicv1.RegisterBillingAccountsServer(registrar, publicBillingAccounts)
+
+	privateBillingAccounts, err := servers.NewPrivateBillingAccountsServer().
+		SetLogger(deps.Logger).
+		SetProvider(deps.BillingProviderKey, deps.BillingProvider).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create private billing accounts server: %w", err)
+	}
+	privatev1.RegisterBillingAccountsServer(registrar, privateBillingAccounts)
+
+	publicTenantBillingAssignments, err := servers.NewTenantBillingAssignmentsServer().
+		SetLogger(deps.Logger).
+		SetAttributionLogic(deps.PublicAttributionLogic).
+		SetTenancyLogic(deps.TenancyLogic).
+		SetMetricsRegisterer(deps.MetricsRegisterer).
+		SetProvider(deps.BillingProvider).
+		SetAccountStore(billingAccountStore).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tenant billing assignments server: %w", err)
+	}
+	publicv1.RegisterTenantBillingAssignmentsServer(registrar, publicTenantBillingAssignments)
+
+	privateTenantBillingAssignments, err := servers.NewPrivateTenantBillingAssignmentsServer().
+		SetLogger(deps.Logger).
+		SetAttributionLogic(deps.PrivateAttributionLogic).
+		SetTenancyLogic(deps.TenancyLogic).
+		SetMetricsRegisterer(deps.MetricsRegisterer).
+		SetProvider(deps.BillingProvider).
+		SetAccountStore(billingAccountStore).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create private tenant billing assignments server: %w", err)
+	}
+	privatev1.RegisterTenantBillingAssignmentsServer(registrar, privateTenantBillingAssignments)
+
 	// CaaS: public cluster templates and catalog items
 	if deps.Services.CaaS {
 		deps.Logger.InfoContext(ctx, "Creating cluster templates server")
@@ -102,6 +175,7 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 			return nil, fmt.Errorf("failed to create cluster catalog items server: %w", err)
 		}
 		publicv1.RegisterClusterCatalogItemsServer(registrar, clusterCatalogItemsServer)
+		catalogPricingInputsBuilder.SetClusterCatalogItems(clusterCatalogItemsServer)
 	}
 
 	if deps.Services.VMaaS {
@@ -116,6 +190,7 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 			return nil, fmt.Errorf("failed to create compute instance catalog items server: %w", err)
 		}
 		publicv1.RegisterComputeInstanceCatalogItemsServer(registrar, computeInstanceCatalogItemsServer)
+		catalogPricingInputsBuilder.SetComputeInstanceCatalogItems(computeInstanceCatalogItemsServer)
 	}
 
 	if deps.Services.CaaS {
@@ -301,6 +376,7 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 			return nil, fmt.Errorf("failed to create bare metal instance catalog items server: %w", err)
 		}
 		publicv1.RegisterBareMetalInstanceCatalogItemsServer(registrar, bareMetalInstanceCatalogItemsServer)
+		catalogPricingInputsBuilder.SetBareMetalInstanceCatalogItems(bareMetalInstanceCatalogItemsServer)
 
 		deps.Logger.InfoContext(ctx, "Creating bare metal instances server")
 		bareMetalInstancesServer, err := servers.NewBareMetalInstancesServer().
@@ -975,6 +1051,19 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 
 	// Register the private users server. It's already constructed — see the PrivateUsersServer doc comment.
 	privatev1.RegisterUsersServer(registrar, deps.PrivateUsersServer)
+
+	catalogPricingInputsServer, err := catalogPricingInputsBuilder.Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create catalog pricing inputs server: %w", err)
+	}
+	publicv1.RegisterCatalogPricingInputsServer(registrar, catalogPricingInputsServer)
+
+	providerRateCardItemsBuilder.SetCatalogPricingInputs(catalogPricingInputsServer)
+	providerRateCardItemsServer, err := providerRateCardItemsBuilder.Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create provider rate-card items server: %w", err)
+	}
+	publicv1.RegisterProviderRateCardItemsServer(registrar, providerRateCardItemsServer)
 
 	return &ResourceServers{
 		PrivateHubsServer:             privateHubsServer,

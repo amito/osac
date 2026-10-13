@@ -217,6 +217,17 @@ service:
         - key: client-secret
           param: client-secret
 
+  # Billing is optional. When enabled, both fulfillment processes use this
+  # provider connection. Create the referenced Secret in this namespace first.
+  billing:
+    provider: m360
+    m360:
+      apiUrl: https://m360.example.com
+      apiVersion: v1
+      apiKeySecret:
+        name: osac-billing-m360
+        key: api-key
+
   # Database connection configuration for the fulfillment service.
   # Uses projected volumes to mount connection parameters from secrets.
   database:
