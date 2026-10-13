@@ -72,6 +72,141 @@ func TestPriceEstimateUsesSelectedConfiguration(t *testing.T) {
 	}
 }
 
+func TestPriceEstimateSumsSelectedAdditionalDiskRates(t *testing.T) {
+	t.Parallel()
+
+	provider := &billingPricingTestProvider{items: []billing.RateCardItem{
+		{
+			Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "10", Unit: billing.RateUnitHour,
+			Conditions: []billing.RateCondition{
+				{Dimension: "image_ref", Operator: billing.RateMatchEquals, Value: "fedora-16"},
+				{Dimension: "instance_type", Operator: billing.RateMatchEquals, Value: "large"},
+			},
+		},
+		{
+			Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "3", Unit: billing.RateUnitMonth,
+			Conditions: []billing.RateCondition{
+				{Dimension: "image_ref", Operator: billing.RateMatchEquals, Value: "fedora-16"},
+				{Dimension: "instance_type", Operator: billing.RateMatchEquals, Value: "large"},
+				{Dimension: "additional_disk_size_gib", Operator: billing.RateMatchEquals, Value: "50"},
+				{Dimension: "additional_storage_tier", Operator: billing.RateMatchEquals, Value: "premium"},
+			},
+		},
+		{
+			Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "5", Unit: billing.RateUnitMonth,
+			Conditions: []billing.RateCondition{
+				{Dimension: "image_ref", Operator: billing.RateMatchEquals, Value: "fedora-16"},
+				{Dimension: "instance_type", Operator: billing.RateMatchEquals, Value: "large"},
+				{Dimension: "additional_disk_size_gib", Operator: billing.RateMatchEquals, Value: "100"},
+				{Dimension: "additional_storage_tier", Operator: billing.RateMatchEquals, Value: "archive"},
+			},
+		},
+	}}
+
+	firstDisk := publicv1.ComputeInstanceDisk_builder{
+		SizeGib:     billingTestInt32(50),
+		StorageTier: publicv1.StorageTierReference_builder{Name: "premium"}.Build(),
+	}.Build()
+	secondDisk := publicv1.ComputeInstanceDisk_builder{
+		SizeGib:     billingTestInt32(100),
+		StorageTier: publicv1.StorageTierReference_builder{Name: "archive"}.Build(),
+	}.Build()
+	fields := publicv1.ComputeInstanceCatalogItemFields_builder{
+		DiskImage:    billingPricingTestComputeCatalogItem().GetFields().GetDiskImage(),
+		InstanceType: billingPricingTestComputeCatalogItem().GetFields().GetInstanceType(),
+		AdditionalDisks: publicv1.ComputeInstanceDiskListFieldPolicy_builder{Locked: publicv1.ComputeInstanceDiskList_builder{
+			Items: []*publicv1.ComputeInstanceDisk{firstDisk, secondDisk},
+		}.Build()}.Build(),
+	}.Build()
+	computeItems := &billingPricingTestComputeCatalog{item: publicv1.ComputeInstanceCatalogItem_builder{
+		Title:  "Small VM",
+		Fields: fields,
+	}.Build()}
+	_, estimate := newBillingPricingTestServers(t, provider, computeItems, auth.AllTenants)
+
+	configuration := publicv1.BillingPricingConfiguration_builder{ComputeInstance: publicv1.ComputeInstanceSpec_builder{
+		CatalogItem:     publicv1.ComputeInstanceCatalogItemReference_builder{Id: "catalog-vm"}.Build(),
+		DiskImage:       publicv1.DiskImageReference_builder{Name: "fedora-16"}.Build(),
+		InstanceType:    publicv1.InstanceTypeReference_builder{Name: "large"}.Build(),
+		AdditionalDisks: []*publicv1.ComputeInstanceDisk{firstDisk, secondDisk},
+	}.Build()}.Build()
+	response, err := estimate.Create(config.TenantIntoContext(context.Background(), "tenant-a"), publicv1.PriceEstimatesCreateRequest_builder{
+		Configuration: configuration,
+	}.Build())
+	if err != nil {
+		t.Fatalf("PriceEstimates.Create() error = %v", err)
+	}
+	if len(response.GetComponents()) != 2 {
+		t.Fatalf("estimate has %d components, want one for each disk: %v", len(response.GetComponents()), response.GetComponents())
+	}
+	if response.GetHourlyAmount() != "0.010959" || response.GetMonthlyAmount() != "8" {
+		t.Fatalf("estimate total = (%q/hour, %q/month), want (0.010959, 8)", response.GetHourlyAmount(), response.GetMonthlyAmount())
+	}
+}
+
+func TestPriceEstimateSumsSelectedClusterNodeSetRates(t *testing.T) {
+	t.Parallel()
+
+	provider := &billingPricingTestProvider{items: []billing.RateCardItem{
+		{
+			Service: billing.ServiceCluster, CurrencyCode: "USD", Amount: "2", Unit: billing.RateUnitHour,
+			Conditions: []billing.RateCondition{
+				{Dimension: "cluster_template", Operator: billing.RateMatchEquals, Value: "standard"},
+				{Dimension: "release_image", Operator: billing.RateMatchEquals, Value: "4.18"},
+				{Dimension: "baremetal_instance_type", Operator: billing.RateMatchEquals, Value: "cpu"},
+				{Dimension: "node_count", Operator: billing.RateMatchEquals, Value: "3"},
+			},
+		},
+		{
+			Service: billing.ServiceCluster, CurrencyCode: "USD", Amount: "6", Unit: billing.RateUnitMonth,
+			Conditions: []billing.RateCondition{
+				{Dimension: "cluster_template", Operator: billing.RateMatchEquals, Value: "standard"},
+				{Dimension: "release_image", Operator: billing.RateMatchEquals, Value: "4.18"},
+				{Dimension: "baremetal_instance_type", Operator: billing.RateMatchEquals, Value: "gpu"},
+				{Dimension: "node_count", Operator: billing.RateMatchEquals, Value: "2"},
+			},
+		},
+	}}
+	cpuType := publicv1.BareMetalInstanceTypeReference_builder{Name: "cpu"}.Build()
+	gpuType := publicv1.BareMetalInstanceTypeReference_builder{Name: "gpu"}.Build()
+	version := publicv1.ClusterVersionReference_builder{Name: "4.18"}.Build()
+	nodeSets := map[string]*publicv1.ClusterNodeSet{
+		"compute": publicv1.ClusterNodeSet_builder{Size: billingTestInt32(3), BaremetalInstanceType: cpuType}.Build(),
+		"gpu":     publicv1.ClusterNodeSet_builder{Size: billingTestInt32(2), BaremetalInstanceType: gpuType}.Build(),
+	}
+	fields := publicv1.ClusterCatalogItemFields_builder{
+		Version: publicv1.ClusterVersionReferenceFieldPolicy_builder{Locked: version}.Build(),
+		NodeSets: publicv1.ClusterNodeSetMapPolicy_builder{Locked: publicv1.ClusterNodeSetMap_builder{Items: map[string]*publicv1.ClusterCatalogNodeSet{
+			"compute": publicv1.ClusterCatalogNodeSet_builder{Size: 3, BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Name: "cpu"}.Build()}.Build(),
+			"gpu":     publicv1.ClusterCatalogNodeSet_builder{Size: 2, BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Name: "gpu"}.Build()}.Build(),
+		}}.Build()}.Build(),
+	}.Build()
+	clusterItems := &billingPricingTestClusterCatalog{item: publicv1.ClusterCatalogItem_builder{
+		Title:    "Standard cluster",
+		Template: publicv1.ClusterTemplateReference_builder{Name: "standard"}.Build(),
+		Fields:   fields,
+	}.Build()}
+	_, estimate := newBillingPricingTestServersWithClusterCatalog(t, provider, clusterItems, auth.AllTenants)
+	configuration := publicv1.BillingPricingConfiguration_builder{Cluster: publicv1.ClusterSpec_builder{
+		CatalogItem: publicv1.ClusterCatalogItemReference_builder{Id: "catalog-cluster"}.Build(),
+		Version:     version,
+		NodeSets:    nodeSets,
+	}.Build()}.Build()
+
+	response, err := estimate.Create(config.TenantIntoContext(context.Background(), "tenant-a"), publicv1.PriceEstimatesCreateRequest_builder{
+		Configuration: configuration,
+	}.Build())
+	if err != nil {
+		t.Fatalf("PriceEstimates.Create() error = %v", err)
+	}
+	if len(response.GetComponents()) != 2 {
+		t.Fatalf("estimate has %d components, want both node sets: %v", len(response.GetComponents()), response.GetComponents())
+	}
+	if response.GetHourlyAmount() != "2.008219" || response.GetMonthlyAmount() != "1466" {
+		t.Fatalf("estimate total = (%q/hour, %q/month), want (2.008219, 1466)", response.GetHourlyAmount(), response.GetMonthlyAmount())
+	}
+}
+
 func TestPricingQueryReportsCoverageGapWithoutAmount(t *testing.T) {
 	t.Parallel()
 
@@ -253,10 +388,43 @@ func (c *billingPricingTestComputeCatalog) Get(context.Context, *publicv1.Comput
 	return publicv1.ComputeInstanceCatalogItemsGetResponse_builder{Object: c.item}.Build(), nil
 }
 
+type billingPricingTestClusterCatalog struct {
+	item  *publicv1.ClusterCatalogItem
+	err   error
+	calls int
+}
+
+func (c *billingPricingTestClusterCatalog) Get(context.Context, *publicv1.ClusterCatalogItemsGetRequest) (*publicv1.ClusterCatalogItemsGetResponse, error) {
+	c.calls++
+	if c.err != nil {
+		return nil, c.err
+	}
+	return publicv1.ClusterCatalogItemsGetResponse_builder{Object: c.item}.Build(), nil
+}
+
 func newBillingPricingTestServers(
 	t *testing.T,
 	provider *billingPricingTestProvider,
 	computeItems *billingPricingTestComputeCatalog,
+	assignable collections.Set[string],
+) (*PricingQueriesServer, *PriceEstimatesServer) {
+	return newBillingPricingTestServersWithCatalogs(t, provider, computeItems, nil, assignable)
+}
+
+func newBillingPricingTestServersWithClusterCatalog(
+	t *testing.T,
+	provider *billingPricingTestProvider,
+	clusterItems *billingPricingTestClusterCatalog,
+	assignable collections.Set[string],
+) (*PricingQueriesServer, *PriceEstimatesServer) {
+	return newBillingPricingTestServersWithCatalogs(t, provider, nil, clusterItems, assignable)
+}
+
+func newBillingPricingTestServersWithCatalogs(
+	t *testing.T,
+	provider *billingPricingTestProvider,
+	computeItems *billingPricingTestComputeCatalog,
+	clusterItems *billingPricingTestClusterCatalog,
 	assignable collections.Set[string],
 ) (*PricingQueriesServer, *PriceEstimatesServer) {
 	t.Helper()
@@ -266,7 +434,7 @@ func newBillingPricingTestServers(
 		billingPricingTestTenancy{assignable: assignable},
 		resolver,
 		computeItems,
-		nil,
+		clusterItems,
 		nil,
 	)
 	if err != nil {
@@ -302,5 +470,9 @@ func billingPricingTestConfiguration() *publicv1.BillingPricingConfiguration {
 }
 
 func stringPointer(value string) *string {
+	return &value
+}
+
+func billingTestInt32(value int32) *int32 {
 	return &value
 }

@@ -48,8 +48,8 @@ func TestApplyComputeInstancePricingConfigurationUsesSelectedValues(t *testing.T
 	if err != nil {
 		t.Fatalf("ApplyComputeInstancePricingConfiguration() error = %v", err)
 	}
-	if got.Dimensions["image_ref"] != "fedora-16" || got.Dimensions["instance_type"] != "large" {
-		t.Fatalf("pricing dimensions = %v, want selected instance type and locked image", got.Dimensions)
+	if len(got) != 1 || got[0].Dimensions["image_ref"] != "fedora-16" || got[0].Dimensions["instance_type"] != "large" {
+		t.Fatalf("pricing requests = %v, want selected instance type and locked image", got)
 	}
 }
 
@@ -95,8 +95,8 @@ func TestApplyClusterPricingConfigurationUsesSelectedNodeSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyClusterPricingConfiguration() error = %v", err)
 	}
-	if got.Dimensions["release_image"] != "openshift-4.19" || got.Dimensions["baremetal_instance_type"] != "large" || got.Dimensions["node_count"] != "5" {
-		t.Fatalf("pricing dimensions = %v, want selected version and node set", got.Dimensions)
+	if len(got) != 1 || got[0].Dimensions["release_image"] != "openshift-4.19" || got[0].Dimensions["baremetal_instance_type"] != "large" || got[0].Dimensions["node_count"] != "5" {
+		t.Fatalf("pricing requests = %v, want selected version and node set", got)
 	}
 }
 
