@@ -38,6 +38,11 @@ message BillingPricingConfiguration {
     ClusterSpec cluster = 2;
     BareMetalInstanceSpec bare_metal_instance = 3;
   }
+
+  // Project where the caller intends to provision the resource. Tenant callers
+  // must be authorized to access this project. When omitted, the tenant's
+  // default project is used.
+  string project = 4;
 }
 
 message PricingQueriesCreateRequest {
