@@ -72,10 +72,22 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 	billingAccountStore := billing.NewAccountStore()
 	catalogPricingInputsBuilder := servers.NewCatalogPricingInputsServer().SetLogger(deps.Logger)
 	rateCardProvider, _ := deps.BillingProvider.(billing.RateCardProvider)
+	invoiceProvider, _ := deps.BillingProvider.(billing.InvoiceProvider)
+	costProvider, _ := deps.BillingProvider.(billing.CostProvider)
 	providerRateCardItemsBuilder := servers.NewProviderRateCardItemsServer().
 		SetLogger(deps.Logger).
 		SetProvider(deps.BillingProviderKey, rateCardProvider).
 		SetAccountStore(billingAccountStore)
+	billingInvoicesBuilder := servers.NewBillingInvoicesServer().
+		SetLogger(deps.Logger).
+		SetProvider(deps.BillingProviderKey, invoiceProvider).
+		SetAccountStore(billingAccountStore).
+		SetTenancyLogic(deps.TenancyLogic)
+	billingCostsBuilder := servers.NewBillingCostsServer().
+		SetLogger(deps.Logger).
+		SetProvider(deps.BillingProviderKey, costProvider).
+		SetAccountStore(billingAccountStore).
+		SetTenancyLogic(deps.TenancyLogic)
 	publicBillingProviderStatuses, err := servers.NewBillingProviderStatusesServer().
 		SetLogger(deps.Logger).
 		SetProvider(deps.BillingProviderKey, deps.BillingProvider).
@@ -1064,6 +1076,18 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 		return nil, fmt.Errorf("failed to create provider rate-card items server: %w", err)
 	}
 	publicv1.RegisterProviderRateCardItemsServer(registrar, providerRateCardItemsServer)
+
+	billingInvoicesServer, err := billingInvoicesBuilder.Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create billing invoices server: %w", err)
+	}
+	publicv1.RegisterBillingInvoicesServer(registrar, billingInvoicesServer)
+
+	billingCostsServer, err := billingCostsBuilder.Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create billing costs server: %w", err)
+	}
+	publicv1.RegisterBillingCostsServer(registrar, billingCostsServer)
 
 	return &ResourceServers{
 		PrivateHubsServer:             privateHubsServer,

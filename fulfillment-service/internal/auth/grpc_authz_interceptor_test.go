@@ -913,6 +913,71 @@ var _ = Describe("Rego authorization interceptor", func() {
 			}
 		})
 
+		It("allows tenant admins to read their billing invoices", func(ctx context.Context) {
+			token := createKeycloakUserToken("tenant-a", "tenant-admin-user", jwt.MapClaims{
+				"realm_access": map[string]any{"roles": []any{"tenant-admin"}},
+			})
+			for _, method := range []string{
+				"/osac.public.v1.BillingInvoices/List",
+				"/osac.public.v1.BillingInvoices/Get",
+			} {
+				ctx = ContextWithToken(ctx, token)
+				handled := false
+				_, err := interceptor.UnaryServer(
+					ctx,
+					nil,
+					&grpc.UnaryServerInfo{FullMethod: method},
+					func(context.Context, any) (any, error) {
+						handled = true
+						return nil, nil
+					},
+				)
+				Expect(err).NotTo(HaveOccurred(), "%s should be allowed to tenant admins", method)
+				Expect(handled).To(BeTrue())
+			}
+		})
+
+		It("denies regular users from reading billing invoices", func(ctx context.Context) {
+			token := createKeycloakUserToken("tenant-a", "regular-user", nil)
+			for _, method := range []string{
+				"/osac.public.v1.BillingInvoices/List",
+				"/osac.public.v1.BillingInvoices/Get",
+			} {
+				ctx = ContextWithToken(ctx, token)
+				handled := false
+				_, err := interceptor.UnaryServer(
+					ctx,
+					nil,
+					&grpc.UnaryServerInfo{FullMethod: method},
+					func(context.Context, any) (any, error) {
+						handled = true
+						return nil, nil
+					},
+				)
+				status, ok := grpcstatus.FromError(err)
+				Expect(ok).To(BeTrue())
+				Expect(status.Code()).To(Equal(grpccodes.PermissionDenied))
+				Expect(handled).To(BeFalse())
+			}
+		})
+
+		It("allows tenant users to list project-scoped billing costs", func(ctx context.Context) {
+			token := createKeycloakUserToken("tenant-a", "tenant-user", nil)
+			ctx = ContextWithToken(ctx, token)
+			handled := false
+			_, err := interceptor.UnaryServer(
+				ctx,
+				nil,
+				&grpc.UnaryServerInfo{FullMethod: "/osac.public.v1.BillingCosts/List"},
+				func(context.Context, any) (any, error) {
+					handled = true
+					return nil, nil
+				},
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(handled).To(BeTrue())
+		})
+
 		DescribeTable(
 			"Allows Keycloak users on the public Secrets API",
 			func(ctx context.Context, method string) {

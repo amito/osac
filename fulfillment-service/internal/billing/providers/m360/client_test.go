@@ -50,7 +50,11 @@ var _ = Describe("M360 billing account client", func() {
 		status, err := client.GetStatus(context.Background())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(status.State).To(Equal(billing.ProviderStateAvailable))
-		Expect(status.Capabilities).To(Equal([]billing.ProviderCapability{billing.ProviderCapabilityPricing}))
+		Expect(status.Capabilities).To(Equal([]billing.ProviderCapability{
+			billing.ProviderCapabilityPricing,
+			billing.ProviderCapabilityCosts,
+			billing.ProviderCapabilityInvoices,
+		}))
 	})
 
 	It("retrieves one account by its provider identifier", func() {

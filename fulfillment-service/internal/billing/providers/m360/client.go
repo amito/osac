@@ -110,8 +110,12 @@ func (c *Client) GetStatus(ctx context.Context) (billing.ProviderStatus, error) 
 		return billing.ProviderStatus{State: billing.ProviderStateUnavailable}, err
 	}
 	return billing.ProviderStatus{
-		State:        billing.ProviderStateAvailable,
-		Capabilities: []billing.ProviderCapability{billing.ProviderCapabilityPricing},
+		State: billing.ProviderStateAvailable,
+		Capabilities: []billing.ProviderCapability{
+			billing.ProviderCapabilityPricing,
+			billing.ProviderCapabilityCosts,
+			billing.ProviderCapabilityInvoices,
+		},
 	}, nil
 }
 
