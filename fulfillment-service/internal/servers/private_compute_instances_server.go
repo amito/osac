@@ -628,7 +628,7 @@ func (s *PrivateComputeInstancesServer) Update(ctx context.Context,
 				return err
 			}
 		}
-		if s.pricingResolver != nil && updateIncludesField(request.GetUpdateMask(), "spec.instance_type") {
+		if s.pricingResolver != nil && !resizeNoOp && updateIncludesField(request.GetUpdateMask(), "spec.instance_type") {
 			return coverageErrorForCreate(ctx, s.logger, s.pricingResolver.CheckCoverage(ctx, candidate.GetMetadata().GetTenant(), computeInstanceCoverageRequests(candidate)))
 		}
 		return nil
