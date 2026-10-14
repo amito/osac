@@ -74,6 +74,9 @@ uses the issuer's Keycloak token endpoint over the configured CA trust bundle.
 Billing is disabled by default. To enable M360, set `billing.provider: m360`, provide the API URL and
 version, and create the referenced Kubernetes Secret in the release namespace. The Secret is mounted
 read-only by both the API server and assignment controller; do not put the API key in Helm values.
+This release supports only M360. Leaving the provider empty keeps OSAC usable without billing; catalog
+pricing and billing APIs are unavailable. Changing the provider is not a billing-period migration, and
+in-period provider switching or usage replay is not supported.
 
 **Note on hostnames:** Both `externalHostname` and `internalHostname` are required because TLS
 certificates must be generated with the correct host names.
