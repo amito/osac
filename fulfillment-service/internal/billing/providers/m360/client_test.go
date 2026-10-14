@@ -84,6 +84,50 @@ var _ = Describe("M360 billing account client", func() {
 		}))
 	})
 
+	DescribeTable("classifies account read failures for billing coverage",
+		func(statusCode int, body string, want error) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				writer.WriteHeader(statusCode)
+				_, _ = fmt.Fprint(writer, body)
+			}))
+			DeferCleanup(server.Close)
+
+			client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = client.GetAccount(context.Background(), "account-7")
+			Expect(errors.Is(err, want)).To(BeTrue())
+			Expect(errors.Is(err, billing.ErrProviderUnavailable)).To(Equal(want == billing.ErrProviderUnavailable))
+		},
+		Entry("missing account", http.StatusNotFound, "", billing.ErrAccountNotFound),
+		Entry("rate limit", http.StatusTooManyRequests, "", billing.ErrProviderUnavailable),
+		Entry("provider failure", http.StatusServiceUnavailable, "", billing.ErrProviderUnavailable),
+	)
+
+	It("keeps a malformed account response separate from provider outage", func() {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(writer, `{"success":true,"data":{}}`)
+		}))
+		DeferCleanup(server.Close)
+		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = client.GetAccount(context.Background(), "account-7")
+		Expect(err).To(HaveOccurred())
+		Expect(errors.Is(err, billing.ErrProviderUnavailable)).To(BeFalse())
+	})
+
+	It("keeps a rejected account request separate from provider outage", func() {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.WriteHeader(http.StatusBadRequest)
+		}))
+		DeferCleanup(server.Close)
+		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = client.GetAccount(context.Background(), "account-7")
+		Expect(err).To(HaveOccurred())
+		Expect(errors.Is(err, billing.ErrProviderUnavailable)).To(BeFalse())
+	})
+
 	It("updates only the external ID scalar field on an account", func() {
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			Expect(request.URL.Path).To(Equal("/api/v1/external/accounts/account-7"))

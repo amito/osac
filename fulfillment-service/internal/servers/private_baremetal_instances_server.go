@@ -303,7 +303,7 @@ func (s *PrivateBareMetalInstancesServer) Create(ctx context.Context, request *p
 		if err != nil || s.pricingResolver == nil {
 			return err
 		}
-		return s.pricingResolver.CheckCoverage(ctx, candidate.GetMetadata().GetTenant(), bareMetalInstanceCoverageRequests(candidate))
+		return coverageErrorForCreate(ctx, s.logger, s.pricingResolver.CheckCoverage(ctx, candidate.GetMetadata().GetTenant(), bareMetalInstanceCoverageRequests(candidate)))
 	})
 	if err != nil {
 		return

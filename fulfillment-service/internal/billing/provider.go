@@ -21,6 +21,10 @@ import (
 
 var ErrAccountExternalIDChanged = errors.New("billing account external ID changed before update")
 
+// ErrProviderUnavailable marks transient provider failures. Billing gates may
+// allow a launch on this error, but must still reject invalid provider data.
+var ErrProviderUnavailable = errors.New("billing provider unavailable")
+
 // AccountState is OSAC's normalized account state, independent of a billing
 // provider's status vocabulary.
 type AccountState int

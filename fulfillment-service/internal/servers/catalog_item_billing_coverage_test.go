@@ -16,6 +16,7 @@ package servers
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -83,5 +84,19 @@ func TestCatalogItemBillingCoverageSkipsUnpublishedAndSharedCatalogs(t *testing.
 	}
 	if store.calls != 0 || provider.calls != 0 {
 		t.Fatalf("account/provider calls = (%d, %d), want no lookup for drafts or shared catalogs", store.calls, provider.calls)
+	}
+}
+
+func TestCatalogItemBillingCoverageBlocksPublishDuringProviderOutage(t *testing.T) {
+	provider := &catalogPricingRateCardProviderStub{err: errors.Join(billing.ErrProviderUnavailable, errors.New("provider unavailable"))}
+	resolver := NewCatalogPricingResolver("m360", provider, &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
+		ProviderKey: "m360", ProviderAccountReference: "native-account", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+	}})
+
+	err := checkCatalogItemBillingCoverage(context.Background(), resolver, "tenant-a", true, []CatalogPricingRequest{{
+		Service: billing.ServiceComputeInstance, Supported: true,
+	}})
+	if !errors.Is(err, ErrBillingCoverageUnavailable) || status.Code(err) != codes.Unavailable {
+		t.Fatalf("checkCatalogItemBillingCoverage() error = %v, want provider outage to block publish", err)
 	}
 }

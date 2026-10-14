@@ -19,6 +19,7 @@ package servers
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -44,6 +45,34 @@ const (
 )
 
 type catalogPricingEnrichmentDisabledKey struct{}
+
+// ErrBillingCoverageUnavailable identifies provider failures that must not
+// prevent a resource launch. A missing assignment or rate is never this error.
+var ErrBillingCoverageUnavailable = errors.New("billing coverage provider unavailable")
+
+var errPricingCircuitOpen = errors.New("billing pricing circuit is open")
+
+type billingCoverageProviderError struct {
+	status *grpcstatus.Status
+}
+
+func (e *billingCoverageProviderError) Error() string                  { return e.status.Err().Error() }
+func (e *billingCoverageProviderError) Unwrap() error                  { return ErrBillingCoverageUnavailable }
+func (e *billingCoverageProviderError) GRPCStatus() *grpcstatus.Status { return e.status }
+
+func coverageProviderError(code grpccodes.Code, message string) error {
+	return &billingCoverageProviderError{status: grpcstatus.New(code, message)}
+}
+
+func coverageErrorForCreate(ctx context.Context, logger *slog.Logger, err error) error {
+	if errors.Is(err, ErrBillingCoverageUnavailable) {
+		if logger != nil {
+			logger.WarnContext(ctx, "billing provider unavailable during coverage check; proceeding with launch")
+		}
+		return nil
+	}
+	return err
+}
 
 func withoutCatalogPricing(ctx context.Context) context.Context {
 	return context.WithValue(ctx, catalogPricingEnrichmentDisabledKey{}, true)
@@ -281,10 +310,10 @@ func (r *CatalogPricingResolver) CheckCoverage(
 		return grpcstatus.Error(grpccodes.InvalidArgument, "tenant is required for billing coverage")
 	}
 	if r.provider == nil || r.accounts == nil || r.providerKey == "" {
-		return grpcstatus.Error(grpccodes.Unavailable, "BILLING_COVERAGE_UNAVAILABLE")
+		return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_COVERAGE_UNAVAILABLE")
 	}
 	if r.accountStatus == nil {
-		return grpcstatus.Error(grpccodes.Unavailable, "BILLING_ACCOUNT_STATUS_UNAVAILABLE")
+		return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_ACCOUNT_STATUS_UNAVAILABLE")
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, billingCoverageTimeout)
@@ -307,10 +336,19 @@ func (r *CatalogPricingResolver) CheckCoverage(
 		return r.accountStatus.GetAccount(ctx, account.ProviderAccountReference)
 	})
 	if err != nil {
-		if ctx.Err() != nil {
-			return grpcstatus.Error(grpccodes.DeadlineExceeded, "BILLING_COVERAGE_TIMEOUT")
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return grpcstatus.Error(grpccodes.Canceled, "BILLING_COVERAGE_CANCELED")
 		}
-		return grpcstatus.Error(grpccodes.Unavailable, "BILLING_ACCOUNT_STATUS_UNAVAILABLE")
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+			return coverageProviderError(grpccodes.DeadlineExceeded, "BILLING_COVERAGE_TIMEOUT")
+		}
+		if errors.Is(err, billing.ErrAccountNotFound) {
+			return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_ACCOUNT_UNAVAILABLE")
+		}
+		if errors.Is(err, billing.ErrProviderUnavailable) {
+			return coverageProviderError(grpccodes.Unavailable, "BILLING_ACCOUNT_STATUS_UNAVAILABLE")
+		}
+		return grpcstatus.Error(grpccodes.Internal, "BILLING_ACCOUNT_STATUS_FAILED")
 	}
 	if providerAccount.Reference != account.ProviderAccountReference || providerAccount.State != billing.AccountStateActive {
 		return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_ACCOUNT_UNAVAILABLE")
@@ -335,10 +373,16 @@ func (r *CatalogPricingResolver) CheckCoverage(
 	for _, service := range services {
 		rateItems, err := r.getFreshRateCardItems(ctx, account, service)
 		if err != nil {
-			if ctx.Err() != nil {
-				return grpcstatus.Error(grpccodes.DeadlineExceeded, "BILLING_COVERAGE_TIMEOUT")
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return grpcstatus.Error(grpccodes.Canceled, "BILLING_COVERAGE_CANCELED")
 			}
-			return grpcstatus.Error(grpccodes.Unavailable, "BILLING_COVERAGE_UNAVAILABLE")
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+				return coverageProviderError(grpccodes.DeadlineExceeded, "BILLING_COVERAGE_TIMEOUT")
+			}
+			if errors.Is(err, billing.ErrProviderUnavailable) || errors.Is(err, errPricingCircuitOpen) {
+				return coverageProviderError(grpccodes.Unavailable, "BILLING_COVERAGE_UNAVAILABLE")
+			}
+			return grpcstatus.Error(grpccodes.Internal, "BILLING_COVERAGE_LOOKUP_FAILED")
 		}
 		for _, request := range byService[service] {
 			_, err := r.resolveRateCardItem(rateItems, service, account.CurrencyCode, request.Dimensions)
@@ -349,8 +393,10 @@ func (r *CatalogPricingResolver) CheckCoverage(
 				return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_COVERAGE_GAP")
 			case errors.Is(err, billing.ErrAmbiguousRateCard):
 				return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_RATE_AMBIGUOUS")
+			case errors.Is(err, billing.ErrInvalidRateCard):
+				return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_RATE_INVALID")
 			default:
-				return grpcstatus.Error(grpccodes.Unavailable, "BILLING_COVERAGE_UNAVAILABLE")
+				return grpcstatus.Error(grpccodes.Internal, "BILLING_COVERAGE_CHECK_FAILED")
 			}
 		}
 	}
@@ -488,7 +534,7 @@ func (r *CatalogPricingResolver) listFreshRateCardItems(ctx context.Context, que
 		if r.metrics != nil && r.metrics.lookupOutcomes != nil {
 			r.metrics.lookupOutcomes.WithLabelValues(r.providerKey, "circuit_open").Inc()
 		}
-		return nil, errors.New("billing pricing circuit is open")
+		return nil, errPricingCircuitOpen
 	}
 	startedAt := time.Now()
 	items, err := listRateCardsWithRetries(ctx, r.provider, query)
@@ -503,7 +549,15 @@ func (r *CatalogPricingResolver) listFreshRateCardItems(ctx context.Context, que
 		r.metrics.lookupDuration.WithLabelValues(r.providerKey).Observe(time.Since(startedAt).Seconds())
 	}
 	if err != nil {
-		r.circuit.recordFailure(r.now(), probe)
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
+			r.circuit.recordNeutral(probe)
+		} else if errors.Is(err, billing.ErrProviderUnavailable) || errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			r.circuit.recordFailure(r.now(), probe)
+		} else {
+			// The provider responded. A rejected or malformed response must never
+			// open the circuit.
+			r.circuit.recordSuccess(probe)
+		}
 		return nil, err
 	}
 	r.circuit.recordSuccess(probe)
@@ -550,6 +604,17 @@ func (b *catalogPricingCircuitBreaker) recordSuccess(probe bool) {
 		b.openUntil = time.Time{}
 		b.probeInFlight = false
 	}
+}
+
+// recordNeutral releases an abandoned half-open probe without claiming that
+// the provider recovered or failed.
+func (b *catalogPricingCircuitBreaker) recordNeutral(probe bool) {
+	if !probe {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.probeInFlight = false
 }
 
 func (b *catalogPricingCircuitBreaker) recordFailure(now time.Time, probe bool) {
