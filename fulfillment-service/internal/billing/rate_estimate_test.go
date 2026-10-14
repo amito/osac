@@ -81,3 +81,31 @@ func TestNormalizeRecurringRate(t *testing.T) {
 		})
 	}
 }
+
+func TestComponentRateAmount(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		rate       RateCardItem
+		dimensions map[string]string
+		want       string
+		wantError  bool
+	}{
+		{name: "ten nodes", rate: RateCardItem{Amount: "2.75", Unit: RateUnitHour, QuantityDimension: "node_count"}, dimensions: map[string]string{"node_count": "10"}, want: "27.5"},
+		{name: "disk size", rate: RateCardItem{Amount: "0.02", Unit: RateUnitHour, QuantityDimension: "additional_disk_size_gib"}, dimensions: map[string]string{"additional_disk_size_gib": "50"}, want: "1"},
+		{name: "exponent notation", rate: RateCardItem{Amount: "1e-3", Unit: RateUnitHour, QuantityDimension: "node_count"}, dimensions: map[string]string{"node_count": "10"}, want: "0.01"},
+		{name: "positive exponent notation", rate: RateCardItem{Amount: "1E+2", Unit: RateUnitHour, QuantityDimension: "node_count"}, dimensions: map[string]string{"node_count": "10"}, want: "1000"},
+		{name: "flat monthly rate", rate: RateCardItem{Amount: "5", Unit: RateUnitMonth}, dimensions: map[string]string{"node_count": "10"}, want: "5"},
+		{name: "VM hourly rate", rate: RateCardItem{Amount: "4", Unit: RateUnitHour}, dimensions: map[string]string{"additional_disk_size_gib": "50"}, want: "4"},
+		{name: "missing quantity", rate: RateCardItem{Amount: "2", QuantityDimension: "node_count"}, wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ComponentRateAmount(test.rate, test.dimensions)
+			if (err != nil) != test.wantError || (!test.wantError && got != test.want) {
+				t.Fatalf("ComponentRateAmount() = (%q, %v), want (%q, error=%t)", got, err, test.want, test.wantError)
+			}
+		})
+	}
+}

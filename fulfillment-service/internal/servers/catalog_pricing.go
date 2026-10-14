@@ -201,12 +201,17 @@ func (r *CatalogPricingResolver) Resolve(
 				failed[lookup.requestIndex] = true
 				continue
 			}
+			amount, amountErr := billing.ComponentRateAmount(matched, lookup.request.Dimensions)
+			if amountErr != nil {
+				failed[lookup.requestIndex] = true
+				continue
+			}
 			description := lookup.request.Description
 			if description == "" {
 				description = requests[lookup.requestIndex].Description
 			}
 			components[lookup.requestIndex] = append(components[lookup.requestIndex], publicv1.CatalogPriceComponent_builder{
-				Amount: matched.Amount, Unit: string(matched.Unit), Description: description,
+				Amount: amount, Unit: string(matched.Unit), Description: description,
 			}.Build())
 			staleResults[lookup.requestIndex] = staleResults[lookup.requestIndex] || usedStale
 		}
@@ -230,12 +235,11 @@ func (r *CatalogPricingResolver) Resolve(
 }
 
 func catalogPricingComponents(request CatalogPricingRequest) []billing.CatalogPricingComponentRequest {
-	if len(request.Components) != 0 {
-		return request.Components
-	}
-	return []billing.CatalogPricingComponentRequest{{
+	components := make([]billing.CatalogPricingComponentRequest, 0, len(request.Components)+1)
+	components = append(components, billing.CatalogPricingComponentRequest{
 		Dimensions: request.Dimensions, Description: request.Description,
-	}}
+	})
+	return append(components, request.Components...)
 }
 
 func (r *CatalogPricingResolver) resolveRateCardItem(
