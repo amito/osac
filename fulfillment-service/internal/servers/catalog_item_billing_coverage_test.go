@@ -75,6 +75,7 @@ func TestCatalogItemBillingCoverageSkipsUnpublishedAndSharedCatalogs(t *testing.
 	}{
 		{name: "draft tenant catalog", tenant: "tenant-a", published: false},
 		{name: "shared catalog", tenant: auth.SharedTenant, published: true},
+		{name: "system catalog", tenant: auth.SystemTenant, published: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if err := checkCatalogItemBillingCoverage(context.Background(), resolver, test.tenant, test.published, []CatalogPricingRequest{request}); err != nil {
