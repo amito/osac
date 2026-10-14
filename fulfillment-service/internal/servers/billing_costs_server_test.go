@@ -148,6 +148,7 @@ func TestBillingCostsListFiltersToVisibleProjects(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "tenant-a", store.tenant)
 	require.Equal(t, "native-account-1", provider.query.AccountReference)
+	require.Equal(t, "tenant-a", provider.query.TenantID)
 	require.Equal(t, "2026-08-01", provider.query.FromDate)
 	require.Equal(t, "2026-08-31", provider.query.ToDate)
 	require.Equal(t, int32(1), response.GetTotal())
@@ -155,6 +156,37 @@ func TestBillingCostsListFiltersToVisibleProjects(t *testing.T) {
 	require.Equal(t, "project-a", response.GetItems()[0].GetProjectId())
 	require.Equal(t, "vm-1", response.GetItems()[0].GetResourceId())
 	require.True(t, response.GetItems()[0].HasAsOf(), "successful cost reads should include as_of")
+}
+
+func TestBillingCostsDropsRowsAttributedToAnotherTenant(t *testing.T) {
+	provider := &costProviderStub{costs: []billing.Cost{
+		{
+			TenantID: new("tenant-a"), ProjectID: new("project-a"), ResourceID: new("vm-1"),
+			Service: billing.ServiceComputeInstance, Amount: "4.50", CurrencyCode: "USD",
+		},
+		{
+			TenantID: new("tenant-b"), ProjectID: new("project-a"), ResourceID: new("vm-2"),
+			Service: billing.ServiceComputeInstance, Amount: "7.00", CurrencyCode: "USD",
+		},
+		{
+			TenantID: new(" \t "), ProjectID: new("project-a"), ResourceID: new("vm-3"),
+			Service: billing.ServiceComputeInstance, Amount: "8.00", CurrencyCode: "USD",
+		},
+	}}
+	store := &costAccountStoreStub{account: billing.AssignedAccount{
+		ProviderKey: "m360", ProviderAccountReference: "native-account-1", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+	}}
+	server := newBillingCostsServer(t, provider, store, "project-a")
+	ctx := config.TenantIntoContext(context.Background(), "tenant-a")
+
+	response, err := server.List(ctx, publicv1.BillingCostsListRequest_builder{
+		FromDate: "2026-08-01", ToDate: "2026-08-31",
+	}.Build())
+	require.NoError(t, err)
+	require.Equal(t, "tenant-a", provider.query.TenantID)
+	require.Equal(t, int32(1), response.GetTotal())
+	require.Len(t, response.GetItems(), 1)
+	require.Equal(t, "vm-1", response.GetItems()[0].GetResourceId())
 }
 
 func TestBillingCostsPaginatesVisibleAggregatesAtLimit20(t *testing.T) {

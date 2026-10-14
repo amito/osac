@@ -49,7 +49,7 @@ var _ = Describe("M360 actual cost reader", func() {
 		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = client.ListCosts(context.Background(), billing.CostQuery{AccountReference: "account-1", FromDate: "2026-08-01", ToDate: "2026-08-31"})
+		_, err = client.ListCosts(context.Background(), billing.CostQuery{AccountReference: "account-1", TenantID: "tenant-a", FromDate: "2026-08-01", ToDate: "2026-08-31"})
 		Expect(err).To(MatchError(billing.ErrCostHeaderLimitExceeded))
 		Expect(listCalls.Load()).To(Equal(int32(1)))
 		Expect(detailCalls.Load()).To(BeZero())
@@ -73,7 +73,7 @@ var _ = Describe("M360 actual cost reader", func() {
 		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
-		_, err = client.ListCosts(context.Background(), billing.CostQuery{AccountReference: "account-1", FromDate: "2026-08-01", ToDate: "2026-08-31"})
+		_, err = client.ListCosts(context.Background(), billing.CostQuery{AccountReference: "account-1", TenantID: "tenant-a", FromDate: "2026-08-01", ToDate: "2026-08-31"})
 		Expect(err).To(MatchError(ContainSubstring("omitted its page count")))
 		Expect(listCalls.Load()).To(Equal(int32(1)))
 	})
@@ -107,7 +107,7 @@ var _ = Describe("M360 actual cost reader", func() {
 		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
-		costs, err := client.ListCosts(context.Background(), billing.CostQuery{AccountReference: "account-1", FromDate: "2026-08-01", ToDate: "2026-08-31"})
+		costs, err := client.ListCosts(context.Background(), billing.CostQuery{AccountReference: "account-1", TenantID: "tenant-a", FromDate: "2026-08-01", ToDate: "2026-08-31"})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(costs).To(HaveLen(1))
 		Expect(costs[0].Amount).To(Equal("500"))
@@ -142,11 +142,13 @@ var _ = Describe("M360 actual cost reader", func() {
 
 		costs, err := client.ListCosts(context.Background(), billing.CostQuery{
 			AccountReference: "account-1",
+			TenantID:         "tenant-a",
 			FromDate:         "2026-08-01",
 			ToDate:           "2026-08-31",
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(costs).To(Equal([]billing.Cost{{
+			TenantID:     new("tenant-a"),
 			ProjectID:    new("project-a"),
 			ResourceID:   new("vm-1"),
 			Service:      billing.ServiceComputeInstance,
@@ -178,6 +180,7 @@ var _ = Describe("M360 actual cost reader", func() {
 
 		costs, err := client.ListCosts(context.Background(), billing.CostQuery{
 			AccountReference: "account-1",
+			TenantID:         "tenant-a",
 			FromDate:         "2026-08-01",
 			ToDate:           "2026-08-31",
 		})

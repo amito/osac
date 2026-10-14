@@ -147,6 +147,7 @@ func (s *BillingCostsServer) List(ctx context.Context,
 	}
 	costs, err := s.listProviderCosts(ctx, billing.CostQuery{
 		AccountReference: account.ProviderAccountReference,
+		TenantID:         tenantID,
 		FromDate:         request.GetFromDate(),
 		ToDate:           request.GetToDate(),
 	})
@@ -169,6 +170,13 @@ func (s *BillingCostsServer) List(ctx context.Context,
 
 	visibleCosts := make([]billing.Cost, 0, len(costs))
 	for _, cost := range costs {
+		if cost.TenantID != nil {
+			attributedTenantID := strings.TrimSpace(*cost.TenantID)
+			if attributedTenantID != tenantID {
+				continue
+			}
+			cost.TenantID = &attributedTenantID
+		}
 		if strings.TrimSpace(cost.Service) == "" || strings.TrimSpace(cost.Amount) == "" || len(strings.TrimSpace(cost.CurrencyCode)) != 3 {
 			s.logger.ErrorContext(ctx, "provider returned an incomplete cost")
 			return nil, grpcstatus.Error(grpccodes.Unavailable, "provider costs are unavailable")
