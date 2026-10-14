@@ -21,9 +21,15 @@ import (
 
 var ErrAccountExternalIDChanged = errors.New("billing account external ID changed before update")
 
-// ErrProviderUnavailable marks transient provider failures. Billing gates may
-// allow a launch on this error, but must still reject invalid provider data.
+// ErrProviderUnavailable marks a provider API that could not satisfy an
+// operation. Billing gates may allow a launch on this error, but must still
+// reject invalid provider data.
 var ErrProviderUnavailable = errors.New("billing provider unavailable")
+
+// ErrProviderReadRetryable marks a provider read failure that may succeed if
+// retried. Provider adapters should wrap it only for timeouts, rate limits, or
+// server errors; callers must not infer retryability from ErrProviderUnavailable.
+var ErrProviderReadRetryable = errors.New("billing provider read is retryable")
 
 // AccountState is OSAC's normalized account state, independent of a billing
 // provider's status vocabulary.

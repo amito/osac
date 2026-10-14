@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -105,6 +107,75 @@ var _ = Describe("M360 billing account client", func() {
 		Entry("rate limit", http.StatusTooManyRequests, "", billing.ErrProviderUnavailable),
 		Entry("provider failure", http.StatusServiceUnavailable, "", billing.ErrProviderUnavailable),
 	)
+
+	DescribeTable("retries transient provider read failures",
+		func(statusCode int) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				requests++
+				if requests == 1 {
+					writer.WriteHeader(statusCode)
+					return
+				}
+				writer.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(writer, `{"success":true,"data":{"content":[],"totalElements":0,"totalPages":0,"size":1,"number":0,"last":true}}`)
+			}))
+			DeferCleanup(server.Close)
+
+			client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = billing.RetryProviderRead(context.Background(), client.GetStatus)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(requests).To(Equal(2))
+		},
+		Entry("HTTP request timeout", http.StatusRequestTimeout),
+		Entry("rate limit", http.StatusTooManyRequests),
+		Entry("server failure", http.StatusInternalServerError),
+	)
+
+	DescribeTable("does not retry permanent provider read failures",
+		func(statusCode int, body string) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				requests++
+				if statusCode != http.StatusOK {
+					writer.WriteHeader(statusCode)
+				}
+				_, _ = fmt.Fprint(writer, body)
+			}))
+			DeferCleanup(server.Close)
+
+			client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = billing.RetryProviderRead(context.Background(), client.GetStatus)
+			Expect(err).To(HaveOccurred())
+			Expect(requests).To(Equal(1))
+		},
+		Entry("bad request", http.StatusBadRequest, ``),
+		Entry("invalid JSON", http.StatusOK, `{"success":true,"data":`),
+	)
+
+	It("retries a provider transport timeout while the operation context remains live", func() {
+		var requests atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			if requests.Add(1) == 1 {
+				time.Sleep(50 * time.Millisecond)
+				return
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(writer, `{"success":true,"data":{"content":[],"totalElements":0,"totalPages":0,"size":1,"number":0,"last":true}}`)
+		}))
+		DeferCleanup(server.Close)
+
+		client, err := NewClient(Config{
+			BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1",
+			HTTPClient: &http.Client{Timeout: 10 * time.Millisecond},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = billing.RetryProviderRead(context.Background(), client.GetStatus)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(requests.Load()).To(Equal(int32(2)))
+	})
 
 	It("keeps a malformed account response separate from provider outage", func() {
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {

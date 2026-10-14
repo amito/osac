@@ -18,6 +18,7 @@ package billing
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -25,9 +26,9 @@ import (
 // read attempt.
 const ProviderReadRetryCount = 3
 
-// RetryProviderRead retries a provider read up to ProviderReadRetryCount times
-// with a short exponential backoff. The caller's context bounds both provider
-// calls and backoff waits.
+// RetryProviderRead retries only failures marked ErrProviderReadRetryable, up
+// to ProviderReadRetryCount times with a short exponential backoff. The
+// caller's context bounds both provider calls and backoff waits.
 func RetryProviderRead[T any](ctx context.Context, read func(context.Context) (T, error)) (T, error) {
 	var zero T
 	var lastErr error
@@ -43,6 +44,9 @@ func RetryProviderRead[T any](ctx context.Context, read func(context.Context) (T
 			return zero, ctxErr
 		}
 		lastErr = err
+		if !errors.Is(err, ErrProviderReadRetryable) {
+			return zero, err
+		}
 		if attempt == ProviderReadRetryCount {
 			break
 		}
