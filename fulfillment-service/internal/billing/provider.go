@@ -44,7 +44,8 @@ type Account struct {
 	State       AccountState
 }
 
-// ProviderState is OSAC's normalized connectivity state for a provider.
+// ProviderState is OSAC's normalized reachability state for the provider API
+// probed by GetStatus. It does not describe usage delivery or unprobed APIs.
 type ProviderState int
 
 const (
@@ -54,16 +55,30 @@ const (
 	ProviderStateUnavailable
 )
 
-// ProviderStatus contains normalized provider health information.
+// UsageDeliveryState describes whether metering usage is reaching the billing
+// provider. Fulfillment cannot observe the adapter's Kafka delivery lag or DLQ,
+// so the state remains unknown unless a future integration supplies that data.
+type UsageDeliveryState int
+
+const (
+	UsageDeliveryStateUnknown UsageDeliveryState = iota
+	UsageDeliveryStateAvailable
+	UsageDeliveryStateUnavailable
+)
+
+// ProviderStatus contains normalized reachability information for the API
+// probed by the provider adapter, plus separate usage delivery state.
 type ProviderStatus struct {
-	State        ProviderState
-	ProviderKey  string
-	Message      string
-	Capabilities []ProviderCapability
+	State              ProviderState
+	UsageDeliveryState UsageDeliveryState
+	ProviderKey        string
+	Message            string
+	Capabilities       []ProviderCapability
 }
 
 // ProviderCapability identifies a billing operation implemented by the
-// configured provider adapter.
+// configured provider adapter. Its presence in a ProviderStatus describes
+// support only; it does not indicate that the operation's API is reachable.
 type ProviderCapability string
 
 const (

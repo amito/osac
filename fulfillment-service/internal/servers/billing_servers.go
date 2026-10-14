@@ -107,6 +107,7 @@ func (s *PrivateBillingProviderStatusesServer) Get(
 		Message:               status.Message,
 		SupportedCapabilities: privateProviderCapabilities(status.Capabilities),
 		LastSuccessfulCheck:   lastSuccessfulCheckTimestamp,
+		UsageDeliveryState:    privateProviderUsageDeliveryState(status.UsageDeliveryState),
 	}.Build()
 	return privatev1.BillingProviderStatusesGetResponse_builder{Object: object}.Build(), nil
 }
@@ -393,6 +394,17 @@ func privateProviderState(state billing.ProviderState) privatev1.BillingProvider
 		return privatev1.BillingProviderState_BILLING_PROVIDER_STATE_UNAVAILABLE
 	default:
 		return privatev1.BillingProviderState_BILLING_PROVIDER_STATE_UNSPECIFIED
+	}
+}
+
+func privateProviderUsageDeliveryState(state billing.UsageDeliveryState) privatev1.BillingUsageDeliveryState {
+	switch state {
+	case billing.UsageDeliveryStateAvailable:
+		return privatev1.BillingUsageDeliveryState_BILLING_USAGE_DELIVERY_STATE_AVAILABLE
+	case billing.UsageDeliveryStateUnavailable:
+		return privatev1.BillingUsageDeliveryState_BILLING_USAGE_DELIVERY_STATE_UNAVAILABLE
+	default:
+		return privatev1.BillingUsageDeliveryState_BILLING_USAGE_DELIVERY_STATE_UNKNOWN
 	}
 }
 

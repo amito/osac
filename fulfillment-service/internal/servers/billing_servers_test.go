@@ -98,11 +98,15 @@ func TestBillingProviderStatusReportsNotConfigured(t *testing.T) {
 	if response.GetObject().GetLastSuccessfulCheck() != nil {
 		t.Fatal("unconfigured provider returned a successful health-check time")
 	}
+	if got := response.GetObject().GetUsageDeliveryState(); got != publicv1.BillingUsageDeliveryState_BILLING_USAGE_DELIVERY_STATE_UNKNOWN {
+		t.Fatalf("unconfigured provider usage delivery state = %v, want UNKNOWN", got)
+	}
 }
 
 func TestBillingProviderStatusExposesProviderAdapterCapabilities(t *testing.T) {
 	provider := &billingProviderStub{status: billing.ProviderStatus{
-		State: billing.ProviderStateAvailable,
+		State:              billing.ProviderStateAvailable,
+		UsageDeliveryState: billing.UsageDeliveryStateUnknown,
 		Capabilities: []billing.ProviderCapability{
 			billing.ProviderCapabilityPricing,
 			billing.ProviderCapabilityCosts,
@@ -126,6 +130,9 @@ func TestBillingProviderStatusExposesProviderAdapterCapabilities(t *testing.T) {
 	}
 	if len(capabilities) != len(want) {
 		t.Fatalf("capabilities = %v, want %v", capabilities, want)
+	}
+	if got := response.GetObject().GetUsageDeliveryState(); got != publicv1.BillingUsageDeliveryState_BILLING_USAGE_DELIVERY_STATE_UNKNOWN {
+		t.Fatalf("successful provider API check implied usage delivery state %v, want UNKNOWN", got)
 	}
 	for i := range want {
 		if capabilities[i] != want[i] {

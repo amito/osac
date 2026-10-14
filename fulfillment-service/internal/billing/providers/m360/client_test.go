@@ -50,6 +50,9 @@ var _ = Describe("M360 billing account client", func() {
 		status, err := client.GetStatus(context.Background())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(status.State).To(Equal(billing.ProviderStateAvailable))
+		Expect(status.UsageDeliveryState).To(Equal(billing.UsageDeliveryStateUnknown))
+		Expect(status.Message).To(ContainSubstring("pricing, costs, and invoices are configured but not probed"))
+		Expect(status.Message).To(ContainSubstring("usage delivery is not monitored by fulfillment"))
 		Expect(status.Capabilities).To(Equal([]billing.ProviderCapability{
 			billing.ProviderCapabilityPricing,
 			billing.ProviderCapabilityCosts,
