@@ -140,6 +140,58 @@ func TestPriceEstimateSumsSelectedAdditionalDiskRates(t *testing.T) {
 	}
 }
 
+func TestPriceEstimateAcceptsNegativeHourlyCreditRate(t *testing.T) {
+	t.Parallel()
+
+	provider := &billingPricingTestProvider{items: []billing.RateCardItem{{
+		Service:      billing.ServiceComputeInstance,
+		CurrencyCode: "USD",
+		Conditions: []billing.RateCondition{
+			{Dimension: "image_ref", Operator: billing.RateMatchEquals, Value: "fedora-16"},
+			{Dimension: "instance_type", Operator: billing.RateMatchEquals, Value: "large"},
+		},
+		Amount: "-1",
+		Unit:   billing.RateUnitHour,
+	}}}
+	_, estimate := newBillingPricingTestServers(t, provider, &billingPricingTestComputeCatalog{item: billingPricingTestComputeCatalogItem()}, auth.AllTenants)
+
+	response, err := estimate.Create(config.TenantIntoContext(context.Background(), "tenant-a"), publicv1.PriceEstimatesCreateRequest_builder{
+		Configuration: billingPricingTestConfiguration(),
+	}.Build())
+	if err != nil {
+		t.Fatalf("PriceEstimates.Create() error = %v, want a credit estimate", err)
+	}
+	if response.GetHourlyAmount() != "-1" || response.GetMonthlyAmount() != "-730" {
+		t.Fatalf("credit estimate = (%q/hour, %q/month), want (-1, -730)", response.GetHourlyAmount(), response.GetMonthlyAmount())
+	}
+}
+
+func TestPriceEstimateRejectsMissingComponentRate(t *testing.T) {
+	t.Parallel()
+
+	version := publicv1.ClusterVersionReference_builder{Name: "4.18"}.Build()
+	clusterItems := &billingPricingTestClusterCatalog{item: publicv1.ClusterCatalogItem_builder{
+		Id:       "catalog-cluster",
+		Title:    "Standard cluster",
+		Template: publicv1.ClusterTemplateReference_builder{Id: "template-standard", Name: "standard"}.Build(),
+		Fields: publicv1.ClusterCatalogItemFields_builder{
+			Version: publicv1.ClusterVersionReferenceFieldPolicy_builder{Locked: version}.Build(),
+		}.Build(),
+	}.Build()}
+	_, estimate := newBillingPricingTestServersWithClusterCatalog(t, &billingPricingTestProvider{}, clusterItems, auth.AllTenants)
+	configuration := publicv1.BillingPricingConfiguration_builder{Cluster: publicv1.ClusterSpec_builder{
+		CatalogItem: publicv1.ClusterCatalogItemReference_builder{Id: "catalog-cluster"}.Build(),
+		Version:     version,
+	}.Build()}.Build()
+
+	_, err := estimate.Create(config.TenantIntoContext(context.Background(), "tenant-a"), publicv1.PriceEstimatesCreateRequest_builder{
+		Configuration: configuration,
+	}.Build())
+	if status.Code(err) != codes.FailedPrecondition || status.Convert(err).Message() != "BILLING_COVERAGE_UNAVAILABLE" {
+		t.Fatalf("PriceEstimates.Create() error = %v, want FailedPrecondition BILLING_COVERAGE_UNAVAILABLE", err)
+	}
+}
+
 func TestPriceEstimateMultipliesSelectedClusterNodeSetQuantity(t *testing.T) {
 	t.Parallel()
 
@@ -216,7 +268,7 @@ func TestPricingQueryReportsCoverageGapWithoutAmount(t *testing.T) {
 
 	provider := &billingPricingTestProvider{}
 	computeItems := &billingPricingTestComputeCatalog{item: billingPricingTestComputeCatalogItem()}
-	query, _ := newBillingPricingTestServers(t, provider, computeItems, auth.AllTenants)
+	query, estimate := newBillingPricingTestServers(t, provider, computeItems, auth.AllTenants)
 
 	response, err := query.Create(config.TenantIntoContext(context.Background(), "tenant-a"), publicv1.PricingQueriesCreateRequest_builder{
 		Configuration: billingPricingTestConfiguration(),
@@ -233,6 +285,12 @@ func TestPricingQueryReportsCoverageGapWithoutAmount(t *testing.T) {
 	}
 	if component.HasAmount() || component.HasUnit() {
 		t.Fatalf("gap result includes a price: %v", component)
+	}
+	_, err = estimate.Create(config.TenantIntoContext(context.Background(), "tenant-a"), publicv1.PriceEstimatesCreateRequest_builder{
+		Configuration: billingPricingTestConfiguration(),
+	}.Build())
+	if status.Code(err) != codes.FailedPrecondition || status.Convert(err).Message() != "BILLING_COVERAGE_GAP" {
+		t.Fatalf("PriceEstimates.Create() error = %v, want FailedPrecondition BILLING_COVERAGE_GAP", err)
 	}
 }
 
@@ -255,7 +313,7 @@ func TestPricingQueryRejectsTenantOutsideAssignmentScopeBeforeLookups(t *testing
 	}
 }
 
-func TestPriceEstimateMarksRetainedRateStaleAfterRefreshFailure(t *testing.T) {
+func TestPriceEstimateRejectsRetainedRateAfterRefreshFailure(t *testing.T) {
 	t.Parallel()
 
 	provider := &billingPricingTestProvider{items: []billing.RateCardItem{{
@@ -281,11 +339,11 @@ func TestPriceEstimateMarksRetainedRateStaleAfterRefreshFailure(t *testing.T) {
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
 	response, err := estimate.Create(canceled, publicv1.PriceEstimatesCreateRequest_builder{Configuration: configuration}.Build())
-	if err != nil {
-		t.Fatalf("stale PriceEstimates.Create() error = %v", err)
+	if response != nil {
+		t.Fatalf("stale PriceEstimates.Create() response = %v, want nil", response)
 	}
-	if response.GetStatus() != publicv1.PriceEstimateStatus_PRICE_ESTIMATE_STATUS_STALE || response.GetComponents()[0].GetRateAmount() != "4.50" {
-		t.Fatalf("stale estimate = %v, want retained 4.50 rate marked STALE", response)
+	if status.Code(err) != codes.FailedPrecondition || status.Convert(err).Message() != "BILLING_COVERAGE_UNAVAILABLE" {
+		t.Fatalf("stale PriceEstimates.Create() error = %v, want FailedPrecondition BILLING_COVERAGE_UNAVAILABLE", err)
 	}
 }
 
@@ -403,6 +461,10 @@ func (c *billingPricingTestClusterCatalog) Get(context.Context, *publicv1.Cluste
 		return nil, c.err
 	}
 	return publicv1.ClusterCatalogItemsGetResponse_builder{Object: c.item}.Build(), nil
+}
+
+func (c *billingPricingTestClusterCatalog) templatePricingDefaults(context.Context, string) (map[string]string, error) {
+	return nil, nil
 }
 
 func newBillingPricingTestServers(

@@ -146,7 +146,11 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type PriceEstimatesClient interface {
-	// Creates a prospective recurring estimate for a selected resource configuration.
+	// Calculates a prospective recurring estimate for a selected resource
+	// configuration using current provider rates. Monthly amounts use OSAC's
+	// fixed 730-hour month. This is not an actual provider-rated charge or the
+	// Tenant User deployed-cost view. The method returns FailedPrecondition when
+	// any component has stale or missing rate coverage.
 	Create(ctx context.Context, in *PriceEstimatesCreateRequest, opts ...grpc.CallOption) (*PriceEstimatesCreateResponse, error)
 }
 
@@ -172,7 +176,11 @@ func (c *priceEstimatesClient) Create(ctx context.Context, in *PriceEstimatesCre
 // All implementations must embed UnimplementedPriceEstimatesServer
 // for forward compatibility.
 type PriceEstimatesServer interface {
-	// Creates a prospective recurring estimate for a selected resource configuration.
+	// Calculates a prospective recurring estimate for a selected resource
+	// configuration using current provider rates. Monthly amounts use OSAC's
+	// fixed 730-hour month. This is not an actual provider-rated charge or the
+	// Tenant User deployed-cost view. The method returns FailedPrecondition when
+	// any component has stale or missing rate coverage.
 	Create(context.Context, *PriceEstimatesCreateRequest) (*PriceEstimatesCreateResponse, error)
 	mustEmbedUnimplementedPriceEstimatesServer()
 }

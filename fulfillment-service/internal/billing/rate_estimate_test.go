@@ -49,10 +49,11 @@ func TestNormalizeRecurringRate(t *testing.T) {
 			wantMonthly: "1",
 		},
 		{
-			name:      "negative rate",
-			amount:    "-1",
-			unit:      RateUnitHour,
-			wantError: true,
+			name:        "negative hourly credit rate",
+			amount:      "-1",
+			unit:        RateUnitHour,
+			wantHourly:  "-1",
+			wantMonthly: "-730",
 		},
 		{
 			name:      "unknown unit",

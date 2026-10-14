@@ -115,7 +115,11 @@ message PriceEstimatesCreateResponse {
 }
 
 service PriceEstimates {
-  // Creates a prospective recurring estimate for a selected resource configuration.
+  // Calculates a prospective recurring estimate for a selected resource
+  // configuration using current provider rates. Monthly amounts use OSAC's
+  // fixed 730-hour month. This is not an actual provider-rated charge or the
+  // Tenant User deployed-cost view. The method returns FailedPrecondition when
+  // any component has stale or missing rate coverage.
   rpc Create(PriceEstimatesCreateRequest) returns (PriceEstimatesCreateResponse) {
     option (google.api.http) = {
       post: "/api/fulfillment/v1/billing/price_estimates"
