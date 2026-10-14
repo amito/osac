@@ -14,7 +14,14 @@ language governing permissions and limitations under the License.
 
 package billing
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrCostHeaderLimitExceeded means the provider has more rated transactions
+// than can be safely aggregated for one cost request.
+var ErrCostHeaderLimitExceeded = errors.New("billing cost transaction limit exceeded")
 
 // CostQuery selects provider-calculated costs for one account and date range.
 type CostQuery struct {

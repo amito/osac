@@ -96,6 +96,7 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 	billingCostsBuilder := servers.NewBillingCostsServer().
 		SetLogger(deps.Logger).
 		SetProvider(deps.BillingProviderKey, costProvider).
+		SetPricingResolver(catalogPricingResolver).
 		SetAccountStore(billingAccountStore).
 		SetTenancyLogic(deps.TenancyLogic)
 	draftChargesBuilder := servers.NewDraftChargesServer().

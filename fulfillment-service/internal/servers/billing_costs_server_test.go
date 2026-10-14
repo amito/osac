@@ -17,7 +17,9 @@ package servers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/auth"
 	"github.com/osac-project/osac/fulfillment-service/internal/billing"
@@ -34,11 +36,60 @@ type costProviderStub struct {
 	costs []billing.Cost
 	query billing.CostQuery
 	err   error
+	calls int
 }
 
 func (p *costProviderStub) ListCosts(_ context.Context, query billing.CostQuery) ([]billing.Cost, error) {
+	p.calls++
 	p.query = query
 	return p.costs, p.err
+}
+
+func TestBillingCostsRejectsRangesOver366DaysBeforeProviderRead(t *testing.T) {
+	provider := &costProviderStub{}
+	server := newBillingCostsServer(t, provider, &costAccountStoreStub{}, "project-a")
+	ctx := config.TenantIntoContext(context.Background(), "tenant-a")
+
+	_, err := server.List(ctx, publicv1.BillingCostsListRequest_builder{FromDate: "2026-01-01", ToDate: "2027-01-02"}.Build())
+	require.Equal(t, grpccodes.InvalidArgument, grpcstatus.Code(err))
+	require.Zero(t, provider.calls)
+}
+
+func TestBillingCostsMapsProviderHeaderCapToFailedPrecondition(t *testing.T) {
+	provider := &costProviderStub{err: billing.ErrCostHeaderLimitExceeded}
+	store := &costAccountStoreStub{account: billing.AssignedAccount{
+		ProviderKey: "m360", ProviderAccountReference: "native-account-1", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+	}}
+	server := newBillingCostsServer(t, provider, store, "project-a")
+	ctx := config.TenantIntoContext(context.Background(), "tenant-a")
+
+	_, err := server.List(ctx, publicv1.BillingCostsListRequest_builder{FromDate: "2026-08-01", ToDate: "2026-08-31"}.Build())
+	status, ok := grpcstatus.FromError(err)
+	require.True(t, ok)
+	require.Equal(t, grpccodes.FailedPrecondition, status.Code())
+	require.Equal(t, "BILLING_COST_RANGE_TOO_LARGE", status.Message())
+}
+
+func TestBillingCostsHonorsSharedProviderCircuit(t *testing.T) {
+	provider := &costProviderStub{}
+	store := &costAccountStoreStub{account: billing.AssignedAccount{
+		ProviderKey: "m360", ProviderAccountReference: "native-account-1", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+	}}
+	resolver := NewCatalogPricingResolver("m360", nil, nil)
+	resolver.circuit.openUntil = time.Now().Add(time.Minute)
+	server, err := NewBillingCostsServer().
+		SetLogger(newBillingTestLogger()).
+		SetProvider("m360", provider).
+		SetPricingResolver(resolver).
+		SetAccountStore(store).
+		SetTenancyLogic(newCostTenancyLogic(t, "project-a")).
+		Build()
+	require.NoError(t, err)
+	ctx := config.TenantIntoContext(context.Background(), "tenant-a")
+
+	_, err = server.List(ctx, publicv1.BillingCostsListRequest_builder{FromDate: "2026-08-01", ToDate: "2026-08-31"}.Build())
+	require.Equal(t, grpccodes.Unavailable, grpcstatus.Code(err))
+	require.Zero(t, provider.calls)
 }
 
 type costAccountStoreStub struct {
@@ -103,6 +154,35 @@ func TestBillingCostsListFiltersToVisibleProjects(t *testing.T) {
 	require.Equal(t, int32(1), response.GetSize())
 	require.Equal(t, "project-a", response.GetItems()[0].GetProjectId())
 	require.Equal(t, "vm-1", response.GetItems()[0].GetResourceId())
+}
+
+func TestBillingCostsPaginatesVisibleAggregatesAtLimit20(t *testing.T) {
+	costs := []billing.Cost{{ProjectID: new("project-hidden"), ResourceID: new("hidden-vm"), Service: billing.ServiceComputeInstance, Amount: "100.00", CurrencyCode: "USD"}}
+	for index := range 21 {
+		costs = append(costs, billing.Cost{
+			ProjectID: new("project-a"), ResourceID: new(fmt.Sprintf("vm-%d", index)),
+			Service: billing.ServiceComputeInstance, Amount: "1.00", CurrencyCode: "USD",
+		})
+	}
+	provider := &costProviderStub{costs: costs}
+	store := &costAccountStoreStub{account: billing.AssignedAccount{
+		ProviderKey: "m360", ProviderAccountReference: "native-account-1", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+	}}
+	server := newBillingCostsServer(t, provider, store, "project-a")
+	ctx := config.TenantIntoContext(context.Background(), "tenant-a")
+	offset, limit := int32(1), int32(20)
+
+	response, err := server.List(ctx, publicv1.BillingCostsListRequest_builder{
+		FromDate: "2026-08-01", ToDate: "2026-08-31", Offset: &offset, Limit: &limit,
+	}.Build())
+	require.NoError(t, err)
+	require.Equal(t, int32(21), response.GetTotal())
+	require.Equal(t, int32(20), response.GetSize())
+	require.Len(t, response.GetItems(), 20)
+	for _, item := range response.GetItems() {
+		require.Equal(t, "project-a", item.GetProjectId())
+		require.NotEqual(t, "hidden-vm", item.GetResourceId())
+	}
 }
 
 func TestBillingCostsRejectsUnattributedCostsForTenantCaller(t *testing.T) {
