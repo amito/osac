@@ -620,6 +620,9 @@ Tenant IdP managers do not inherit the billing permissions granted to client use
 reports billing-provider status; it does not show whether metering usage is reaching the provider. Check the
 metering delivery-lag and dead-letter-queue (DLQ) metrics for usage-pipeline health.
 
+The status `last_successful_check` is local to the serving Fulfillment replica. It records that process's most
+recent successful provider check, is empty after that replica restarts, and is not shared across replicas.
+
 ### Authorization Levels
 
 The fulfillment service implements a comprehensive authorization model that combines OPA policy (method-level authorization), application-layer logic (resource-level filtering via tenancy), and Keycloak group membership (project-level RBAC). The following authorization levels are defined:
