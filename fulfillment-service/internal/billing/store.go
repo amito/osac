@@ -167,6 +167,31 @@ func (s *AccountStore) GetAssignedAccount(ctx context.Context, tenantID string) 
 	return result, nil
 }
 
+// CloseTenantAssignment ends the active link when its OSAC tenant is deleted.
+// The provider account and assignment history remain intact so delayed usage
+// keeps its existing provider-side attribution until an administrator reassigns it.
+func (s *AccountStore) CloseTenantAssignment(ctx context.Context, tenantID string) (err error) {
+	if tenantID == "" {
+		return errors.New("tenant ID is required")
+	}
+	tx, err := database.TxFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.ReportError(&err)
+	_, err = tx.Exec(ctx, `
+		update tenant_billing_assignments
+		set data = jsonb_set(data, '{status,effective_to}', to_jsonb($2::text), true),
+			version = version + 1
+		where tenant = $1 and deletion_timestamp = 'epoch'
+			and coalesce(effective_to, '') = ''
+	`, tenantID, time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("failed to close tenant billing assignment: %w", err)
+	}
+	return nil
+}
+
 // ListAccounts retrieves provider accounts using OSAC pagination.
 func (s *AccountStore) ListAccounts(
 	ctx context.Context,

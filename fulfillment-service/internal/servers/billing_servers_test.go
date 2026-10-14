@@ -40,6 +40,7 @@ type billingProviderStub struct {
 	statusErr error
 	accounts  []billing.Account
 	listErr   error
+	account   billing.Account
 }
 
 func (p *billingProviderStub) GetStatus(context.Context) (billing.ProviderStatus, error) {
@@ -50,8 +51,8 @@ func (p *billingProviderStub) ListAccounts(context.Context) ([]billing.Account, 
 	return p.accounts, p.listErr
 }
 
-func (*billingProviderStub) GetAccount(context.Context, string) (billing.Account, error) {
-	return billing.Account{}, nil
+func (p *billingProviderStub) GetAccount(context.Context, string) (billing.Account, error) {
+	return p.account, nil
 }
 
 func (*billingProviderStub) UpdateAccountExternalID(context.Context, string, string, string) error {
