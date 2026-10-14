@@ -194,7 +194,16 @@ func (c *Client) findApplicableContract(ctx context.Context, accountReference st
 				contracts = append(contracts, contract)
 			}
 		}
-		if response.Last || len(response.Content) == 0 || (response.TotalPages > 0 && page+1 >= response.TotalPages) {
+		if response.Last {
+			break
+		}
+		if len(response.Content) == 0 {
+			return nil, errors.New("M360 contract list pagination ended before completion")
+		}
+		if response.TotalPages <= 0 {
+			return nil, errors.New("M360 contract list response did not report pagination completion")
+		}
+		if page+1 >= response.TotalPages {
 			break
 		}
 	}
