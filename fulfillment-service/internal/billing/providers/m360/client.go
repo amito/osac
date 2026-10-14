@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -195,8 +196,11 @@ func (c *Client) requestJSON(ctx context.Context, method string, endpoint *url.U
 	}
 	result, err := c.transport.Do(request)
 	if err != nil {
-		if errors.Is(ctx.Err(), context.Canceled) {
-			return context.Canceled
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if isTimeoutError(err) {
+			return fmt.Errorf("%w: %w: M360 API request timed out", billing.ErrProviderUnavailable, billing.ErrProviderReadRetryable)
 		}
 		return fmt.Errorf("%w: M360 API request failed", billing.ErrProviderUnavailable)
 	}
@@ -205,8 +209,9 @@ func (c *Client) requestJSON(ctx context.Context, method string, endpoint *url.U
 		if result.StatusCode == http.StatusNotFound {
 			return fmt.Errorf("%w: M360 API returned HTTP %d", errM360NotFound, result.StatusCode)
 		}
-		if result.StatusCode == http.StatusRequestTimeout || result.StatusCode == http.StatusTooManyRequests || result.StatusCode >= http.StatusInternalServerError {
-			return fmt.Errorf("%w: M360 API returned HTTP %d", billing.ErrProviderUnavailable, result.StatusCode)
+		if result.StatusCode == http.StatusRequestTimeout || result.StatusCode == http.StatusTooManyRequests ||
+			(result.StatusCode >= http.StatusInternalServerError && result.StatusCode < 600) {
+			return fmt.Errorf("%w: %w: M360 API returned HTTP %d", billing.ErrProviderUnavailable, billing.ErrProviderReadRetryable, result.StatusCode)
 		}
 		return fmt.Errorf("M360 API returned HTTP %d", result.StatusCode)
 	}
@@ -226,6 +231,14 @@ func (c *Client) requestJSON(ctx context.Context, method string, endpoint *url.U
 		return errors.New("M360 API returned an invalid response")
 	}
 	return nil
+}
+
+func isTimeoutError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func normalizeAccount(account m360Account) billing.Account {

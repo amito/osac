@@ -27,7 +27,7 @@ func TestRetryProviderReadRetriesUntilSuccess(t *testing.T) {
 	got, err := RetryProviderRead(context.Background(), func(context.Context) (string, error) {
 		calls++
 		if calls < 3 {
-			return "", errors.New("temporary provider error")
+			return "", errors.Join(ErrProviderReadRetryable, errors.New("temporary provider error"))
 		}
 		return "value", nil
 	})
@@ -40,7 +40,7 @@ func TestRetryProviderReadRetriesUntilSuccess(t *testing.T) {
 }
 
 func TestRetryProviderReadReturnsLastErrorAfterConfiguredRetries(t *testing.T) {
-	wantErr := errors.New("provider unavailable")
+	wantErr := errors.Join(ErrProviderReadRetryable, errors.New("provider unavailable"))
 	calls := 0
 	_, err := RetryProviderRead(context.Background(), func(context.Context) (struct{}, error) {
 		calls++
@@ -54,13 +54,28 @@ func TestRetryProviderReadReturnsLastErrorAfterConfiguredRetries(t *testing.T) {
 	}
 }
 
+func TestRetryProviderReadDoesNotRetryPermanentErrors(t *testing.T) {
+	wantErr := errors.New("invalid provider response")
+	calls := 0
+	_, err := RetryProviderRead(context.Background(), func(context.Context) (struct{}, error) {
+		calls++
+		return struct{}{}, wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("RetryProviderRead() error = %v, want %v", err, wantErr)
+	}
+	if calls != 1 {
+		t.Fatalf("RetryProviderRead() made %d calls for a permanent error, want 1", calls)
+	}
+}
+
 func TestRetryProviderReadStopsWhenContextIsCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	calls := 0
 	_, err := RetryProviderRead(ctx, func(context.Context) (struct{}, error) {
 		calls++
 		cancel()
-		return struct{}{}, errors.New("request failed")
+		return struct{}{}, errors.Join(ErrProviderReadRetryable, errors.New("request failed"))
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("RetryProviderRead() error = %v, want context canceled", err)
