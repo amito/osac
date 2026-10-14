@@ -28,20 +28,27 @@ import "osac/private/v1/tenant_billing_assignment_type.proto";
 option (cleanapi.file).package = "osac.public.v1";
 option (cleanapi.file).http_route_prefix_map = "private:fulfillment";
 
-// BillingProviderStatus describes the billing provider configured for this
-// OSAC deployment.
+// BillingProviderStatus describes the configured billing provider. State
+// reports only reachability of the API endpoint checked by the adapter. It
+// does not report the health of other provider APIs or usage delivery.
 message BillingProviderStatus {
   BillingProviderState state = 1;
   string provider_key = 2;
   string message = 3;
-  // Operations supported by the configured provider adapter. An absent
-  // capability is unsupported by this OSAC deployment.
+  // Operations implemented by the configured provider adapter. Presence means
+  // supported, not currently reachable; unprobed operation APIs are not health
+  // checked by this status request.
   repeated BillingProviderCapability supported_capabilities = 4;
-  // Time of the most recent successful health check of the configured provider.
+  // Time of the most recent successful account API reachability check.
   google.protobuf.Timestamp last_successful_check = 5;
+  // Health of metering usage delivery to the billing provider. Fulfillment
+  // does not observe metering lag or dead-letter queue state, so this remains
+  // UNKNOWN unless that information becomes available.
+  BillingUsageDeliveryState usage_delivery_state = 6;
 }
 
-// BillingProviderState is the normalized health state of the billing provider.
+// BillingProviderState is the normalized reachability state of the provider
+// API checked by the adapter.
 enum BillingProviderState {
   BILLING_PROVIDER_STATE_UNSPECIFIED = 0;
   BILLING_PROVIDER_STATE_NOT_CONFIGURED = 1;
@@ -58,6 +65,15 @@ enum BillingProviderCapability {
   BILLING_PROVIDER_CAPABILITY_INVOICES = 3;
   BILLING_PROVIDER_CAPABILITY_DRAFT_CHARGES = 4;
   BILLING_PROVIDER_CAPABILITY_EXPORTS = 5;
+}
+
+// BillingUsageDeliveryState reports whether metering usage is reaching the
+// configured billing provider.
+enum BillingUsageDeliveryState {
+  BILLING_USAGE_DELIVERY_STATE_UNSPECIFIED = 0;
+  BILLING_USAGE_DELIVERY_STATE_UNKNOWN = 1;
+  BILLING_USAGE_DELIVERY_STATE_AVAILABLE = 2;
+  BILLING_USAGE_DELIVERY_STATE_UNAVAILABLE = 3;
 }
 
 message BillingProviderStatusesGetRequest {}

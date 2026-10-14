@@ -88,14 +88,18 @@ func (c *Client) ListAccounts(ctx context.Context) ([]billing.Account, error) {
 	}
 }
 
-// GetStatus checks provider availability by requesting a single account row.
+// GetStatus checks account API reachability by requesting a single account
+// row. Other operation APIs are not probed, and usage delivery health is
+// outside fulfillment's visibility.
 func (c *Client) GetStatus(ctx context.Context) (billing.ProviderStatus, error) {
 	var response accountPage
 	if err := c.getAccountsPage(ctx, 0, 1, &response); err != nil {
 		return billing.ProviderStatus{State: billing.ProviderStateUnavailable}, err
 	}
 	return billing.ProviderStatus{
-		State: billing.ProviderStateAvailable,
+		State:              billing.ProviderStateAvailable,
+		UsageDeliveryState: billing.UsageDeliveryStateUnknown,
+		Message:            "M360 account API reachable; pricing, costs, and invoices are configured but not probed; usage delivery is not monitored by fulfillment",
 		Capabilities: []billing.ProviderCapability{
 			billing.ProviderCapabilityPricing,
 			billing.ProviderCapabilityCosts,

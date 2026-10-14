@@ -65,7 +65,7 @@ func statusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "Show billing provider status",
-		Long:  "Show the configured billing provider, its availability, and supported operations.",
+		Long:  "Show provider API reachability, usage delivery state, and supported operations.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return withClient(cmd, func(ctx context.Context, conn *grpc.ClientConn, w io.Writer) error {
@@ -81,6 +81,9 @@ func statusCmd() *cobra.Command {
 					if _, err := fmt.Fprintf(w, "Message: %s\n", clean(status.GetMessage())); err != nil {
 						return err
 					}
+				}
+				if _, err := fmt.Fprintf(w, "Usage delivery: %s\n", enumSuffix(status.GetUsageDeliveryState().String(), "BILLING_USAGE_DELIVERY_STATE_")); err != nil {
+					return err
 				}
 				if status.GetLastSuccessfulCheck() != nil {
 					if _, err := fmt.Fprintf(w, "Last successful check: %s\n", status.GetLastSuccessfulCheck().AsTime().Format(time.RFC3339)); err != nil {
