@@ -501,7 +501,7 @@ func (s *PrivateClustersServer) Update(ctx context.Context,
 				return err
 			}
 		}
-		if s.pricingResolver != nil && s.updateAffectsNodeSets(mask) {
+		if s.pricingResolver != nil && s.updateAffectsNodeSets(mask) && clusterNodeSetBillingChanged(current, candidate) {
 			return coverageErrorForCreate(ctx, s.logger, s.pricingResolver.CheckCoverage(ctx, candidate.GetMetadata().GetTenant(), clusterCoverageRequests(candidate)))
 		}
 		return nil
@@ -518,6 +518,32 @@ func populateUnsetNodeSetVersions(nodeSets map[string]*privatev1.ClusterNodeSet,
 			nodeSet.SetVersion(cloneMessage(version))
 		}
 	}
+}
+
+// clusterNodeSetBillingChanged compares only the values used to price node sets.
+// Node-set names and other settings do not change the billable configuration.
+func clusterNodeSetBillingChanged(current, candidate *privatev1.Cluster) bool {
+	type billedNodeSet struct {
+		instanceType string
+		size         int32
+	}
+	counts := make(map[billedNodeSet]int)
+	for _, nodeSet := range current.GetSpec().GetNodeSets() {
+		counts[billedNodeSet{refKey(nodeSet.GetBaremetalInstanceType()), nodeSet.GetSize()}]++
+	}
+	for _, nodeSet := range candidate.GetSpec().GetNodeSets() {
+		key := billedNodeSet{refKey(nodeSet.GetBaremetalInstanceType()), nodeSet.GetSize()}
+		counts[key]--
+		if counts[key] < 0 {
+			return true
+		}
+	}
+	for _, count := range counts {
+		if count != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // prepareUpdatedClusterNodeSets retains resolved metadata for unchanged NodeSets and
