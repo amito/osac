@@ -19,9 +19,11 @@ package servers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	grpccodes "google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -31,6 +33,7 @@ import (
 
 	"github.com/osac-project/osac/fulfillment-service/internal/auth"
 	"github.com/osac-project/osac/fulfillment-service/internal/billing"
+	"github.com/osac-project/osac/fulfillment-service/internal/database"
 	"github.com/osac-project/osac/fulfillment-service/internal/uuid"
 	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
 	publicv1 "github.com/osac-project/osac/proto/gen/osac/public/v1"
@@ -151,6 +154,9 @@ func (s *PrivateTenantBillingAssignmentsServer) Create(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+	if err := s.lockActiveTenant(ctx, assignment.GetSpec().GetTenantId()); err != nil {
+		return nil, err
+	}
 	request = privatev1.TenantBillingAssignmentsCreateRequest_builder{Object: assignment}.Build()
 	var response *privatev1.TenantBillingAssignmentsCreateResponse
 	if err = s.generic.Create(ctx, request, &response); err != nil {
@@ -191,6 +197,9 @@ func (s *PrivateTenantBillingAssignmentsServer) Update(ctx context.Context,
 	next, err := newTenantBillingAssignment(requested, current.GetSpec().GetTenantId(),
 		requested.GetSpec().GetBillingAccountId(), effectiveAt)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.lockActiveTenant(ctx, current.GetSpec().GetTenantId()); err != nil {
 		return nil, err
 	}
 	closed := proto.Clone(current).(*privatev1.TenantBillingAssignment)
@@ -277,6 +286,30 @@ func (s *PrivateTenantBillingAssignmentsServer) prepareNewAssignment(
 		return nil, err
 	}
 	return newTenantBillingAssignment(requested, tenantID, accountID, timestamppb.New(time.Now().UTC()))
+}
+
+// Hold the tenant row lock until this request commits. Tenant Delete updates
+// the same row, so concurrent assignment creation either finishes before
+// Delete closes the assignment or sees the tenant's deletion timestamp.
+func (s *PrivateTenantBillingAssignmentsServer) lockActiveTenant(ctx context.Context, tenantID string) (err error) {
+	tx, err := database.TxFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.ReportError(&err)
+	var id string
+	err = tx.QueryRow(ctx, `
+		select id from tenants
+		where name = $1 and deletion_timestamp = 'epoch'
+		for update
+	`, tenantID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return grpcstatus.Error(grpccodes.NotFound, "active tenant was not found")
+	}
+	if err != nil {
+		return fmt.Errorf("failed to validate assignment tenant: %w", err)
+	}
+	return nil
 }
 
 func newTenantBillingAssignment(
