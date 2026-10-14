@@ -396,7 +396,7 @@ func (s *PrivateComputeInstancesServer) Create(ctx context.Context, request *pri
 		if s.pricingResolver == nil {
 			return nil
 		}
-		return s.pricingResolver.CheckCoverage(ctx, candidate.GetMetadata().GetTenant(), computeInstanceCoverageRequests(candidate))
+		return coverageErrorForCreate(ctx, s.logger, s.pricingResolver.CheckCoverage(ctx, candidate.GetMetadata().GetTenant(), computeInstanceCoverageRequests(candidate)))
 	})
 	if err != nil {
 		return
@@ -628,9 +628,15 @@ func (s *PrivateComputeInstancesServer) Update(ctx context.Context,
 			// During deletion, keep the existing visibility check without requiring dependencies
 			// to remain present or ready. Otherwise resolve and validate the final network once.
 			if current.GetMetadata().HasDeletionTimestamp() {
-				return s.validateNetworkReferencesTenancy(ctx, candidate)
+				if err := s.validateNetworkReferencesTenancy(ctx, candidate); err != nil {
+					return err
+				}
+			} else if err := s.validateNetworkReferencesState(ctx, candidate); err != nil {
+				return err
 			}
-			return s.validateNetworkReferencesState(ctx, candidate)
+		}
+		if s.pricingResolver != nil && updateIncludesField(request.GetUpdateMask(), "spec.instance_type") {
+			return coverageErrorForCreate(ctx, s.logger, s.pricingResolver.CheckCoverage(ctx, candidate.GetMetadata().GetTenant(), computeInstanceCoverageRequests(candidate)))
 		}
 		return nil
 	})

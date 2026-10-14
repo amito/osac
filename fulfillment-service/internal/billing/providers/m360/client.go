@@ -111,6 +111,9 @@ func (c *Client) GetAccount(ctx context.Context, reference string) (billing.Acco
 	}
 	var response m360Account
 	if err := c.requestJSON(ctx, http.MethodGet, c.accountURL(reference), nil, &response); err != nil {
+		if errors.Is(err, errM360NotFound) {
+			return billing.Account{}, fmt.Errorf("%w: M360 account not found", billing.ErrAccountNotFound)
+		}
 		return billing.Account{}, err
 	}
 	if response.ID == "" || response.Name == "" {
@@ -188,12 +191,18 @@ func (c *Client) requestJSON(ctx context.Context, method string, endpoint *url.U
 	}
 	result, err := c.transport.Do(request)
 	if err != nil {
-		return errors.New("M360 API request failed")
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return context.Canceled
+		}
+		return fmt.Errorf("%w: M360 API request failed", billing.ErrProviderUnavailable)
 	}
 	defer func() { _ = result.Body.Close() }()
 	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
 		if result.StatusCode == http.StatusNotFound {
 			return fmt.Errorf("%w: M360 API returned HTTP %d", errM360NotFound, result.StatusCode)
+		}
+		if result.StatusCode == http.StatusRequestTimeout || result.StatusCode == http.StatusTooManyRequests || result.StatusCode >= http.StatusInternalServerError {
+			return fmt.Errorf("%w: M360 API returned HTTP %d", billing.ErrProviderUnavailable, result.StatusCode)
 		}
 		return fmt.Errorf("M360 API returned HTTP %d", result.StatusCode)
 	}

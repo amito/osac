@@ -317,7 +317,7 @@ func (s *PrivateClustersServer) Create(ctx context.Context, request *privatev1.C
 		if s.pricingResolver == nil {
 			return nil
 		}
-		return s.pricingResolver.CheckCoverage(ctx, candidate.GetMetadata().GetTenant(), clusterCoverageRequests(candidate))
+		return coverageErrorForCreate(ctx, s.logger, s.pricingResolver.CheckCoverage(ctx, candidate.GetMetadata().GetTenant(), clusterCoverageRequests(candidate)))
 	})
 	if err != nil {
 		return
@@ -500,6 +500,9 @@ func (s *PrivateClustersServer) Update(ctx context.Context,
 			if err := s.validatePullSecretSecret(ctx, candidate, allowShared); err != nil {
 				return err
 			}
+		}
+		if s.pricingResolver != nil && s.updateAffectsNodeSets(mask) {
+			return coverageErrorForCreate(ctx, s.logger, s.pricingResolver.CheckCoverage(ctx, candidate.GetMetadata().GetTenant(), clusterCoverageRequests(candidate)))
 		}
 		return nil
 	})
