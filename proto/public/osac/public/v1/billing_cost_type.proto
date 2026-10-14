@@ -19,6 +19,7 @@ syntax = "proto3";
 package osac.public.v1;
 
 import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
 
 // BillingCost is an aggregated, provider-calculated cost for one OSAC service,
 // project, and resource over the requested period.
@@ -36,4 +37,6 @@ message BillingCost {
   string currency_code = 5 [(buf.validate.field).string = {len: 3}];
   string period_start = 6;
   string period_end = 7;
+  // Time OSAC successfully fetched this cost result from the provider.
+  google.protobuf.Timestamp as_of = 8;
 }

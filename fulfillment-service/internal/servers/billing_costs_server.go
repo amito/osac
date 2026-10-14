@@ -23,6 +23,7 @@ import (
 
 	grpccodes "google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/auth"
 	"github.com/osac-project/osac/fulfillment-service/internal/billing"
@@ -156,6 +157,7 @@ func (s *BillingCostsServer) List(ctx context.Context,
 		s.logger.ErrorContext(ctx, "failed to list provider costs")
 		return nil, grpcstatus.Error(grpccodes.Unavailable, "provider costs are unavailable")
 	}
+	costsAsOf := timestamppb.New(time.Now())
 	visibility, err := s.tenancy.DetermineVisibility(ctx)
 	if err != nil {
 		s.logger.ErrorContext(ctx, "failed to determine billing project visibility", slog.Any("error", err))
@@ -211,6 +213,7 @@ func (s *BillingCostsServer) List(ctx context.Context,
 			CurrencyCode: cost.CurrencyCode,
 			PeriodStart:  cost.PeriodStart,
 			PeriodEnd:    cost.PeriodEnd,
+			AsOf:         costsAsOf,
 		}.Build())
 	}
 	size, ok := catalogPricingInputTotal(len(items))

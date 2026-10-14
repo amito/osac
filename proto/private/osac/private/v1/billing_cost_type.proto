@@ -20,6 +20,7 @@ package osac.private.v1;
 
 import "buf/validate/validate.proto";
 import "cleanapi/cleanapi.proto";
+import "google/protobuf/timestamp.proto";
 
 option (cleanapi.file).package = "osac.public.v1";
 
@@ -39,4 +40,6 @@ message BillingCost {
   string currency_code = 5 [(buf.validate.field).string = {len: 3}];
   string period_start = 6;
   string period_end = 7;
+  // Time OSAC successfully fetched this cost result from the provider.
+  google.protobuf.Timestamp as_of = 8;
 }

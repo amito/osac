@@ -20,6 +20,7 @@ package osac.private.v1;
 
 import "buf/validate/validate.proto";
 import "cleanapi/cleanapi.proto";
+import "google/protobuf/timestamp.proto";
 
 option (cleanapi.file).package = "osac.public.v1";
 
@@ -39,6 +40,10 @@ message CatalogItemPricing {
   // Whether user-selectable configuration values can change the resulting
   // price.
   bool price_may_vary = 4;
+
+  // Time OSAC fetched the current provider pricing. Unset for stale or
+  // unavailable pricing.
+  google.protobuf.Timestamp as_of = 5;
 }
 
 // CatalogPricingStatus describes the freshness and availability of a catalog
