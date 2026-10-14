@@ -269,7 +269,6 @@ func (c *Client) getContractRateCard(ctx context.Context, contractID, serviceID,
 	if response.Currency == "" {
 		return m360RateCard{}, false, errors.New("M360 contract rate-card response did not contain a currency")
 	}
-	response.IsCurrent = true
 	return response, true, nil
 }
 
