@@ -945,6 +945,9 @@ var _ = Describe("Rego authorization interceptor", func() {
 				claim jwt.MapClaims
 			}{
 				{name: "tenant-user"},
+				{name: "tenant-admin", claim: jwt.MapClaims{
+					"realm_access": map[string]any{"roles": []any{"tenant-admin"}},
+				}},
 				{name: "provider-admin", claim: jwt.MapClaims{"groups": []any{"admins"}}},
 			}
 			for _, identity := range identities {
@@ -990,11 +993,49 @@ var _ = Describe("Rego authorization interceptor", func() {
 			}
 		})
 
-		It("denies regular users from reading billing invoices", func(ctx context.Context) {
-			token := createKeycloakUserToken("tenant-a", "regular-user", nil)
+		It("denies regular users and IdP managers from reading billing invoices", func(ctx context.Context) {
+			identities := []struct {
+				name  string
+				claim jwt.MapClaims
+			}{
+				{name: "regular-user"},
+				{name: "tenant-idp-manager", claim: jwt.MapClaims{
+					"realm_access": map[string]any{"roles": []any{"tenant-idp-manager"}},
+				}},
+			}
+			for _, identity := range identities {
+				token := createKeycloakUserToken("tenant-a", identity.name, identity.claim)
+				for _, method := range []string{
+					"/osac.public.v1.BillingInvoices/List",
+					"/osac.public.v1.BillingInvoices/Get",
+				} {
+					ctx = ContextWithToken(ctx, token)
+					handled := false
+					_, err := interceptor.UnaryServer(
+						ctx,
+						nil,
+						&grpc.UnaryServerInfo{FullMethod: method},
+						func(context.Context, any) (any, error) {
+							handled = true
+							return nil, nil
+						},
+					)
+					status, ok := grpcstatus.FromError(err)
+					Expect(ok).To(BeTrue())
+					Expect(status.Code()).To(Equal(grpccodes.PermissionDenied))
+					Expect(handled).To(BeFalse())
+				}
+			}
+		})
+
+		It("denies tenant IdP managers billing costs, pricing queries, and estimates", func(ctx context.Context) {
+			token := createKeycloakUserToken("tenant-a", "tenant-idp-manager", jwt.MapClaims{
+				"realm_access": map[string]any{"roles": []any{"tenant-idp-manager"}},
+			})
 			for _, method := range []string{
-				"/osac.public.v1.BillingInvoices/List",
-				"/osac.public.v1.BillingInvoices/Get",
+				"/osac.public.v1.BillingCosts/List",
+				"/osac.public.v1.PricingQueries/Create",
+				"/osac.public.v1.PriceEstimates/Create",
 			} {
 				ctx = ContextWithToken(ctx, token)
 				handled := false
@@ -1008,27 +1049,38 @@ var _ = Describe("Rego authorization interceptor", func() {
 					},
 				)
 				status, ok := grpcstatus.FromError(err)
-				Expect(ok).To(BeTrue())
+				Expect(ok).To(BeTrue(), "%s should be denied to IdP managers", method)
 				Expect(status.Code()).To(Equal(grpccodes.PermissionDenied))
 				Expect(handled).To(BeFalse())
 			}
 		})
 
 		It("allows tenant users to list project-scoped billing costs", func(ctx context.Context) {
-			token := createKeycloakUserToken("tenant-a", "tenant-user", nil)
-			ctx = ContextWithToken(ctx, token)
-			handled := false
-			_, err := interceptor.UnaryServer(
-				ctx,
-				nil,
-				&grpc.UnaryServerInfo{FullMethod: "/osac.public.v1.BillingCosts/List"},
-				func(context.Context, any) (any, error) {
-					handled = true
-					return nil, nil
-				},
-			)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(handled).To(BeTrue())
+			identities := []struct {
+				name  string
+				claim jwt.MapClaims
+			}{
+				{name: "tenant-user"},
+				{name: "tenant-admin", claim: jwt.MapClaims{
+					"realm_access": map[string]any{"roles": []any{"tenant-admin"}},
+				}},
+			}
+			for _, identity := range identities {
+				token := createKeycloakUserToken("tenant-a", identity.name, identity.claim)
+				ctx = ContextWithToken(ctx, token)
+				handled := false
+				_, err := interceptor.UnaryServer(
+					ctx,
+					nil,
+					&grpc.UnaryServerInfo{FullMethod: "/osac.public.v1.BillingCosts/List"},
+					func(context.Context, any) (any, error) {
+						handled = true
+						return nil, nil
+					},
+				)
+				Expect(err).NotTo(HaveOccurred(), "%s should be allowed to list billing costs", identity.name)
+				Expect(handled).To(BeTrue())
+			}
 		})
 
 		DescribeTable(

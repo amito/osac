@@ -214,9 +214,6 @@ allow if {
   grpc_method in {
     "/osac.public.v1.AddOnOperators/Get",
     "/osac.public.v1.AddOnOperators/List",
-    "/osac.public.v1.BillingCosts/List",
-    "/osac.public.v1.PricingQueries/Create",
-    "/osac.public.v1.PriceEstimates/Create",
     "/osac.public.v1.BareMetalInstanceCatalogItems/Get",
     "/osac.public.v1.BareMetalInstanceCatalogItems/List",
     "/osac.public.v1.BareMetalInstanceTemplates/Get",
@@ -306,6 +303,24 @@ allow if {
     "/osac.public.v1.Volumes/List",
     "/osac.public.v1.Volumes/Update",
   }
+}
+
+# Billing cost and estimate APIs are available to regular tenant clients and
+# tenant admins, but not IdP managers who otherwise inherit client methods.
+tenant_billing_client_methods := {
+  "/osac.public.v1.BillingCosts/List",
+  "/osac.public.v1.PricingQueries/Create",
+  "/osac.public.v1.PriceEstimates/Create",
+}
+
+allow if {
+  is_client
+  grpc_method in tenant_billing_client_methods
+}
+
+allow if {
+  is_tenant_admin
+  grpc_method in tenant_billing_client_methods
 }
 
 # Tenant admins can manage catalog items, users, identity providers,
