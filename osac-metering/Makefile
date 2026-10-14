@@ -11,6 +11,7 @@ all: test lint
 
 helm-lint:
 	helm lint charts/osac-metering/
+	bash scripts/test-m360-kafka-topics.sh
 
 test:
 	$(MAKE) -C schema test

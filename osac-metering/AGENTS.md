@@ -41,6 +41,7 @@ See [suite boundaries and coverage gaps](../docs/INTEGRATION-TESTING.md#osac-met
 | Event schema or transition mapping | Unit across affected modules | `make test` |
 | Projection/database code | Component integration (database) | `make test` |
 | Fulfillment client CA parsing, TLS verification, or bundle rotation | Unit with local TLS endpoint plus Helm render | `make test` and `make -C ../osac-installer fulfillment-trust-render-test`; deployed Watch contract remains [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843) |
+| M360 Kafka topic values and environment wiring | Unit and chart render | `make test` and `make helm-lint` |
 | Kafka producer/consumer, CloudEvents transport, offsets, retries, or DLQ | Component integration | Required suite is currently unavailable; track [OSAC-4846](https://redhat.atlassian.net/browse/OSAC-4846) |
 | Fulfillment Watch or gRPC event ingestion | Contract or component integration | Required suite is currently unavailable; track the relevant [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843) task |
 | Provider adapters | Unit plus component/E2E coverage for the provider boundary | `make test` and the qualifying provider suite |
@@ -74,7 +75,7 @@ The M360 adapter supports `M360_OUTPUT_PROTOCOL=rest|kafka` (default `rest`).
 Translation returns route keys for VMaaS, CaaS, BMaaS, external IP, NAT
 gateway, Volume, and MaaS inference. REST maps these keys to the existing M360
 Usage API endpoints. Kafka output currently configures topics for `vmaas`,
-`caas`, and `maas`.
+`caas`, `bmaas`, `externalip`, `natgateway`, `volume`, and `maas`.
 
 The Helm chart configures the output with `m360Adapter.output.*`. REST requires
 `m360Adapter.m360.apiUrl` and `m360Adapter.m360.apiKeySecret`. Kafka requires

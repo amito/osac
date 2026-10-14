@@ -78,4 +78,8 @@ m360Adapter:
       topics:
         vmaas: "m360.metering.vmaas"
         caas: "m360.metering.caas"
+        bmaas: "m360.metering.bmaas"
+        externalip: "m360.metering.externalip"
+        natgateway: "m360.metering.natgateway"
+        volume: "m360.metering.volume"
         maas: "m360.metering.maas"

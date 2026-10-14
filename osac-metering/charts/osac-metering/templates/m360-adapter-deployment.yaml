@@ -160,6 +160,14 @@ spec:
               value: {{ .Values.m360Adapter.output.kafka.topics.vmaas | default "m360.metering.vmaas" | quote }}
             - name: M360_KAFKA_TOPIC_CAAS
               value: {{ .Values.m360Adapter.output.kafka.topics.caas | default "m360.metering.caas" | quote }}
+            - name: M360_KAFKA_TOPIC_BMAAS
+              value: {{ .Values.m360Adapter.output.kafka.topics.bmaas | default "m360.metering.bmaas" | quote }}
+            - name: M360_KAFKA_TOPIC_EXTERNALIP
+              value: {{ .Values.m360Adapter.output.kafka.topics.externalip | default "m360.metering.externalip" | quote }}
+            - name: M360_KAFKA_TOPIC_NATGATEWAY
+              value: {{ .Values.m360Adapter.output.kafka.topics.natgateway | default "m360.metering.natgateway" | quote }}
+            - name: M360_KAFKA_TOPIC_VOLUME
+              value: {{ .Values.m360Adapter.output.kafka.topics.volume | default "m360.metering.volume" | quote }}
             - name: M360_KAFKA_TOPIC_MAAS
               value: {{ .Values.m360Adapter.output.kafka.topics.maas | default "m360.metering.maas" | quote }}
             {{- end }}

@@ -219,6 +219,11 @@ the certificate. The Kind
 `SUITE=fulfillment` target exercises deployed startup and API behavior, subject
 to the profile's configured CA and enabled services.
 
+The `make metering-topics-render-test` Helm contract renders the umbrella chart
+with default and overridden M360 Kafka topic values. It asserts that BMaaS,
+External IP, NAT Gateway, and Storage Volume topics reach the M360 adapter
+environment. It does not connect to Kafka or verify topic existence or ACLs.
+
 ### OSAC-5343 deployed enablement coverage
 
 The release E2E path adds these assertions to existing user journeys. The
@@ -531,6 +536,7 @@ Touched-area requirements: [component guide](../osac-metering/AGENTS.md#integrat
 | Component integration | No dedicated real-Kafka component suite currently exists | — | Kafka, CloudEvents delivery, fulfillment Watch, offset commits, retries, and DLQ behavior are currently tested with mocks. |
 | Contract | No dedicated contract suite; track [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843)/[OSAC-4846](https://redhat.atlassian.net/browse/OSAC-4846) for fulfillment Watch and Kafka boundaries | No deployed Watch or Kafka protocol endpoint is exercised | Mock streams and Kafka mocks are used. |
 | E2E | Cross-component OSAC metering/E2E deployment | The deployed metering pipeline and its configured Kafka/provider dependencies | Depends on the installer environment and enabled metering path. |
+| Helm render contract | `make -C osac-metering helm-lint`; `make -C osac-installer metering-topics-render-test` | Default and custom per-resource M360 topic values reach the adapter environment through both charts | Does not connect to Kafka or check topic existence or ACLs. |
 
 ### Coverage notes
 

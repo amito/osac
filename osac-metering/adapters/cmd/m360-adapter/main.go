@@ -44,6 +44,18 @@ import (
 	"github.com/osac-project/osac-metering/adapters/m360"
 )
 
+func m360KafkaTopicsFromEnv() map[string]string {
+	return map[string]string{
+		"vmaas":      envutil.EnvOrDefault("M360_KAFKA_TOPIC_VMAAS", "m360.metering.vmaas"),
+		"caas":       envutil.EnvOrDefault("M360_KAFKA_TOPIC_CAAS", "m360.metering.caas"),
+		"bmaas":      envutil.EnvOrDefault("M360_KAFKA_TOPIC_BMAAS", "m360.metering.bmaas"),
+		"externalip": envutil.EnvOrDefault("M360_KAFKA_TOPIC_EXTERNALIP", "m360.metering.externalip"),
+		"natgateway": envutil.EnvOrDefault("M360_KAFKA_TOPIC_NATGATEWAY", "m360.metering.natgateway"),
+		"volume":     envutil.EnvOrDefault("M360_KAFKA_TOPIC_VOLUME", "m360.metering.volume"),
+		"maas":       envutil.EnvOrDefault("M360_KAFKA_TOPIC_MAAS", "m360.metering.maas"),
+	}
+}
+
 func main() {
 	brokers := envutil.RequireEnv("KAFKA_BROKERS")
 	logger := stdr.New(log.New(os.Stderr, "", log.LstdFlags))
@@ -86,11 +98,7 @@ func main() {
 			log.Fatalf("M360 Kafka producer: %v", err)
 		}
 
-		m360Topics := map[string]string{
-			"vmaas": envutil.EnvOrDefault("M360_KAFKA_TOPIC_VMAAS", "m360.metering.vmaas"),
-			"caas":  envutil.EnvOrDefault("M360_KAFKA_TOPIC_CAAS", "m360.metering.caas"),
-			"maas":  envutil.EnvOrDefault("M360_KAFKA_TOPIC_MAAS", "m360.metering.maas"),
-		}
+		m360Topics := m360KafkaTopicsFromEnv()
 		adapter = m360.NewKafkaAdapter(producer, client, m360Topics, logger)
 		log.Printf("M360 output: Kafka brokers=%v topics=%v", m360BrokerList, m360Topics)
 

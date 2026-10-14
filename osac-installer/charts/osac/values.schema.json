@@ -1915,6 +1915,26 @@
                           "description": "Kafka topic for CaaS events",
                           "default": "m360.metering.caas"
                         },
+                        "bmaas": {
+                          "type": "string",
+                          "description": "Kafka topic for BMaaS events",
+                          "default": "m360.metering.bmaas"
+                        },
+                        "externalip": {
+                          "type": "string",
+                          "description": "Kafka topic for External IP events",
+                          "default": "m360.metering.externalip"
+                        },
+                        "natgateway": {
+                          "type": "string",
+                          "description": "Kafka topic for NAT Gateway events",
+                          "default": "m360.metering.natgateway"
+                        },
+                        "volume": {
+                          "type": "string",
+                          "description": "Kafka topic for Storage Volume events",
+                          "default": "m360.metering.volume"
+                        },
                         "maas": {
                           "type": "string",
                           "description": "Kafka topic for MaaS events",

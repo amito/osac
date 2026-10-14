@@ -588,7 +588,7 @@ dev-full-render-test: helm-deps ## Check dev-full TLS and Helm post-rendering
 	./scripts/test-dev-full-render.sh
 
 .PHONY: helm-validate
-helm-validate: helm-lint csi-render-test helm-networking-test fulfillment-trust-render-test fulfillment-auth-test mce-render-test dev-full-render-test ## Validate all charts (lint + template)
+helm-validate: helm-lint csi-render-test helm-networking-test fulfillment-trust-render-test fulfillment-auth-test mce-render-test dev-full-render-test metering-topics-render-test ## Validate all charts (lint + template)
 	@for d in values/*/; do \
 		infra="$${d}infra.yaml"; \
 		[ -f "$$infra" ] && echo "Validating $$infra..." && \
@@ -604,3 +604,7 @@ helm-validate: helm-lint csi-render-test helm-networking-test fulfillment-trust-
 .PHONY: helm-networking-test
 helm-networking-test: helm-deps ## Test networking fabricManager/k8sManager validation and derivation
 	./scripts/test-networking-values.sh
+
+.PHONY: metering-topics-render-test
+metering-topics-render-test: helm-deps ## Test M360 topic values through the umbrella chart
+	python3 scripts/test-metering-topics-render.py

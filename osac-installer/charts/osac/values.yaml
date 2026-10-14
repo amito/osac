@@ -387,6 +387,14 @@ metering:
     repository: ghcr.io/osac-project/metering-service
     tag: latest  # PLACEHOLDER -- overwritten at release time by osac-build-and-publish.yaml
     pullPolicy: Always
+  m360Adapter:
+    output:
+      kafka:
+        topics:
+          bmaas: "m360.metering.bmaas"
+          externalip: "m360.metering.externalip"
+          natgateway: "m360.metering.natgateway"
+          volume: "m360.metering.volume"
 
 # --- CSI Driver ---
 csiDriver:
