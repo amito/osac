@@ -97,11 +97,11 @@ var _ = Describe("M360 billing account client", func() {
 			}))
 			DeferCleanup(server.Close)
 
-			client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+			client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = client.GetAccount(context.Background(), "account-7")
 			Expect(errors.Is(err, want)).To(BeTrue())
-			Expect(errors.Is(err, billing.ErrProviderUnavailable)).To(Equal(want == billing.ErrProviderUnavailable))
+			Expect(errors.Is(err, billing.ErrProviderUnavailable)).To(Equal(errors.Is(want, billing.ErrProviderUnavailable)))
 		},
 		Entry("missing account", http.StatusNotFound, "", billing.ErrAccountNotFound),
 		Entry("rate limit", http.StatusTooManyRequests, "", billing.ErrProviderUnavailable),
@@ -122,7 +122,7 @@ var _ = Describe("M360 billing account client", func() {
 			}))
 			DeferCleanup(server.Close)
 
-			client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+			client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = billing.RetryProviderRead(context.Background(), client.GetStatus)
 			Expect(err).NotTo(HaveOccurred())
@@ -145,7 +145,7 @@ var _ = Describe("M360 billing account client", func() {
 			}))
 			DeferCleanup(server.Close)
 
-			client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+			client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = billing.RetryProviderRead(context.Background(), client.GetStatus)
 			Expect(err).To(HaveOccurred())
@@ -168,7 +168,7 @@ var _ = Describe("M360 billing account client", func() {
 		DeferCleanup(server.Close)
 
 		client, err := NewClient(Config{
-			BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1",
+			BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1",
 			HTTPClient: &http.Client{Timeout: 10 * time.Millisecond},
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -183,7 +183,7 @@ var _ = Describe("M360 billing account client", func() {
 			_, _ = fmt.Fprint(writer, `{"success":true,"data":{}}`)
 		}))
 		DeferCleanup(server.Close)
-		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 		_, err = client.GetAccount(context.Background(), "account-7")
 		Expect(err).To(HaveOccurred())
@@ -195,7 +195,7 @@ var _ = Describe("M360 billing account client", func() {
 			writer.WriteHeader(http.StatusBadRequest)
 		}))
 		DeferCleanup(server.Close)
-		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 		_, err = client.GetAccount(context.Background(), "account-7")
 		Expect(err).To(HaveOccurred())
@@ -344,7 +344,7 @@ var _ = Describe("M360 billing account client", func() {
 		}))
 		DeferCleanup(server.Close)
 
-		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
 		items, err := client.ListRateCardItems(context.Background(), billing.RateCardQuery{
@@ -387,7 +387,7 @@ var _ = Describe("M360 billing account client", func() {
 		}))
 		DeferCleanup(server.Close)
 
-		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
 		items, err := client.ListRateCardItems(context.Background(), billing.RateCardQuery{
@@ -429,7 +429,7 @@ var _ = Describe("M360 billing account client", func() {
 		}))
 		DeferCleanup(server.Close)
 
-		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
 		items, err := client.ListRateCardItems(context.Background(), billing.RateCardQuery{
@@ -462,7 +462,7 @@ var _ = Describe("M360 billing account client", func() {
 		}))
 		DeferCleanup(server.Close)
 
-		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
 		_, err = client.ListRateCardItems(context.Background(), billing.RateCardQuery{
@@ -493,7 +493,7 @@ var _ = Describe("M360 billing account client", func() {
 			}))
 			DeferCleanup(server.Close)
 
-			client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+			client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 			Expect(err).NotTo(HaveOccurred())
 
 			_, err = client.ListRateCardItems(context.Background(), billing.RateCardQuery{
@@ -528,7 +528,7 @@ var _ = Describe("M360 billing account client", func() {
 		}))
 		DeferCleanup(server.Close)
 
-		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
 		items, err := client.ListRateCardItems(context.Background(), billing.RateCardQuery{
@@ -554,7 +554,7 @@ var _ = Describe("M360 billing account client", func() {
 		}))
 		DeferCleanup(server.Close)
 
-		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
 		_, err = client.ListRateCardItems(context.Background(), billing.RateCardQuery{
@@ -583,7 +583,7 @@ var _ = Describe("M360 billing account client", func() {
 		}))
 		DeferCleanup(server.Close)
 
-		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
 		items, err := client.ListRateCardItems(context.Background(), billing.RateCardQuery{
@@ -617,7 +617,7 @@ var _ = Describe("M360 billing account client", func() {
 		}))
 		DeferCleanup(server.Close)
 
-		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
 		items, err := client.ListRateCardItems(context.Background(), billing.RateCardQuery{

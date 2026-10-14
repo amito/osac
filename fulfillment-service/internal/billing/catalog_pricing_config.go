@@ -60,33 +60,66 @@ func ApplyComputeInstancePricingConfiguration(
 	request.Supported = true
 	delete(request.Dimensions, "additional_disk_size_gib")
 	delete(request.Dimensions, "additional_storage_tier")
-	if err := applyReferencePricingSelection(request.Dimensions, "image_ref", spec.GetDiskImage().GetName(), fields.GetDiskImage().GetLocked().GetName(), fields.GetDiskImage().GetEditable() != nil); err != nil {
+	if err := applyComputeInstancePricingSelections(request.Dimensions, spec, fields); err != nil {
 		return nil, err
 	}
-	if err := applyReferencePricingSelection(request.Dimensions, "instance_type", spec.GetInstanceType().GetName(), fields.GetInstanceType().GetLocked().GetName(), fields.GetInstanceType().GetEditable() != nil); err != nil {
+	additionalDisks := computeInstanceAdditionalDisks(spec, fields.GetAdditionalDisks())
+	if err := validateComputeInstanceAdditionalDisks(additionalDisks, fields.GetAdditionalDisks()); err != nil {
 		return nil, err
 	}
-	if disk := spec.GetBootDisk(); disk != nil {
-		policy := fields.GetBootDisk()
-		if disk.HasSizeGib() {
-			lockedSize := policy.GetSizeGib().GetLocked()
-			selectedSize := disk.GetSizeGib()
-			if policy.GetSizeGib().HasLocked() && lockedSize != selectedSize {
-				return nil, ErrInvalidPricingConfiguration
-			}
-			if !policy.GetSizeGib().HasLocked() && policy.GetSizeGib().GetEditable() == nil {
-				return nil, ErrInvalidPricingConfiguration
-			}
-			request.Dimensions["boot_disk_size_gib"] = strconv.FormatInt(int64(selectedSize), 10)
+	requests, err := computeInstancePricingRequests(request, additionalDisks)
+	if err != nil {
+		return nil, err
+	}
+	return requests, nil
+}
+
+func applyComputeInstancePricingSelections(
+	dimensions map[string]string,
+	spec *publicv1.ComputeInstanceSpec,
+	fields *publicv1.ComputeInstanceCatalogItemFields,
+) error {
+	if err := applyReferencePricingSelection(dimensions, "image_ref", spec.GetDiskImage().GetName(), fields.GetDiskImage().GetLocked().GetName(), fields.GetDiskImage().GetEditable() != nil); err != nil {
+		return err
+	}
+	if err := applyReferencePricingSelection(dimensions, "instance_type", spec.GetInstanceType().GetName(), fields.GetInstanceType().GetLocked().GetName(), fields.GetInstanceType().GetEditable() != nil); err != nil {
+		return err
+	}
+	return applyComputeInstanceBootDiskPricingSelection(dimensions, spec.GetBootDisk(), fields.GetBootDisk())
+}
+
+func applyComputeInstanceBootDiskPricingSelection(
+	dimensions map[string]string,
+	disk *publicv1.ComputeInstanceDisk,
+	policy *publicv1.ComputeInstanceBootDiskFieldPolicies,
+) error {
+	if disk == nil {
+		return nil
+	}
+	if disk.HasSizeGib() {
+		lockedSize := policy.GetSizeGib().GetLocked()
+		selectedSize := disk.GetSizeGib()
+		if policy.GetSizeGib().HasLocked() && lockedSize != selectedSize {
+			return ErrInvalidPricingConfiguration
 		}
-		if tier := disk.GetStorageTier().GetName(); tier != "" {
-			if err := applyReferencePricingSelection(request.Dimensions, "storage_tier", tier, policy.GetStorageTier().GetLocked().GetName(), policy.GetStorageTier().GetEditable() != nil); err != nil {
-				return nil, err
-			}
+		if !policy.GetSizeGib().HasLocked() && policy.GetSizeGib().GetEditable() == nil {
+			return ErrInvalidPricingConfiguration
+		}
+		dimensions["boot_disk_size_gib"] = strconv.FormatInt(int64(selectedSize), 10)
+	}
+	if tier := disk.GetStorageTier().GetName(); tier != "" {
+		if err := applyReferencePricingSelection(dimensions, "storage_tier", tier, policy.GetStorageTier().GetLocked().GetName(), policy.GetStorageTier().GetEditable() != nil); err != nil {
+			return err
 		}
 	}
+	return nil
+}
+
+func computeInstanceAdditionalDisks(
+	spec *publicv1.ComputeInstanceSpec,
+	policy *publicv1.ComputeInstanceDiskListFieldPolicy,
+) []*publicv1.ComputeInstanceDisk {
 	additionalDisks := spec.GetAdditionalDisks()
-	policy := fields.GetAdditionalDisks()
 	if len(additionalDisks) == 0 && policy != nil {
 		if locked := policy.GetLocked(); locked != nil {
 			additionalDisks = locked.GetItems()
@@ -94,25 +127,43 @@ func ApplyComputeInstancePricingConfiguration(
 			additionalDisks = editable.GetDefaultValue().GetItems()
 		}
 	}
+	return additionalDisks
+}
+
+func validateComputeInstanceAdditionalDisks(
+	additionalDisks []*publicv1.ComputeInstanceDisk,
+	policy *publicv1.ComputeInstanceDiskListFieldPolicy,
+) error {
 	if len(additionalDisks) == 0 {
-		return []CatalogPricingRequest{request}, nil
+		return nil
 	}
 	if policy == nil {
-		return nil, ErrInvalidPricingConfiguration
+		return ErrInvalidPricingConfiguration
 	}
 	if locked := policy.GetLocked(); locked != nil {
 		items := locked.GetItems()
 		if len(items) != len(additionalDisks) {
-			return nil, ErrInvalidPricingConfiguration
+			return ErrInvalidPricingConfiguration
 		}
 		for index, disk := range additionalDisks {
-			if disk == nil || items[index] == nil || items[index].GetSizeGib() != disk.GetSizeGib() || items[index].GetStorageTier().GetName() != disk.GetStorageTier().GetName() {
-				return nil, ErrInvalidPricingConfiguration
+			if !computeInstanceAdditionalDiskMatches(disk, items[index]) {
+				return ErrInvalidPricingConfiguration
 			}
 		}
 	} else if policy.GetEditable() == nil {
-		return nil, ErrInvalidPricingConfiguration
+		return ErrInvalidPricingConfiguration
 	}
+	return nil
+}
+
+func computeInstanceAdditionalDiskMatches(disk, expected *publicv1.ComputeInstanceDisk) bool {
+	return disk != nil && expected != nil && expected.GetSizeGib() == disk.GetSizeGib() && expected.GetStorageTier().GetName() == disk.GetStorageTier().GetName()
+}
+
+func computeInstancePricingRequests(
+	request CatalogPricingRequest,
+	additionalDisks []*publicv1.ComputeInstanceDisk,
+) ([]CatalogPricingRequest, error) {
 	requests := []CatalogPricingRequest{request}
 	for index, disk := range additionalDisks {
 		if disk == nil {

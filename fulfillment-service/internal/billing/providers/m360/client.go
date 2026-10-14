@@ -46,6 +46,7 @@ type Config struct {
 	APIKey            string
 	HTTPClient        *http.Client
 	MetricsRegisterer prometheus.Registerer
+	AllowInsecureHTTP bool // test-only opt-in for local httptest servers; production wiring leaves this false.
 }
 
 // Client translates the M360 external account API into OSAC's billing model.
@@ -60,7 +61,8 @@ var _ billing.Provider = (*Client)(nil)
 // NewClient creates a billing client for the M360 external API.
 func NewClient(config Config) (*Client, error) {
 	transport, err := m360http.NewClient(m360http.Config{
-		BaseURL: config.BaseURL, APIVersion: config.APIVersion, APIKey: config.APIKey, HTTPClient: config.HTTPClient,
+		BaseURL: config.BaseURL, APIVersion: config.APIVersion, APIKey: config.APIKey,
+		HTTPClient: config.HTTPClient, AllowInsecureHTTP: config.AllowInsecureHTTP,
 	})
 	if err != nil {
 		return nil, err

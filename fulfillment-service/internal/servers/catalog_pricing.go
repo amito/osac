@@ -193,12 +193,17 @@ func (r *CatalogPricingResolver) Resolve(
 		return results
 	}
 
+	lookupsByService, expected, failed := catalogPricingLookupsByService(requests)
+	staleResults, asOfTimes, components := r.resolveCatalogPricingLookups(ctx, account, requests, lookupsByService, failed)
+	return buildCatalogPricingResults(results, requests, account, expected, failed, staleResults, asOfTimes, components)
+}
+
+func catalogPricingLookupsByService(
+	requests []CatalogPricingRequest,
+) (map[string][]catalogPricingLookup, []int, []bool) {
 	lookupsByService := make(map[string][]catalogPricingLookup)
 	expected := make([]int, len(requests))
 	failed := make([]bool, len(requests))
-	staleResults := make([]bool, len(requests))
-	asOfTimes := make([]time.Time, len(requests))
-	components := make([][]*publicv1.CatalogPriceComponent, len(requests))
 	for index, request := range requests {
 		if !request.Supported || request.Service == "" {
 			failed[index] = true
@@ -216,12 +221,29 @@ func (r *CatalogPricingResolver) Resolve(
 			})
 		}
 	}
+	return lookupsByService, expected, failed
+}
+
+func sortedCatalogPricingLookupServices(lookupsByService map[string][]catalogPricingLookup) []string {
 	services := make([]string, 0, len(lookupsByService))
 	for service := range lookupsByService {
 		services = append(services, service)
 	}
 	sort.Strings(services)
-	for _, service := range services {
+	return services
+}
+
+func (r *CatalogPricingResolver) resolveCatalogPricingLookups(
+	ctx context.Context,
+	account billing.AssignedAccount,
+	requests []CatalogPricingRequest,
+	lookupsByService map[string][]catalogPricingLookup,
+	failed []bool,
+) ([]bool, []time.Time, [][]*publicv1.CatalogPriceComponent) {
+	staleResults := make([]bool, len(requests))
+	asOfTimes := make([]time.Time, len(requests))
+	components := make([][]*publicv1.CatalogPriceComponent, len(requests))
+	for _, service := range sortedCatalogPricingLookupServices(lookupsByService) {
 		rateItems, usedStale, fetchedAt := r.getCatalogRateCardItems(ctx, account, service)
 		if rateItems == nil {
 			for _, lookup := range lookupsByService[service] {
@@ -229,30 +251,57 @@ func (r *CatalogPricingResolver) Resolve(
 			}
 			continue
 		}
-		for _, lookup := range lookupsByService[service] {
-			if !usedStale {
-				asOfTimes[lookup.requestIndex] = fetchedAt
-			}
-			matched, matchErr := r.resolveRateCardItem(rateItems, service, account.CurrencyCode, lookup.request.Dimensions)
-			if matchErr != nil {
-				failed[lookup.requestIndex] = true
-				continue
-			}
-			amount, amountErr := billing.ComponentRateAmount(matched, lookup.request.Dimensions)
-			if amountErr != nil {
-				failed[lookup.requestIndex] = true
-				continue
-			}
-			description := lookup.request.Description
-			if description == "" {
-				description = requests[lookup.requestIndex].Description
-			}
-			components[lookup.requestIndex] = append(components[lookup.requestIndex], publicv1.CatalogPriceComponent_builder{
-				Amount: amount, Unit: string(matched.Unit), Description: description,
-			}.Build())
-			staleResults[lookup.requestIndex] = staleResults[lookup.requestIndex] || usedStale
-		}
+		r.resolveCatalogPricingService(requests, account, service, lookupsByService[service], rateItems, usedStale, fetchedAt, failed, staleResults, asOfTimes, components)
 	}
+	return staleResults, asOfTimes, components
+}
+
+func (r *CatalogPricingResolver) resolveCatalogPricingService(
+	requests []CatalogPricingRequest,
+	account billing.AssignedAccount,
+	service string,
+	lookups []catalogPricingLookup,
+	rateItems []billing.RateCardItem,
+	usedStale bool,
+	fetchedAt time.Time,
+	failed, staleResults []bool,
+	asOfTimes []time.Time,
+	components [][]*publicv1.CatalogPriceComponent,
+) {
+	for _, lookup := range lookups {
+		if !usedStale {
+			asOfTimes[lookup.requestIndex] = fetchedAt
+		}
+		matched, matchErr := r.resolveRateCardItem(rateItems, service, account.CurrencyCode, lookup.request.Dimensions)
+		if matchErr != nil {
+			failed[lookup.requestIndex] = true
+			continue
+		}
+		amount, amountErr := billing.ComponentRateAmount(matched, lookup.request.Dimensions)
+		if amountErr != nil {
+			failed[lookup.requestIndex] = true
+			continue
+		}
+		description := lookup.request.Description
+		if description == "" {
+			description = requests[lookup.requestIndex].Description
+		}
+		components[lookup.requestIndex] = append(components[lookup.requestIndex], publicv1.CatalogPriceComponent_builder{
+			Amount: amount, Unit: string(matched.Unit), Description: description,
+		}.Build())
+		staleResults[lookup.requestIndex] = staleResults[lookup.requestIndex] || usedStale
+	}
+}
+
+func buildCatalogPricingResults(
+	results []*publicv1.CatalogItemPricing,
+	requests []CatalogPricingRequest,
+	account billing.AssignedAccount,
+	expected []int,
+	failed, staleResults []bool,
+	asOfTimes []time.Time,
+	components [][]*publicv1.CatalogPriceComponent,
+) []*publicv1.CatalogItemPricing {
 	for index, request := range requests {
 		if failed[index] || expected[index] == 0 || len(components[index]) != expected[index] {
 			continue
@@ -330,20 +379,50 @@ func (r *CatalogPricingResolver) CheckCoverage(
 
 	ctx, cancel := context.WithTimeout(ctx, billingCoverageTimeout)
 	defer cancel()
+	account, err := r.getCoverageAccount(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+
+	byService, err := catalogPricingCoverageRequestsByService(requests)
+	if err != nil {
+		return err
+	}
+	services := make([]string, 0, len(byService))
+	for service := range byService {
+		services = append(services, service)
+	}
+	sort.Strings(services)
+	for _, service := range services {
+		if err := r.checkCatalogPricingServiceCoverage(ctx, account, service, byService[service]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *CatalogPricingResolver) getCoverageAccount(ctx context.Context, tenantID string) (billing.AssignedAccount, error) {
 	account, err := r.accounts.GetAssignedAccount(ctx, tenantID)
 	if errors.Is(err, billing.ErrTenantBillingAssignmentNotFound) {
-		return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_ACCOUNT_UNAVAILABLE")
+		return billing.AssignedAccount{}, grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_ACCOUNT_UNAVAILABLE")
 	}
 	if err != nil {
 		if ctx.Err() != nil {
-			return grpcstatus.Error(grpccodes.DeadlineExceeded, "BILLING_COVERAGE_TIMEOUT")
+			return billing.AssignedAccount{}, grpcstatus.Error(grpccodes.DeadlineExceeded, "BILLING_COVERAGE_TIMEOUT")
 		}
-		return grpcstatus.Error(grpccodes.Internal, "BILLING_ACCOUNT_LOOKUP_FAILED")
+		return billing.AssignedAccount{}, grpcstatus.Error(grpccodes.Internal, "BILLING_ACCOUNT_LOOKUP_FAILED")
 	}
 	account.CurrencyCode = strings.ToUpper(strings.TrimSpace(account.CurrencyCode))
 	if account.ProviderKey != r.providerKey || !assignmentIsConnected(account.ConnectionState) || account.ProviderAccountReference == "" || account.CurrencyCode == "" {
-		return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_ACCOUNT_UNAVAILABLE")
+		return billing.AssignedAccount{}, grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_ACCOUNT_UNAVAILABLE")
 	}
+	if err := r.checkCoverageProviderAccount(ctx, account); err != nil {
+		return billing.AssignedAccount{}, err
+	}
+	return account, nil
+}
+
+func (r *CatalogPricingResolver) checkCoverageProviderAccount(ctx context.Context, account billing.AssignedAccount) error {
 	providerAccount, err := billing.RetryProviderRead(ctx, func(ctx context.Context) (billing.Account, error) {
 		return r.accountStatus.GetAccount(ctx, account.ProviderAccountReference)
 	})
@@ -365,54 +444,67 @@ func (r *CatalogPricingResolver) CheckCoverage(
 	if providerAccount.Reference != account.ProviderAccountReference || providerAccount.State != billing.AccountStateActive {
 		return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_ACCOUNT_UNAVAILABLE")
 	}
+	return nil
+}
 
+func catalogPricingCoverageRequestsByService(requests []CatalogPricingRequest) (map[string][]billing.CatalogPricingComponentRequest, error) {
 	byService := make(map[string][]billing.CatalogPricingComponentRequest)
 	for _, request := range requests {
 		if !request.Supported || request.Service == "" {
-			return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_CONFIGURATION_UNSUPPORTED")
+			return nil, grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_CONFIGURATION_UNSUPPORTED")
 		}
 		components := catalogPricingComponents(request)
 		if len(components) == 0 {
-			return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_CONFIGURATION_UNSUPPORTED")
+			return nil, grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_CONFIGURATION_UNSUPPORTED")
 		}
 		byService[request.Service] = append(byService[request.Service], components...)
 	}
-	services := make([]string, 0, len(byService))
-	for service := range byService {
-		services = append(services, service)
+	return byService, nil
+}
+
+func (r *CatalogPricingResolver) checkCatalogPricingServiceCoverage(
+	ctx context.Context,
+	account billing.AssignedAccount,
+	service string,
+	requests []billing.CatalogPricingComponentRequest,
+) error {
+	rateItems, err := r.getFreshRateCardItems(ctx, account, service)
+	if err != nil {
+		return catalogPricingCoverageLookupError(ctx, err)
 	}
-	sort.Strings(services)
-	for _, service := range services {
-		rateItems, err := r.getFreshRateCardItems(ctx, account, service)
+	for _, request := range requests {
+		_, err := r.resolveRateCardItem(rateItems, service, account.CurrencyCode, request.Dimensions)
 		if err != nil {
-			if errors.Is(ctx.Err(), context.Canceled) {
-				return grpcstatus.Error(grpccodes.Canceled, "BILLING_COVERAGE_CANCELED")
-			}
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-				return coverageProviderError(grpccodes.DeadlineExceeded, "BILLING_COVERAGE_TIMEOUT")
-			}
-			if errors.Is(err, billing.ErrProviderUnavailable) || errors.Is(err, errPricingCircuitOpen) {
-				return coverageProviderError(grpccodes.Unavailable, "BILLING_COVERAGE_UNAVAILABLE")
-			}
-			return grpcstatus.Error(grpccodes.Internal, "BILLING_COVERAGE_LOOKUP_FAILED")
-		}
-		for _, request := range byService[service] {
-			_, err := r.resolveRateCardItem(rateItems, service, account.CurrencyCode, request.Dimensions)
-			switch {
-			case err == nil:
-				continue
-			case errors.Is(err, billing.ErrRateCoverageGap):
-				return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_COVERAGE_GAP")
-			case errors.Is(err, billing.ErrAmbiguousRateCard):
-				return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_RATE_AMBIGUOUS")
-			case errors.Is(err, billing.ErrInvalidRateCard):
-				return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_RATE_INVALID")
-			default:
-				return grpcstatus.Error(grpccodes.Internal, "BILLING_COVERAGE_CHECK_FAILED")
-			}
+			return catalogPricingCoverageResolutionError(err)
 		}
 	}
 	return nil
+}
+
+func catalogPricingCoverageLookupError(ctx context.Context, err error) error {
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return grpcstatus.Error(grpccodes.Canceled, "BILLING_COVERAGE_CANCELED")
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return coverageProviderError(grpccodes.DeadlineExceeded, "BILLING_COVERAGE_TIMEOUT")
+	}
+	if errors.Is(err, billing.ErrProviderUnavailable) || errors.Is(err, errPricingCircuitOpen) {
+		return coverageProviderError(grpccodes.Unavailable, "BILLING_COVERAGE_UNAVAILABLE")
+	}
+	return grpcstatus.Error(grpccodes.Internal, "BILLING_COVERAGE_LOOKUP_FAILED")
+}
+
+func catalogPricingCoverageResolutionError(err error) error {
+	switch {
+	case errors.Is(err, billing.ErrRateCoverageGap):
+		return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_COVERAGE_GAP")
+	case errors.Is(err, billing.ErrAmbiguousRateCard):
+		return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_RATE_AMBIGUOUS")
+	case errors.Is(err, billing.ErrInvalidRateCard):
+		return grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_RATE_INVALID")
+	default:
+		return grpcstatus.Error(grpccodes.Internal, "BILLING_COVERAGE_CHECK_FAILED")
+	}
 }
 
 // checkCatalogItemBillingCoverage requires current coverage when a tenant-owned
