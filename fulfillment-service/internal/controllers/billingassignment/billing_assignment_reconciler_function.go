@@ -130,11 +130,11 @@ func (f *Function) Reconcile(ctx context.Context, assignment *privatev1.TenantBi
 	if err != nil {
 		return f.markPending(ctx, assignment.GetId(), "PROVIDER_UNAVAILABLE", err)
 	}
+	if target.ExternalID != "" && target.ExternalID != tenantID {
+		return f.markFailed(ctx, assignment.GetId(), "ACCOUNT_ALREADY_BOUND")
+	}
 	if target.State != billing.AccountStateActive {
 		return f.markPending(ctx, assignment.GetId(), "ACCOUNT_NOT_ACTIVE", errors.New("billing account is not active"))
-	}
-	if target.ExternalID != "" && target.ExternalID != tenantID {
-		return f.markPending(ctx, assignment.GetId(), "ACCOUNT_ALREADY_BOUND", errors.New("billing account is linked to another tenant"))
 	}
 	if target.ExternalID != tenantID {
 		if err = f.provider.UpdateAccountExternalID(ctx, target.Reference, target.ExternalID, tenantID); err != nil {
@@ -252,4 +252,18 @@ func (f *Function) markPending(ctx context.Context, id, reason string, cause err
 	}
 	f.logger.WarnContext(ctx, "billing assignment provider synchronization is pending", slog.String("reason", reason))
 	return cause
+}
+
+func (f *Function) markFailed(ctx context.Context, id, reason string) error {
+	f.metrics.recordFailure(reason)
+	_, err := f.assignments.UpdateStatus(ctx, privatev1.TenantBillingAssignmentsUpdateStatusRequest_builder{
+		Id:              id,
+		ConnectionState: privatev1.TenantBillingAssignmentConnectionState_TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_FAILED,
+		Message:         &reason,
+	}.Build())
+	if err != nil {
+		return fmt.Errorf("failed to save failed billing assignment status: %w", err)
+	}
+	f.logger.WarnContext(ctx, "billing assignment provider synchronization failed", slog.String("reason", reason))
+	return nil
 }
