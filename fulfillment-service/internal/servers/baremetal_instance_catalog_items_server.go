@@ -158,7 +158,11 @@ func (s *BareMetalInstanceCatalogItemsServer) List(ctx context.Context,
 		}
 		publicItems[i] = publicItem
 	}
-	for i, pricing := range resolveCatalogPricing(ctx, s.tenancyLogic, s.pricingResolver, bareMetalCatalogPricingRequestsForServer(ctx, s, publicItems)) {
+	pricingResults, err := resolveCatalogPricing(ctx, s.logger, s.tenancyLogic, s.pricingResolver, request.GetTenantId(), bareMetalCatalogPricingRequestsForServer(ctx, s, publicItems))
+	if err != nil {
+		return nil, err
+	}
+	for i, pricing := range pricingResults {
 		publicItems[i].SetPricing(pricing)
 	}
 
@@ -186,7 +190,10 @@ func (s *BareMetalInstanceCatalogItemsServer) Get(ctx context.Context,
 			slog.Any("error", err))
 		return nil, grpcstatus.Errorf(grpccodes.Internal, "failed to process bare metal instance catalog item")
 	}
-	pricing := resolveCatalogPricing(ctx, s.tenancyLogic, s.pricingResolver, bareMetalCatalogPricingRequestsForServer(ctx, s, []*publicv1.BareMetalInstanceCatalogItem{publicCatalogItem}))
+	pricing, err := resolveCatalogPricing(ctx, s.logger, s.tenancyLogic, s.pricingResolver, request.GetTenantId(), bareMetalCatalogPricingRequestsForServer(ctx, s, []*publicv1.BareMetalInstanceCatalogItem{publicCatalogItem}))
+	if err != nil {
+		return nil, err
+	}
 	if len(pricing) != 0 {
 		publicCatalogItem.SetPricing(pricing[0])
 	}

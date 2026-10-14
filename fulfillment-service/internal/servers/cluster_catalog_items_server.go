@@ -152,7 +152,11 @@ func (s *ClusterCatalogItemsServer) List(ctx context.Context,
 		}
 		publicItems[i] = publicItem
 	}
-	for i, pricing := range resolveCatalogPricing(ctx, s.tenancyLogic, s.pricingResolver, clusterCatalogPricingRequestsForServer(ctx, s, publicItems)) {
+	pricingResults, err := resolveCatalogPricing(ctx, s.logger, s.tenancyLogic, s.pricingResolver, request.GetTenantId(), clusterCatalogPricingRequestsForServer(ctx, s, publicItems))
+	if err != nil {
+		return nil, err
+	}
+	for i, pricing := range pricingResults {
 		publicItems[i].SetPricing(pricing)
 	}
 
@@ -179,7 +183,10 @@ func (s *ClusterCatalogItemsServer) Get(ctx context.Context,
 		s.logger.ErrorContext(ctx, "Failed to map private cluster catalog item to public", slog.Any("error", err))
 		return nil, grpcstatus.Errorf(grpccodes.Internal, "failed to process cluster catalog item")
 	}
-	pricing := resolveCatalogPricing(ctx, s.tenancyLogic, s.pricingResolver, clusterCatalogPricingRequestsForServer(ctx, s, []*publicv1.ClusterCatalogItem{publicCatalogItem}))
+	pricing, err := resolveCatalogPricing(ctx, s.logger, s.tenancyLogic, s.pricingResolver, request.GetTenantId(), clusterCatalogPricingRequestsForServer(ctx, s, []*publicv1.ClusterCatalogItem{publicCatalogItem}))
+	if err != nil {
+		return nil, err
+	}
 	if len(pricing) != 0 {
 		publicCatalogItem.SetPricing(pricing[0])
 	}

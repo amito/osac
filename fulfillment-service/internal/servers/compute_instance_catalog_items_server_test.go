@@ -19,11 +19,14 @@ import (
 	"github.com/google/uuid"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"go.uber.org/mock/gomock"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/auth"
+	"github.com/osac-project/osac/fulfillment-service/internal/billing"
+	"github.com/osac-project/osac/fulfillment-service/internal/collections"
 	"github.com/osac-project/osac/fulfillment-service/internal/database"
 	"github.com/osac-project/osac/fulfillment-service/internal/database/dao"
 	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
@@ -122,6 +125,83 @@ var _ = Describe("Compute instance catalog items server", func() {
 			Entry("stale version", false, true, true),
 			Entry("missing version", true, true, false),
 		)
+
+		It("prices an admin catalog preview for the requested tenant", func() {
+			name := fmt.Sprintf("preview-%s", uuid.NewString()[:8])
+			created, err := server.Create(ctx, publicv1.ComputeInstanceCatalogItemsCreateRequest_builder{
+				Object: publicv1.ComputeInstanceCatalogItem_builder{
+					Metadata:  publicv1.Metadata_builder{Name: name}.Build(),
+					Title:     "Tenant preview",
+					Template:  publicv1.ComputeInstanceTemplateReference_builder{Id: "my-ci-template-id"}.Build(),
+					Published: true,
+				}.Build(),
+			}.Build())
+			Expect(err).NotTo(HaveOccurred())
+
+			store := &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
+				ProviderKey:              "m360",
+				ProviderAccountReference: "preview-account",
+				CurrencyCode:             "USD",
+				ConnectionState:          "CONNECTED",
+			}}
+			provider := &catalogPricingRateCardProviderStub{items: []billing.RateCardItem{{
+				Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "4.50", Unit: billing.RateUnitHour,
+			}}}
+			server.pricingResolver = NewCatalogPricingResolver("m360", provider, store)
+
+			listRequest := publicv1.ComputeInstanceCatalogItemsListRequest_builder{}.Build()
+			listRequest.SetTenantId("tenant-preview")
+			listed, err := server.List(ctx, listRequest)
+			Expect(err).NotTo(HaveOccurred())
+			var listedItem *publicv1.ComputeInstanceCatalogItem
+			for _, item := range listed.GetItems() {
+				if item.GetMetadata().GetName() == name {
+					listedItem = item
+					break
+				}
+			}
+			Expect(listedItem).NotTo(BeNil())
+			Expect(listedItem.GetPricing().GetStatus()).To(Equal(publicv1.CatalogPricingStatus_CATALOG_PRICING_STATUS_CURRENT))
+			Expect(listedItem.GetPricing().GetComponents()).To(HaveLen(1))
+			Expect(listedItem.GetPricing().GetComponents()[0].GetAmount()).To(Equal("4.50"))
+			Expect(store.tenant).To(Equal("tenant-preview"))
+
+			getRequest := publicv1.ComputeInstanceCatalogItemsGetRequest_builder{Id: created.GetObject().GetId()}.Build()
+			getRequest.SetTenantId("tenant-preview")
+			got, err := server.Get(ctx, getRequest)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got.GetObject().GetPricing().GetStatus()).To(Equal(publicv1.CatalogPricingStatus_CATALOG_PRICING_STATUS_CURRENT))
+			Expect(store.tenant).To(Equal("tenant-preview"))
+
+			callsBeforeHiddenItem := store.calls
+			restrictedVisibility, err := auth.NewVisibility().AddVisibleTenants("tenant-a", auth.SharedTenant).Build()
+			Expect(err).NotTo(HaveOccurred())
+			restrictedTenancy := auth.NewMockTenancyLogic(ctrl)
+			restrictedTenancy.EXPECT().DetermineVisibility(gomock.Any()).Return(restrictedVisibility, nil).AnyTimes()
+			restrictedTenancy.EXPECT().DetermineAssignableTenants(gomock.Any()).Return(collections.NewSet("tenant-a"), nil).AnyTimes()
+			restrictedTenancy.EXPECT().DetermineDefaultTenant(gomock.Any()).Return("tenant-a", nil).AnyTimes()
+			restrictedServer, err := NewComputeInstanceCatalogItemsServer().
+				SetLogger(logger).
+				SetAttributionLogic(attribution).
+				SetTenancyLogic(restrictedTenancy).
+				SetPricingResolver(server.pricingResolver).
+				Build()
+			Expect(err).NotTo(HaveOccurred())
+			hiddenRequest := publicv1.ComputeInstanceCatalogItemsGetRequest_builder{Id: created.GetObject().GetId()}.Build()
+			hiddenRequest.SetTenantId("tenant-preview")
+			_, err = restrictedServer.Get(ctx, hiddenRequest)
+			Expect(status.Code(err)).To(Equal(codes.NotFound))
+			Expect(store.calls).To(Equal(callsBeforeHiddenItem), "a hidden item lookup must not resolve provider pricing")
+
+			withoutTenant, err := server.List(ctx, publicv1.ComputeInstanceCatalogItemsListRequest_builder{}.Build())
+			Expect(err).NotTo(HaveOccurred())
+			for _, item := range withoutTenant.GetItems() {
+				if item.GetMetadata().GetName() == name {
+					Expect(item.GetPricing().GetStatus()).To(Equal(publicv1.CatalogPricingStatus_CATALOG_PRICING_STATUS_UNAVAILABLE))
+				}
+			}
+			Expect(store.calls).To(Equal(callsBeforeHiddenItem), "admin previews without tenant_id must not look up an account")
+		})
 
 		It("Creates object", func() {
 			response, err := server.Create(ctx, publicv1.ComputeInstanceCatalogItemsCreateRequest_builder{

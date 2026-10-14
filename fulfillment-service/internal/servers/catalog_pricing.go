@@ -27,6 +27,7 @@ import (
 
 	"github.com/osac-project/osac/fulfillment-service/internal/auth"
 	"github.com/osac-project/osac/fulfillment-service/internal/billing"
+	"github.com/osac-project/osac/fulfillment-service/internal/config"
 	publicv1 "github.com/osac-project/osac/proto/gen/osac/public/v1"
 	"github.com/prometheus/client_golang/prometheus"
 	grpccodes "google.golang.org/grpc/codes"
@@ -654,22 +655,58 @@ func unavailableCatalogPricing(currency string, priceMayVary bool) *publicv1.Cat
 
 func resolveCatalogPricing(
 	ctx context.Context,
+	logger *slog.Logger,
 	tenancyLogic auth.TenancyLogic,
 	resolver *CatalogPricingResolver,
+	requestedTenant string,
 	requests []CatalogPricingRequest,
-) []*publicv1.CatalogItemPricing {
+) ([]*publicv1.CatalogItemPricing, error) {
 	if resolver == nil || catalogPricingEnrichmentDisabled(ctx) {
-		return nil
+		return nil, nil
 	}
-	tenantID, err := tenancyLogic.DetermineDefaultTenant(ctx)
-	if err != nil || tenantID == "" {
-		results := make([]*publicv1.CatalogItemPricing, len(requests))
-		for i, request := range requests {
-			results[i] = unavailableCatalogPricing("", request.PriceMayVary)
+	if tenancyLogic == nil {
+		return unavailableCatalogPricingResults(requests), nil
+	}
+
+	assignableTenants, err := tenancyLogic.DetermineAssignableTenants(ctx)
+	if err != nil {
+		return unavailableCatalogPricingResults(requests), nil
+	}
+
+	tenantID := ""
+	if assignableTenants.Universal() {
+		// Platform administrators can preview pricing for a selected tenant, but
+		// must not silently price against the shared or default tenant.
+		tenantID = strings.TrimSpace(requestedTenant)
+		if tenantID == "" {
+			return unavailableCatalogPricingResults(requests), nil
 		}
-		return results
+	} else {
+		// Tenant callers always use their active tenant context. Ignore any
+		// request tenant_id so it cannot switch pricing to another account.
+		tenantID = strings.TrimSpace(config.TenantFromContext(ctx))
+		if tenantID == "" {
+			return unavailableCatalogPricingResults(requests), nil
+		}
 	}
-	return resolver.Resolve(ctx, tenantID, requests)
+	if tenantID == "" {
+		return unavailableCatalogPricingResults(requests), nil
+	}
+	if err := auth.ValidateTenantAssignment(ctx, tenancyLogic, tenantID); err != nil {
+		if logger == nil {
+			logger = slog.Default()
+		}
+		return nil, convertTenantErrorToGRPC(ctx, err, logger, tenantID)
+	}
+	return resolver.Resolve(ctx, tenantID, requests), nil
+}
+
+func unavailableCatalogPricingResults(requests []CatalogPricingRequest) []*publicv1.CatalogItemPricing {
+	results := make([]*publicv1.CatalogItemPricing, len(requests))
+	for i, request := range requests {
+		results[i] = unavailableCatalogPricing("", request.PriceMayVary)
+	}
+	return results
 }
 
 type catalogPricingMetrics struct {
