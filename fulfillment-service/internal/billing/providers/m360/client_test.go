@@ -336,6 +336,104 @@ var _ = Describe("M360 billing account client", func() {
 		}}))
 	})
 
+	It("uses the default card when a complete contract list has no contract for the account", func() {
+		defaultCardRequested := false
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			writer.Header().Set("Content-Type", "application/json")
+			switch request.URL.Path {
+			case "/api/v1/external/services":
+				_, _ = fmt.Fprint(writer, `{"success":true,"data":{"content":[{"Id":"service-1","Code":"compute_instance"}],"totalPages":1,"last":true}}`)
+			case "/api/v1/external/contracts":
+				Expect(request.URL.Query().Get("accountId")).To(BeEmpty())
+				_, _ = fmt.Fprint(writer, `{"success":true,"data":{"content":[{"Id":"contract-other","MasterAccountId":"account-other","ApprovalStatus__r":{"Name":"Approved"},"StartDate":"2000-01-01"}],"totalPages":1,"last":true}}`)
+			case "/api/v1/external/services/service-1":
+				defaultCardRequested = true
+				_, _ = fmt.Fprint(writer, `{"success":true,"data":{"id":"service-1","code":"compute_instance","rateCards":[{"currency":"USD","isCurrent":true,"rows":[{"priceMethod":"FLAT_RATE","flatRate":3.00,"attributeValues":[]}]}]}}`)
+			default:
+				Fail("unexpected M360 request path: " + request.URL.Path)
+			}
+		}))
+		DeferCleanup(server.Close)
+
+		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		Expect(err).NotTo(HaveOccurred())
+
+		items, err := client.ListRateCardItems(context.Background(), billing.RateCardQuery{
+			AccountReference: "account-1",
+			Service:          "compute_instance",
+			CurrencyCode:     "USD",
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(defaultCardRequested).To(BeTrue())
+		Expect(items).To(HaveLen(1))
+		Expect(items[0].Source).To(Equal(billing.RateCardSourceDefault))
+		Expect(items[0].Amount).To(Equal("3.00"))
+	})
+
+	It("does not use the default card when listing account contracts fails", func() {
+		defaultCardRequested := false
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			writer.Header().Set("Content-Type", "application/json")
+			switch request.URL.Path {
+			case "/api/v1/external/services":
+				_, _ = fmt.Fprint(writer, `{"success":true,"data":{"content":[{"Id":"service-1","Code":"compute_instance"}],"totalPages":1,"last":true}}`)
+			case "/api/v1/external/contracts":
+				writer.WriteHeader(http.StatusServiceUnavailable)
+			case "/api/v1/external/services/service-1":
+				defaultCardRequested = true
+				_, _ = fmt.Fprint(writer, `{"success":true,"data":{"id":"service-1","code":"compute_instance","rateCards":[]}}`)
+			default:
+				Fail("unexpected M360 request path: " + request.URL.Path)
+			}
+		}))
+		DeferCleanup(server.Close)
+
+		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = client.ListRateCardItems(context.Background(), billing.RateCardQuery{
+			AccountReference: "account-1",
+			Service:          "compute_instance",
+			CurrencyCode:     "USD",
+		})
+		Expect(errors.Is(err, billing.ErrProviderUnavailable)).To(BeTrue())
+		Expect(defaultCardRequested).To(BeFalse())
+	})
+
+	DescribeTable("does not use the default card when contract pagination is incomplete",
+		func(contractPage string) {
+			defaultCardRequested := false
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("Content-Type", "application/json")
+				switch request.URL.Path {
+				case "/api/v1/external/services":
+					_, _ = fmt.Fprint(writer, `{"success":true,"data":{"content":[{"Id":"service-1","Code":"compute_instance"}],"totalPages":1,"last":true}}`)
+				case "/api/v1/external/contracts":
+					_, _ = fmt.Fprint(writer, contractPage)
+				case "/api/v1/external/services/service-1":
+					defaultCardRequested = true
+					_, _ = fmt.Fprint(writer, `{"success":true,"data":{"id":"service-1","code":"compute_instance","rateCards":[]}}`)
+				default:
+					Fail("unexpected M360 request path: " + request.URL.Path)
+				}
+			}))
+			DeferCleanup(server.Close)
+
+			client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = client.ListRateCardItems(context.Background(), billing.RateCardQuery{
+				AccountReference: "account-1",
+				Service:          "compute_instance",
+				CurrencyCode:     "USD",
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(defaultCardRequested).To(BeFalse())
+		},
+		Entry("empty nonterminal page", `{"success":true,"data":{"content":[],"totalPages":2,"last":false}}`),
+		Entry("missing total-pages metadata", `{"success":true,"data":{"content":[{"Id":"contract-other","MasterAccountId":"account-other","ApprovalStatus__r":{"Name":"Approved"}}],"totalPages":0,"last":false}}`),
+	)
+
 	It("skips a non-current exception card without falling back to the catalog card", func() {
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			writer.Header().Set("Content-Type", "application/json")
@@ -368,14 +466,14 @@ var _ = Describe("M360 billing account client", func() {
 		Expect(items).To(BeEmpty())
 	})
 
-	It("does not fall back to a default rate card when the account contract is ambiguous", func() {
+	It("returns an error when the account has multiple active contracts", func() {
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			writer.Header().Set("Content-Type", "application/json")
 			switch request.URL.Path {
 			case "/api/v1/external/services":
 				_, _ = fmt.Fprint(writer, `{"success":true,"data":{"content":[{"Id":"service-1","Code":"compute_instance"}],"totalPages":1,"last":true}}`)
 			case "/api/v1/external/contracts":
-				_, _ = fmt.Fprint(writer, `{"success":true,"data":{"content":[{"Id":"contract-1","MasterAccountId":"account-1","ApprovalStatus__r":{"Name":"Approved"}},{"Id":"contract-2","MasterAccountId":"account-1","ApprovalStatus__r":{"Name":"Approved"}}],"totalPages":1,"last":true}}`)
+				_, _ = fmt.Fprint(writer, `{"success":true,"data":{"content":[{"Id":"contract-1","MasterAccountId":"account-1","ApprovalStatus__r":{"Name":"Approved"},"StartDate":"2000-01-01"},{"Id":"contract-2","MasterAccountId":"account-1","ApprovalStatus__r":{"Name":"Approved"},"StartDate":"2000-01-01"}],"totalPages":1,"last":true}}`)
 			default:
 				Fail("unexpected M360 request path: " + request.URL.Path)
 			}
