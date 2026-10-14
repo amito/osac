@@ -167,7 +167,11 @@ func (s *PriceEstimatesServer) Create(ctx context.Context,
 	estimateComponents := make([]*publicv1.PriceEstimateComponent, 0, len(components))
 	for _, component := range components {
 		rate := component.Rate
-		hourly, monthly, err := billing.NormalizeRecurringRate(rate.Amount, rate.Unit)
+		amount, err := billing.ComponentRateAmount(*rate, component.Request.Dimensions)
+		if err != nil {
+			return nil, grpcstatus.Error(grpccodes.Internal, "BILLING_ESTIMATE_INVALID_RATE")
+		}
+		hourly, monthly, err := billing.NormalizeRecurringRate(amount, rate.Unit)
 		if err != nil {
 			return nil, grpcstatus.Error(grpccodes.Unimplemented, "PROVIDER_RATE_UNIT_UNSUPPORTED")
 		}

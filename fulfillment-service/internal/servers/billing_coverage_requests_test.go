@@ -57,15 +57,18 @@ func TestComputeInstanceCoverageRequestsCheckEachAdditionalDisk(t *testing.T) {
 	}.Build()}.Build()
 
 	requests := computeInstanceCoverageRequests(instance)
-	if len(requests) != 2 {
-		t.Fatalf("computeInstanceCoverageRequests() = %+v, want one coverage request per additional disk", requests)
+	if len(requests) != 3 {
+		t.Fatalf("computeInstanceCoverageRequests() = %+v, want base and two disk requests", requests)
 	}
-	for _, request := range requests {
-		if !request.Supported || request.Dimensions["instance_type"] != "m7.large" || request.Dimensions["image_ref"] != "fedora-16" {
-			t.Fatalf("additional disk coverage request = %+v, want shared compute dimensions", request)
+	if requests[0].Dimensions["instance_type"] != "m7.large" || requests[0].Dimensions["image_ref"] != "fedora-16" {
+		t.Fatalf("base coverage request = %+v, want compute dimensions", requests[0])
+	}
+	for _, request := range requests[1:] {
+		if !request.Supported || request.Dimensions["instance_type"] != "" || request.Dimensions["image_ref"] != "" {
+			t.Fatalf("additional disk coverage request = %+v, want disk dimensions only", request)
 		}
 	}
-	if requests[0].Dimensions["additional_disk_size_gib"] == requests[1].Dimensions["additional_disk_size_gib"] || requests[0].Dimensions["additional_storage_tier"] == requests[1].Dimensions["additional_storage_tier"] {
+	if requests[1].Dimensions["additional_disk_size_gib"] == requests[2].Dimensions["additional_disk_size_gib"] || requests[1].Dimensions["additional_storage_tier"] == requests[2].Dimensions["additional_storage_tier"] {
 		t.Fatalf("additional disk requests = %+v, want both distinct disk configurations", requests)
 	}
 }
@@ -85,15 +88,15 @@ func TestClusterCoverageRequestsCheckEachNodeSet(t *testing.T) {
 	}.Build()}.Build()
 
 	requests := clusterCoverageRequests(cluster)
-	if len(requests) != 2 {
-		t.Fatalf("clusterCoverageRequests() = %+v, want one request per node set", requests)
+	if len(requests) != 3 {
+		t.Fatalf("clusterCoverageRequests() = %+v, want base and two node-set requests", requests)
 	}
 	for _, request := range requests {
 		if !request.Supported || request.Service != billing.ServiceCluster || request.Dimensions["cluster_template"] != "standard" || request.Dimensions["release_image"] != "4.18" {
 			t.Fatalf("cluster coverage request = %+v, want resolved shared dimensions", request)
 		}
 	}
-	if requests[0].Dimensions["baremetal_instance_type"] == requests[1].Dimensions["baremetal_instance_type"] {
+	if requests[0].Dimensions["baremetal_instance_type"] != "" || requests[1].Dimensions["baremetal_instance_type"] == requests[2].Dimensions["baremetal_instance_type"] {
 		t.Fatalf("cluster requests = %+v, want distinct node-set instance types", requests)
 	}
 }

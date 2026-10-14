@@ -46,6 +46,25 @@ func TestComputeCatalogPricingRequestUsesLockedAndDefaultValues(t *testing.T) {
 	}
 }
 
+func TestComputeCatalogPricingRequestSeparatesSingleAdditionalDisk(t *testing.T) {
+	size := int32(50)
+	disk := publicv1.ComputeInstanceDisk_builder{SizeGib: &size,
+		StorageTier: publicv1.StorageTierReference_builder{Name: "premium"}.Build()}.Build()
+	fields := publicv1.ComputeInstanceCatalogItemFields_builder{
+		InstanceType: publicv1.InstanceTypeReferenceFieldPolicy_builder{Locked: publicv1.InstanceTypeReference_builder{Name: "large"}.Build()}.Build(),
+		AdditionalDisks: publicv1.ComputeInstanceDiskListFieldPolicy_builder{Locked: publicv1.ComputeInstanceDiskList_builder{
+			Items: []*publicv1.ComputeInstanceDisk{disk},
+		}.Build()}.Build(),
+	}.Build()
+	item := publicv1.ComputeInstanceCatalogItem_builder{Fields: fields}.Build()
+	requests := computeCatalogPricingRequests([]*publicv1.ComputeInstanceCatalogItem{item})
+	components := catalogPricingComponents(requests[0])
+	if len(components) != 2 || components[0].Dimensions["instance_type"] != "large" || components[0].Dimensions["additional_disk_size_gib"] != "" ||
+		components[1].Dimensions["instance_type"] != "" || components[1].Dimensions["additional_disk_size_gib"] != "50" || components[1].Dimensions["additional_storage_tier"] != "premium" {
+		t.Fatalf("catalog components = %+v, want separate VM and disk", components)
+	}
+}
+
 func TestBareMetalCatalogPricingRequestUsesCatalogAndResourceValues(t *testing.T) {
 	instanceType := publicv1.BareMetalInstanceTypeReference_builder{Name: "gpu-node"}.Build()
 	image := publicv1.DiskImageReference_builder{Name: "rhel-9.6"}.Build()
@@ -81,7 +100,8 @@ func TestClusterCatalogPricingRequestUsesVersionAndSingleNodeSet(t *testing.T) {
 	if len(got) != 1 || got[0].Service != billing.ServiceCluster || !got[0].Supported {
 		t.Fatalf("clusterCatalogPricingRequests() = %v, want one supported cluster request", got)
 	}
-	if got[0].Dimensions["release_image"] != "openshift-4.18" || got[0].Dimensions["baremetal_instance_type"] != "gpu-node" || got[0].Dimensions["node_count"] != "3" {
-		t.Fatalf("pricing dimensions = %v, want version, node type, and count", got[0].Dimensions)
+	components := catalogPricingComponents(got[0])
+	if len(components) != 2 || got[0].Dimensions["release_image"] != "openshift-4.18" || got[0].Dimensions["node_count"] != "" || components[1].Dimensions["baremetal_instance_type"] != "gpu-node" || components[1].Dimensions["node_count"] != "3" {
+		t.Fatalf("pricing components = %v, want base version and one node set", components)
 	}
 }

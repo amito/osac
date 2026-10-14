@@ -86,8 +86,6 @@ func TestPriceEstimateSumsSelectedAdditionalDiskRates(t *testing.T) {
 		{
 			Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "3", Unit: billing.RateUnitMonth,
 			Conditions: []billing.RateCondition{
-				{Dimension: "image_ref", Operator: billing.RateMatchEquals, Value: "fedora-16"},
-				{Dimension: "instance_type", Operator: billing.RateMatchEquals, Value: "large"},
 				{Dimension: "additional_disk_size_gib", Operator: billing.RateMatchEquals, Value: "50"},
 				{Dimension: "additional_storage_tier", Operator: billing.RateMatchEquals, Value: "premium"},
 			},
@@ -95,8 +93,6 @@ func TestPriceEstimateSumsSelectedAdditionalDiskRates(t *testing.T) {
 		{
 			Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "5", Unit: billing.RateUnitMonth,
 			Conditions: []billing.RateCondition{
-				{Dimension: "image_ref", Operator: billing.RateMatchEquals, Value: "fedora-16"},
-				{Dimension: "instance_type", Operator: billing.RateMatchEquals, Value: "large"},
 				{Dimension: "additional_disk_size_gib", Operator: billing.RateMatchEquals, Value: "100"},
 				{Dimension: "additional_storage_tier", Operator: billing.RateMatchEquals, Value: "archive"},
 			},
@@ -136,25 +132,33 @@ func TestPriceEstimateSumsSelectedAdditionalDiskRates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PriceEstimates.Create() error = %v", err)
 	}
-	if len(response.GetComponents()) != 2 {
-		t.Fatalf("estimate has %d components, want one for each disk: %v", len(response.GetComponents()), response.GetComponents())
+	if len(response.GetComponents()) != 3 {
+		t.Fatalf("estimate has %d components, want base and both disks: %v", len(response.GetComponents()), response.GetComponents())
 	}
-	if response.GetHourlyAmount() != "0.010959" || response.GetMonthlyAmount() != "8" {
-		t.Fatalf("estimate total = (%q/hour, %q/month), want (0.010959, 8)", response.GetHourlyAmount(), response.GetMonthlyAmount())
+	if response.GetHourlyAmount() != "10.010959" || response.GetMonthlyAmount() != "7308" {
+		t.Fatalf("estimate total = (%q/hour, %q/month), want (10.010959, 7308)", response.GetHourlyAmount(), response.GetMonthlyAmount())
 	}
 }
 
-func TestPriceEstimateSumsSelectedClusterNodeSetRates(t *testing.T) {
+func TestPriceEstimateMultipliesSelectedClusterNodeSetQuantity(t *testing.T) {
 	t.Parallel()
 
 	provider := &billingPricingTestProvider{items: []billing.RateCardItem{
 		{
+			Service: billing.ServiceCluster, CurrencyCode: "USD", Amount: "4", Unit: billing.RateUnitMonth,
+			Conditions: []billing.RateCondition{
+				{Dimension: "cluster_template", Operator: billing.RateMatchEquals, Value: "standard"},
+				{Dimension: "release_image", Operator: billing.RateMatchEquals, Value: "4.18"},
+			},
+		},
+		{
 			Service: billing.ServiceCluster, CurrencyCode: "USD", Amount: "2", Unit: billing.RateUnitHour,
+			QuantityDimension: "node_count",
 			Conditions: []billing.RateCondition{
 				{Dimension: "cluster_template", Operator: billing.RateMatchEquals, Value: "standard"},
 				{Dimension: "release_image", Operator: billing.RateMatchEquals, Value: "4.18"},
 				{Dimension: "baremetal_instance_type", Operator: billing.RateMatchEquals, Value: "cpu"},
-				{Dimension: "node_count", Operator: billing.RateMatchEquals, Value: "3"},
+				{Dimension: "node_count", Operator: billing.RateMatchEquals, Value: "10"},
 			},
 		},
 		{
@@ -171,13 +175,13 @@ func TestPriceEstimateSumsSelectedClusterNodeSetRates(t *testing.T) {
 	gpuType := publicv1.BareMetalInstanceTypeReference_builder{Name: "gpu"}.Build()
 	version := publicv1.ClusterVersionReference_builder{Name: "4.18"}.Build()
 	nodeSets := map[string]*publicv1.ClusterNodeSet{
-		"compute": publicv1.ClusterNodeSet_builder{Size: billingTestInt32(3), BaremetalInstanceType: cpuType}.Build(),
+		"compute": publicv1.ClusterNodeSet_builder{Size: billingTestInt32(10), BaremetalInstanceType: cpuType}.Build(),
 		"gpu":     publicv1.ClusterNodeSet_builder{Size: billingTestInt32(2), BaremetalInstanceType: gpuType}.Build(),
 	}
 	fields := publicv1.ClusterCatalogItemFields_builder{
 		Version: publicv1.ClusterVersionReferenceFieldPolicy_builder{Locked: version}.Build(),
 		NodeSets: publicv1.ClusterNodeSetMapPolicy_builder{Locked: publicv1.ClusterNodeSetMap_builder{Items: map[string]*publicv1.ClusterCatalogNodeSet{
-			"compute": publicv1.ClusterCatalogNodeSet_builder{Size: 3, BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Name: "cpu"}.Build()}.Build(),
+			"compute": publicv1.ClusterCatalogNodeSet_builder{Size: 10, BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Name: "cpu"}.Build()}.Build(),
 			"gpu":     publicv1.ClusterCatalogNodeSet_builder{Size: 2, BaremetalInstanceType: publicv1.BareMetalInstanceTypeReference_builder{Name: "gpu"}.Build()}.Build(),
 		}}.Build()}.Build(),
 	}.Build()
@@ -199,11 +203,11 @@ func TestPriceEstimateSumsSelectedClusterNodeSetRates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PriceEstimates.Create() error = %v", err)
 	}
-	if len(response.GetComponents()) != 2 {
-		t.Fatalf("estimate has %d components, want both node sets: %v", len(response.GetComponents()), response.GetComponents())
+	if len(response.GetComponents()) != 3 {
+		t.Fatalf("estimate has %d components, want base and both node sets: %v", len(response.GetComponents()), response.GetComponents())
 	}
-	if response.GetHourlyAmount() != "2.008219" || response.GetMonthlyAmount() != "1466" {
-		t.Fatalf("estimate total = (%q/hour, %q/month), want (2.008219, 1466)", response.GetHourlyAmount(), response.GetMonthlyAmount())
+	if response.GetHourlyAmount() != "20.013698" || response.GetMonthlyAmount() != "14610" {
+		t.Fatalf("estimate total = (%q/hour, %q/month), want (20.013698, 14610)", response.GetHourlyAmount(), response.GetMonthlyAmount())
 	}
 }
 
@@ -257,11 +261,10 @@ func TestPriceEstimateMarksRetainedRateStaleAfterRefreshFailure(t *testing.T) {
 	provider := &billingPricingTestProvider{items: []billing.RateCardItem{{
 		Service:      billing.ServiceComputeInstance,
 		CurrencyCode: "USD",
-		Conditions: []billing.RateCondition{{
-			Dimension: "image_ref",
-			Operator:  billing.RateMatchEquals,
-			Value:     "fedora-16",
-		}},
+		Conditions: []billing.RateCondition{
+			{Dimension: "image_ref", Operator: billing.RateMatchEquals, Value: "fedora-16"},
+			{Dimension: "instance_type", Operator: billing.RateMatchEquals, Value: "large"},
+		},
 		Amount: "4.50",
 		Unit:   billing.RateUnitHour,
 	}}}

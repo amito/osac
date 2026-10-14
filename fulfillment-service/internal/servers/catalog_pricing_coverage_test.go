@@ -66,6 +66,36 @@ func TestCatalogPricingResolverCheckCoverageUsesFreshProviderRates(t *testing.T)
 	}
 }
 
+func TestCatalogPricingCoverageRequiresEachAdditionalDiskRate(t *testing.T) {
+	provider := &catalogPricingRateCardProviderStub{items: []billing.RateCardItem{{
+		Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "4", Unit: billing.RateUnitHour,
+		Conditions: []billing.RateCondition{{Dimension: "instance_type", Operator: billing.RateMatchEquals, Value: "large"}},
+	}}}
+	resolver := NewCatalogPricingResolver("m360", provider, &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
+		ProviderKey: "m360", ProviderAccountReference: "native-account", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+	}})
+	request := CatalogPricingRequest{Service: billing.ServiceComputeInstance, Dimensions: map[string]string{"instance_type": "large"}, Supported: true,
+		Components: []billing.CatalogPricingComponentRequest{
+			{Dimensions: map[string]string{"additional_disk_size_gib": "50"}},
+			{Dimensions: map[string]string{"additional_disk_size_gib": "100"}},
+		}}
+	components := catalogPricingComponents(request)
+	if len(components) != 3 || components[0].Dimensions["instance_type"] != "large" {
+		t.Fatalf("components = %+v, want one base and two disks", components)
+	}
+	if _, err := billing.ResolveRateCardItem(provider.items, request.Service, "USD", components[0].Dimensions); err != nil {
+		t.Fatalf("base VM coverage error = %v", err)
+	}
+	for _, disk := range components[1:] {
+		if _, err := billing.ResolveRateCardItem(provider.items, request.Service, "USD", disk.Dimensions); !errors.Is(err, billing.ErrRateCoverageGap) {
+			t.Fatalf("disk coverage error = %v, want gap", err)
+		}
+	}
+	if err := resolver.CheckCoverage(context.Background(), "tenant-a", []CatalogPricingRequest{request}); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("CheckCoverage() error = %v, want coverage gap", err)
+	}
+}
+
 func TestCatalogPricingResolverCheckCoverageFailsClosedOnProviderFailure(t *testing.T) {
 	provider := &catalogPricingRateCardProviderStub{err: errors.New("private provider error")}
 	resolver := NewCatalogPricingResolver("m360", provider, &catalogPricingAccountStoreStub{account: billing.AssignedAccount{

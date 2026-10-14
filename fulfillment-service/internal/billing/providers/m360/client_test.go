@@ -397,6 +397,23 @@ var _ = Describe("M360 billing account client", func() {
 		}))
 	})
 
+	It("binds quantity rates to the node count without scaling flat rates", func() {
+		row := m360RateCardRow{
+			PriceMethod: "QUANTITY", UnitRate: json.Number("2.75"),
+			AttributeValues: []m360RateAttribute{{AttributeName: "node_count", AttributeValue: "*"}},
+		}
+		item, err := normalizeRateCardItem(billing.ServiceCluster, "USD", billing.RateCardSourceDefault, row)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(item.QuantityDimension).To(Equal("node_count"))
+		Expect(item.Unit).To(Equal(billing.RateUnitHour))
+
+		row.PriceMethod = "FLAT_RATE"
+		row.FlatRate = json.Number("6")
+		item, err = normalizeRateCardItem(billing.ServiceCluster, "USD", billing.RateCardSourceDefault, row)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(item.QuantityDimension).To(BeEmpty())
+	})
+
 	It("does not include the provider response body in errors", func() {
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 			writer.WriteHeader(http.StatusInternalServerError)

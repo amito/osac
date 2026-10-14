@@ -15,6 +15,7 @@ language governing permissions and limitations under the License.
 package billing
 
 import (
+	"reflect"
 	"testing"
 
 	publicv1 "github.com/osac-project/osac/proto/gen/osac/public/v1"
@@ -50,6 +51,33 @@ func TestApplyComputeInstancePricingConfigurationUsesSelectedValues(t *testing.T
 	}
 	if len(got) != 1 || got[0].Dimensions["image_ref"] != "fedora-16" || got[0].Dimensions["instance_type"] != "large" {
 		t.Fatalf("pricing requests = %v, want selected instance type and locked image", got)
+	}
+}
+
+func TestApplyComputeInstancePricingConfigurationSeparatesAdditionalDisks(t *testing.T) {
+	t.Parallel()
+	firstSize, secondSize := int32(50), int32(100)
+	first := publicv1.ComputeInstanceDisk_builder{SizeGib: &firstSize}.Build()
+	second := publicv1.ComputeInstanceDisk_builder{SizeGib: &secondSize}.Build()
+	fields := publicv1.ComputeInstanceCatalogItemFields_builder{
+		InstanceType: publicv1.InstanceTypeReferenceFieldPolicy_builder{Locked: publicv1.InstanceTypeReference_builder{Name: "large"}.Build()}.Build(),
+		AdditionalDisks: publicv1.ComputeInstanceDiskListFieldPolicy_builder{Locked: publicv1.ComputeInstanceDiskList_builder{
+			Items: []*publicv1.ComputeInstanceDisk{first, second},
+		}.Build()}.Build(),
+	}.Build()
+	request := CatalogPricingRequest{Service: ServiceComputeInstance, Dimensions: map[string]string{"instance_type": "large"}, Supported: true}
+	spec := publicv1.ComputeInstanceSpec_builder{
+		InstanceType:    publicv1.InstanceTypeReference_builder{Name: "large"}.Build(),
+		AdditionalDisks: []*publicv1.ComputeInstanceDisk{first, second},
+	}.Build()
+	got, err := ApplyComputeInstancePricingConfiguration(request, spec, fields)
+	if err != nil {
+		t.Fatalf("ApplyComputeInstancePricingConfiguration() error = %v", err)
+	}
+	if len(got) != 3 || !reflect.DeepEqual(got[0].Dimensions, map[string]string{"instance_type": "large"}) ||
+		!reflect.DeepEqual(got[1].Dimensions, map[string]string{"additional_disk_size_gib": "50"}) ||
+		!reflect.DeepEqual(got[2].Dimensions, map[string]string{"additional_disk_size_gib": "100"}) {
+		t.Fatalf("pricing requests = %+v, want base and separate disks", got)
 	}
 }
 
@@ -95,8 +123,8 @@ func TestApplyClusterPricingConfigurationUsesSelectedNodeSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyClusterPricingConfiguration() error = %v", err)
 	}
-	if len(got) != 1 || got[0].Dimensions["release_image"] != "openshift-4.19" || got[0].Dimensions["baremetal_instance_type"] != "large" || got[0].Dimensions["node_count"] != "5" {
-		t.Fatalf("pricing requests = %v, want selected version and node set", got)
+	if len(got) != 2 || got[0].Dimensions["release_image"] != "openshift-4.19" || got[0].Dimensions["node_count"] != "" || got[1].Dimensions["baremetal_instance_type"] != "large" || got[1].Dimensions["node_count"] != "5" {
+		t.Fatalf("pricing requests = %v, want base version and selected node set", got)
 	}
 }
 

@@ -44,7 +44,7 @@ type CatalogPricingComponentRequest struct {
 var ErrInvalidPricingConfiguration = errors.New("pricing configuration is invalid for the catalog item")
 
 // ApplyComputeInstancePricingConfiguration overlays selected values and returns
-// one pricing request per additional disk, or one for the instance otherwise.
+// one request for the instance and one for each additional disk.
 func ApplyComputeInstancePricingConfiguration(
 	request CatalogPricingRequest,
 	spec *publicv1.ComputeInstanceSpec,
@@ -113,13 +113,13 @@ func ApplyComputeInstancePricingConfiguration(
 	} else if policy.GetEditable() == nil {
 		return nil, ErrInvalidPricingConfiguration
 	}
-	requests := make([]CatalogPricingRequest, 0, len(additionalDisks))
+	requests := []CatalogPricingRequest{request}
 	for index, disk := range additionalDisks {
 		if disk == nil {
 			return nil, ErrInvalidPricingConfiguration
 		}
 		component := request
-		component.Dimensions = clonePricingDimensions(request.Dimensions)
+		component.Dimensions = make(map[string]string, 2)
 		component.Description = strings.TrimSpace(request.Description + " additional disk " + strconv.Itoa(index+1))
 		if disk.HasSizeGib() {
 			component.Dimensions["additional_disk_size_gib"] = strconv.FormatInt(int64(disk.GetSizeGib()), 10)
@@ -133,7 +133,7 @@ func ApplyComputeInstancePricingConfiguration(
 }
 
 // ApplyClusterPricingConfiguration overlays selected values and returns one
-// pricing request per node set, or one for the catalog defaults otherwise.
+// request for the cluster template and one for each node set.
 func ApplyClusterPricingConfiguration(
 	request CatalogPricingRequest,
 	spec *publicv1.ClusterSpec,
@@ -185,7 +185,7 @@ func ApplyClusterPricingConfiguration(
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	requests := make([]CatalogPricingRequest, 0, len(names))
+	requests := []CatalogPricingRequest{request}
 	for _, name := range names {
 		nodeSet := nodeSets[name]
 		component := request

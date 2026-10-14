@@ -46,16 +46,13 @@ func computeInstanceCoverageRequests(instance *privatev1.ComputeInstance) []Cata
 	if len(additionalDisks) == 0 {
 		return []CatalogPricingRequest{request}
 	}
-	requests := make([]CatalogPricingRequest, 0, len(additionalDisks))
+	requests := []CatalogPricingRequest{request}
 	for _, disk := range additionalDisks {
 		diskRequest := CatalogPricingRequest{
 			Service:     request.Service,
-			Dimensions:  make(map[string]string, len(request.Dimensions)+2),
+			Dimensions:  make(map[string]string, 2),
 			Supported:   request.Supported && disk != nil,
 			Description: "Compute instance additional disk",
-		}
-		for dimension, value := range request.Dimensions {
-			diskRequest.Dimensions[dimension] = value
 		}
 		if disk != nil {
 			if disk.GetSizeGib() > 0 {
@@ -89,7 +86,7 @@ func clusterCoverageRequests(cluster *privatev1.Cluster) []CatalogPricingRequest
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	requests := make([]CatalogPricingRequest, 0, len(names))
+	requests := []CatalogPricingRequest{base}
 	for _, name := range names {
 		nodeSet := spec.GetNodeSets()[name]
 		request := CatalogPricingRequest{

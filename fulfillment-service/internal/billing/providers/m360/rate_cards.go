@@ -342,6 +342,7 @@ func normalizeRateCardItem(service, currency string, source billing.RateCardSour
 		return billing.RateCardItem{}, ErrUnsupportedRateCard
 	}
 	conditions := make([]billing.RateCondition, 0, len(row.AttributeValues))
+	quantityDimension := ""
 	for _, condition := range row.AttributeValues {
 		if strings.TrimSpace(condition.AttributeName) == "" || strings.TrimSpace(condition.AttributeValue) == "" {
 			return billing.RateCardItem{}, ErrUnsupportedRateCard
@@ -349,6 +350,12 @@ func normalizeRateCardItem(service, currency string, source billing.RateCardSour
 		dimension, ok := normalizeM360Dimension(service, condition.AttributeName)
 		if !ok {
 			return billing.RateCardItem{}, ErrUnsupportedRateCard
+		}
+		if strings.EqualFold(strings.TrimSpace(row.PriceMethod), "QUANTITY") && isM360QuantityDimension(dimension) {
+			if quantityDimension != "" && quantityDimension != dimension {
+				return billing.RateCardItem{}, ErrUnsupportedRateCard
+			}
+			quantityDimension = dimension
 		}
 		operator, value := billing.RateMatchEquals, condition.AttributeValue
 		if value == "*" {
@@ -361,13 +368,23 @@ func normalizeRateCardItem(service, currency string, source billing.RateCardSour
 		})
 	}
 	return billing.RateCardItem{
-		Service:      service,
-		CurrencyCode: currency,
-		Source:       source,
-		Conditions:   conditions,
-		Amount:       amount.String(),
-		Unit:         unit,
+		Service:           service,
+		CurrencyCode:      currency,
+		Source:            source,
+		Conditions:        conditions,
+		Amount:            amount.String(),
+		Unit:              unit,
+		QuantityDimension: quantityDimension,
 	}, nil
+}
+
+func isM360QuantityDimension(dimension string) bool {
+	switch dimension {
+	case "node_count", "boot_disk_size_gib", "additional_disk_size_gib":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeM360Dimension(service, dimension string) (string, bool) {

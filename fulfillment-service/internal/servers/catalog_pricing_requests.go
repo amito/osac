@@ -122,6 +122,12 @@ func applyTemplatePricingDefaults(request CatalogPricingRequest, defaults map[st
 		if value == "" {
 			continue
 		}
+		if request.Service == billing.ServiceComputeInstance && (dimension == "additional_disk_size_gib" || dimension == "additional_storage_tier") {
+			continue
+		}
+		if request.Service == billing.ServiceCluster && (dimension == "baremetal_instance_type" || dimension == "node_count") {
+			continue
+		}
 		if _, present := request.Dimensions[dimension]; !present {
 			request.Dimensions[dimension] = value
 		}
@@ -132,6 +138,12 @@ func applyTemplatePricingDefaults(request CatalogPricingRequest, defaults map[st
 		}
 		for dimension, value := range defaults {
 			if value == "" {
+				continue
+			}
+			if request.Service == billing.ServiceComputeInstance && dimension != "additional_disk_size_gib" && dimension != "additional_storage_tier" {
+				continue
+			}
+			if request.Service == billing.ServiceCluster && dimension != "cluster_template" && dimension != "release_image" && dimension != "baremetal_instance_type" && dimension != "node_count" {
 				continue
 			}
 			if _, present := request.Components[i].Dimensions[dimension]; !present {
@@ -255,15 +267,6 @@ func addComputeAdditionalDiskPricingDimensions(request *CatalogPricingRequest, p
 	if len(items) == 0 {
 		return editable != nil
 	}
-	if len(items) == 1 {
-		disk := items[0]
-		if disk == nil {
-			request.Supported = false
-			return editable != nil
-		}
-		addComputeDiskDimensions(request.Dimensions, disk)
-		return editable != nil
-	}
 	request.Components = make([]billing.CatalogPricingComponentRequest, 0, len(items))
 	for index, disk := range items {
 		if disk == nil {
@@ -271,7 +274,7 @@ func addComputeAdditionalDiskPricingDimensions(request *CatalogPricingRequest, p
 			request.Components = nil
 			return editable != nil
 		}
-		dimensions := cloneCatalogPricingDimensions(request.Dimensions)
+		dimensions := make(map[string]string, 2)
 		addComputeDiskDimensions(dimensions, disk)
 		request.Components = append(request.Components, billing.CatalogPricingComponentRequest{
 			Dimensions:  dimensions,
@@ -308,18 +311,6 @@ func addClusterNodeSetPricingDimensions(request *CatalogPricingRequest, policy *
 	items := nodeSets.GetItems()
 	if len(items) == 0 {
 		request.Supported = false
-		return editable != nil
-	}
-	if len(items) == 1 {
-		var nodeSet *publicv1.ClusterCatalogNodeSet
-		for _, onlyNodeSet := range items {
-			nodeSet = onlyNodeSet
-		}
-		if nodeSet == nil {
-			request.Supported = false
-			return editable != nil
-		}
-		addClusterNodeSetDimensions(request.Dimensions, nodeSet)
 		return editable != nil
 	}
 	names := make([]string, 0, len(items))

@@ -57,6 +57,7 @@ type RateCardItem struct {
 	Conditions         []RateCondition
 	Amount             string
 	Unit               RateUnit
+	QuantityDimension  string
 	CatalogItemMatches []string
 }
 
