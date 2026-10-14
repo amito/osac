@@ -145,7 +145,7 @@ func (c *Client) UpdateAccountExternalID(ctx context.Context, reference, expecte
 	}
 
 	body := struct {
-		ExternalID string `json:"externalId"`
+		ExternalID string `json:"ExternalId"`
 	}{ExternalID: externalID}
 	return c.requestJSON(ctx, http.MethodPut, c.accountURL(reference), body, nil)
 }

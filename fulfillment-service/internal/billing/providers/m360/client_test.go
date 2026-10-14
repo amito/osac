@@ -140,9 +140,9 @@ var _ = Describe("M360 billing account client", func() {
 			Expect(request.Method).To(Equal(http.MethodPut))
 			body := make(map[string]any)
 			Expect(json.NewDecoder(request.Body).Decode(&body)).To(Succeed())
-			Expect(body).To(Equal(map[string]any{"externalId": "tenant-a"}))
+			Expect(body).To(Equal(map[string]any{"ExternalId": "tenant-a"}))
 			writer.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprint(writer, `{"id":"account-7","name":"Acme","externalId":"tenant-a"}`)
+			_, _ = fmt.Fprint(writer, `{"Id":"account-7","Name":"Acme","ExternalId":"tenant-a"}`)
 		}))
 		DeferCleanup(server.Close)
 
