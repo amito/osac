@@ -168,46 +168,9 @@ func (s *BillingCostsServer) List(ctx context.Context,
 		return nil, grpcstatus.Error(grpccodes.PermissionDenied, "tenant project visibility is unavailable")
 	}
 
-	visibleCosts := make([]billing.Cost, 0, len(costs))
-	for _, cost := range costs {
-		if cost.TenantID != nil {
-			attributedTenantID := strings.TrimSpace(*cost.TenantID)
-			if attributedTenantID != tenantID {
-				continue
-			}
-			cost.TenantID = &attributedTenantID
-		}
-		if strings.TrimSpace(cost.Service) == "" || strings.TrimSpace(cost.Amount) == "" || len(strings.TrimSpace(cost.CurrencyCode)) != 3 {
-			s.logger.ErrorContext(ctx, "provider returned an incomplete cost")
-			return nil, grpcstatus.Error(grpccodes.Unavailable, "provider costs are unavailable")
-		}
-		cost.CurrencyCode = strings.ToUpper(strings.TrimSpace(cost.CurrencyCode))
-		if account.CurrencyCode != "" && !strings.EqualFold(cost.CurrencyCode, account.CurrencyCode) {
-			s.logger.ErrorContext(ctx, "provider returned a cost in an unexpected currency")
-			return nil, grpcstatus.Error(grpccodes.Unavailable, "provider costs are unavailable")
-		}
-		if cost.ProjectID != nil {
-			projectID := strings.TrimSpace(*cost.ProjectID)
-			cost.ProjectID = &projectID
-		}
-		if cost.ResourceID != nil {
-			resourceID := strings.TrimSpace(*cost.ResourceID)
-			cost.ResourceID = &resourceID
-		}
-		if !visibility.IsTotal() {
-			if cost.ProjectID == nil {
-				// A tenant-scoped caller cannot safely see a cost without project attribution.
-				// Skip that row while preserving the rest of the caller's visible costs.
-				continue
-			}
-			// IsProjectVisible also grants access to descendants of each visible project.
-			// Keep provider rows at their original project/resource level; synthesizing
-			// parent rollups here could double-count rows when clients sum the response.
-			if !visibility.IsProjectVisible(tenantID, *cost.ProjectID) {
-				continue
-			}
-		}
-		visibleCosts = append(visibleCosts, cost)
+	visibleCosts, err := s.visibleBillingCosts(ctx, costs, tenantID, account.CurrencyCode, visibility)
+	if err != nil {
+		return nil, err
 	}
 
 	total, ok := catalogPricingInputTotal(len(visibleCosts))
@@ -238,6 +201,57 @@ func (s *BillingCostsServer) List(ctx context.Context,
 		Total: total,
 		Items: items,
 	}.Build(), nil
+}
+
+func (s *BillingCostsServer) visibleBillingCosts(
+	ctx context.Context,
+	costs []billing.Cost,
+	tenantID string,
+	currencyCode string,
+	visibility *auth.Visibility,
+) ([]billing.Cost, error) {
+	visibleCosts := make([]billing.Cost, 0, len(costs))
+	for _, cost := range costs {
+		if cost.TenantID != nil {
+			attributedTenantID := strings.TrimSpace(*cost.TenantID)
+			if attributedTenantID != tenantID {
+				continue
+			}
+			cost.TenantID = &attributedTenantID
+		}
+		if strings.TrimSpace(cost.Service) == "" || strings.TrimSpace(cost.Amount) == "" || len(strings.TrimSpace(cost.CurrencyCode)) != 3 {
+			s.logger.ErrorContext(ctx, "provider returned an incomplete cost")
+			return nil, grpcstatus.Error(grpccodes.Unavailable, "provider costs are unavailable")
+		}
+		cost.CurrencyCode = strings.ToUpper(strings.TrimSpace(cost.CurrencyCode))
+		if currencyCode != "" && !strings.EqualFold(cost.CurrencyCode, currencyCode) {
+			s.logger.ErrorContext(ctx, "provider returned a cost in an unexpected currency")
+			return nil, grpcstatus.Error(grpccodes.Unavailable, "provider costs are unavailable")
+		}
+		if cost.ProjectID != nil {
+			projectID := strings.TrimSpace(*cost.ProjectID)
+			cost.ProjectID = &projectID
+		}
+		if cost.ResourceID != nil {
+			resourceID := strings.TrimSpace(*cost.ResourceID)
+			cost.ResourceID = &resourceID
+		}
+		if !visibility.IsTotal() {
+			if cost.ProjectID == nil {
+				// A tenant-scoped caller cannot safely see a cost without project attribution.
+				// Skip that row while preserving the rest of the caller's visible costs.
+				continue
+			}
+			// IsProjectVisible also grants access to descendants of each visible project.
+			// Keep provider rows at their original project/resource level; synthesizing
+			// parent rollups here could double-count rows when clients sum the response.
+			if !visibility.IsProjectVisible(tenantID, *cost.ProjectID) {
+				continue
+			}
+		}
+		visibleCosts = append(visibleCosts, cost)
+	}
+	return visibleCosts, nil
 }
 
 func (s *BillingCostsServer) listProviderCosts(ctx context.Context, query billing.CostQuery) ([]billing.Cost, error) {

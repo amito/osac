@@ -43,7 +43,7 @@ func TestClientBuildsVersionedAuthenticatedRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewClient(Config{BaseURL: server.URL + "/tenant/root/", APIVersion: "v2", APIKey: "secret"})
+	client, err := NewClient(Config{BaseURL: server.URL + "/tenant/root/", APIVersion: "v2", APIKey: "secret", AllowInsecureHTTP: true})
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
@@ -83,7 +83,7 @@ func TestClientHealthCheckUsesBaseURLAndAcceptsAnyHTTPStatus(t *testing.T) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer server.Close()
-	client, err := NewClient(Config{BaseURL: server.URL, APIVersion: "v1", APIKey: "secret"})
+	client, err := NewClient(Config{BaseURL: server.URL, APIVersion: "v1", APIKey: "secret", AllowInsecureHTTP: true})
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
@@ -98,6 +98,7 @@ func TestClientHealthCheckUsesBaseURLAndAcceptsAnyHTTPStatus(t *testing.T) {
 func TestNewClientRejectsIncompleteConfiguration(t *testing.T) {
 	for name, config := range map[string]Config{
 		"relative URL":    {BaseURL: "m360", APIVersion: "v1", APIKey: "secret"},
+		"plain HTTP URL":  {BaseURL: "http://m360.example.test", APIVersion: "v1", APIKey: "secret"},
 		"invalid version": {BaseURL: "https://m360.example.test", APIVersion: "v1/path", APIKey: "secret"},
 		"missing key":     {BaseURL: "https://m360.example.test", APIVersion: "v1"},
 	} {
@@ -109,12 +110,28 @@ func TestNewClientRejectsIncompleteConfiguration(t *testing.T) {
 	}
 }
 
+func TestNewClientAllowsHTTPOnlyWhenExplicitlyEnabled(t *testing.T) {
+	config := Config{BaseURL: "http://m360.example.test", APIVersion: "v1", APIKey: "secret"}
+	if _, err := NewClient(config); err == nil {
+		t.Fatal("NewClient() accepted plain HTTP without the explicit opt-in")
+	}
+
+	config.AllowInsecureHTTP = true
+	client, err := NewClient(config)
+	if err != nil {
+		t.Fatalf("NewClient() with AllowInsecureHTTP error = %v", err)
+	}
+	if got := client.baseURL.Scheme; got != "http" {
+		t.Fatalf("base URL scheme = %q, want http for explicit test opt-in", got)
+	}
+}
+
 func TestClientHealthCheckHonorsContextDeadline(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 	}))
 	defer server.Close()
-	client, err := NewClient(Config{BaseURL: server.URL, APIVersion: "v1", APIKey: "secret"})
+	client, err := NewClient(Config{BaseURL: server.URL, APIVersion: "v1", APIKey: "secret", AllowInsecureHTTP: true})
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}

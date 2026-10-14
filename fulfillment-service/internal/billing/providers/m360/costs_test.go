@@ -46,7 +46,7 @@ var _ = Describe("M360 actual cost reader", func() {
 			}
 		}))
 		DeferCleanup(server.Close)
-		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
 		_, err = client.ListCosts(context.Background(), billing.CostQuery{AccountReference: "account-1", TenantID: "tenant-a", FromDate: "2026-08-01", ToDate: "2026-08-31"})
@@ -70,7 +70,7 @@ var _ = Describe("M360 actual cost reader", func() {
 			}
 		}))
 		DeferCleanup(server.Close)
-		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
 		_, err = client.ListCosts(context.Background(), billing.CostQuery{AccountReference: "account-1", TenantID: "tenant-a", FromDate: "2026-08-01", ToDate: "2026-08-31"})
@@ -104,7 +104,7 @@ var _ = Describe("M360 actual cost reader", func() {
 			}
 		}))
 		DeferCleanup(server.Close)
-		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
 		costs, err := client.ListCosts(context.Background(), billing.CostQuery{AccountReference: "account-1", TenantID: "tenant-a", FromDate: "2026-08-01", ToDate: "2026-08-31"})
@@ -137,7 +137,7 @@ var _ = Describe("M360 actual cost reader", func() {
 		}))
 		DeferCleanup(server.Close)
 
-		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
 		costs, err := client.ListCosts(context.Background(), billing.CostQuery{
@@ -175,7 +175,7 @@ var _ = Describe("M360 actual cost reader", func() {
 		}))
 		DeferCleanup(server.Close)
 
-		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
 		costs, err := client.ListCosts(context.Background(), billing.CostQuery{

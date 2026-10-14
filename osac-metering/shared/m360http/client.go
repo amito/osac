@@ -36,10 +36,11 @@ const (
 
 // Config contains the shared M360 connection settings.
 type Config struct {
-	BaseURL    string
-	APIVersion string
-	APIKey     string
-	HTTPClient *http.Client
+	BaseURL           string
+	APIVersion        string
+	APIKey            string
+	HTTPClient        *http.Client
+	AllowInsecureHTTP bool // test-only opt-in for local httptest servers; leave false in production.
 }
 
 // Client builds authenticated M360 requests using one configured transport.
@@ -54,8 +55,8 @@ type Client struct {
 // HTTP timeout when no custom client is supplied.
 func NewClient(config Config) (*Client, error) {
 	baseURL, err := url.Parse(strings.TrimSpace(config.BaseURL))
-	if err != nil || baseURL.Host == "" || (baseURL.Scheme != "http" && baseURL.Scheme != "https") || baseURL.RawQuery != "" || baseURL.Fragment != "" {
-		return nil, errors.New("M360 API URL must be an absolute HTTP(S) URL without query or fragment")
+	if err != nil || baseURL.Host == "" || (baseURL.Scheme != "https" && !(config.AllowInsecureHTTP && baseURL.Scheme == "http")) || baseURL.RawQuery != "" || baseURL.Fragment != "" {
+		return nil, errors.New("M360 API URL must be an absolute HTTPS URL without query or fragment")
 	}
 	if strings.TrimSpace(config.APIVersion) == "" || strings.ContainsAny(config.APIVersion, "/?#") {
 		return nil, errors.New("M360 API version is invalid")

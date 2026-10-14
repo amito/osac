@@ -315,76 +315,59 @@ func diskImagePolicyValues(policy *publicv1.DiskImageReferenceFieldPolicy) ([]st
 	if policy == nil {
 		return nil, false
 	}
-	if ref := policy.GetLocked(); ref != nil {
-		return nonEmptyPolicyValue(ref.GetName()), false
-	}
-	if editable := policy.GetEditable(); editable != nil {
-		if editable.GetDefaultValue() != nil {
-			return nonEmptyPolicyValue(editable.GetDefaultValue().GetName()), true
-		}
-		return nil, true
-	}
-	return nil, false
+	locked := policy.GetLocked()
+	editable := policy.GetEditable()
+	defaultValue := editable.GetDefaultValue()
+	return referenceFieldPolicyValues(locked.GetName(), locked != nil, defaultValue.GetName(), defaultValue != nil, editable != nil)
 }
 
 func instanceTypePolicyValues(policy *publicv1.InstanceTypeReferenceFieldPolicy) ([]string, bool) {
 	if policy == nil {
 		return nil, false
 	}
-	if ref := policy.GetLocked(); ref != nil {
-		return nonEmptyPolicyValue(ref.GetName()), false
-	}
-	if editable := policy.GetEditable(); editable != nil {
-		if editable.GetDefaultValue() != nil {
-			return nonEmptyPolicyValue(editable.GetDefaultValue().GetName()), true
-		}
-		return nil, true
-	}
-	return nil, false
+	locked := policy.GetLocked()
+	editable := policy.GetEditable()
+	defaultValue := editable.GetDefaultValue()
+	return referenceFieldPolicyValues(locked.GetName(), locked != nil, defaultValue.GetName(), defaultValue != nil, editable != nil)
 }
 
 func storageTierPolicyValues(policy *publicv1.StorageTierReferenceFieldPolicy) ([]string, bool) {
 	if policy == nil {
 		return nil, false
 	}
-	if ref := policy.GetLocked(); ref != nil {
-		return nonEmptyPolicyValue(ref.GetName()), false
-	}
-	if editable := policy.GetEditable(); editable != nil {
-		if editable.GetDefaultValue() != nil {
-			return nonEmptyPolicyValue(editable.GetDefaultValue().GetName()), true
-		}
-		return nil, true
-	}
-	return nil, false
+	locked := policy.GetLocked()
+	editable := policy.GetEditable()
+	defaultValue := editable.GetDefaultValue()
+	return referenceFieldPolicyValues(locked.GetName(), locked != nil, defaultValue.GetName(), defaultValue != nil, editable != nil)
 }
 
 func clusterVersionPolicyValues(policy *publicv1.ClusterVersionReferenceFieldPolicy) ([]string, bool) {
 	if policy == nil {
 		return nil, false
 	}
-	if ref := policy.GetLocked(); ref != nil {
-		return nonEmptyPolicyValue(ref.GetName()), false
-	}
-	if editable := policy.GetEditable(); editable != nil {
-		if editable.GetDefaultValue() != nil {
-			return nonEmptyPolicyValue(editable.GetDefaultValue().GetName()), true
-		}
-		return nil, true
-	}
-	return nil, false
+	locked := policy.GetLocked()
+	editable := policy.GetEditable()
+	defaultValue := editable.GetDefaultValue()
+	return referenceFieldPolicyValues(locked.GetName(), locked != nil, defaultValue.GetName(), defaultValue != nil, editable != nil)
 }
 
 func bareMetalInstanceTypePolicyValues(policy *publicv1.BareMetalInstanceTypeReferenceFieldPolicy) ([]string, bool) {
 	if policy == nil {
 		return nil, false
 	}
-	if ref := policy.GetLocked(); ref != nil {
-		return nonEmptyPolicyValue(ref.GetName()), false
+	locked := policy.GetLocked()
+	editable := policy.GetEditable()
+	defaultValue := editable.GetDefaultValue()
+	return referenceFieldPolicyValues(locked.GetName(), locked != nil, defaultValue.GetName(), defaultValue != nil, editable != nil)
+}
+
+func referenceFieldPolicyValues(lockedValue string, hasLocked bool, defaultValue string, hasDefault bool, editable bool) ([]string, bool) {
+	if hasLocked {
+		return nonEmptyPolicyValue(lockedValue), false
 	}
-	if editable := policy.GetEditable(); editable != nil {
-		if editable.GetDefaultValue() != nil {
-			return nonEmptyPolicyValue(editable.GetDefaultValue().GetName()), true
+	if editable {
+		if hasDefault {
+			return nonEmptyPolicyValue(defaultValue), true
 		}
 		return nil, true
 	}

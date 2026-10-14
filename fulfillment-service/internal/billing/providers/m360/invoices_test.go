@@ -41,7 +41,7 @@ var _ = Describe("M360 invoice reader", func() {
 		}))
 		DeferCleanup(server.Close)
 
-		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
 		page, err := client.ListInvoices(context.Background(), billing.InvoiceQuery{
@@ -76,7 +76,7 @@ var _ = Describe("M360 invoice reader", func() {
 		}))
 		DeferCleanup(server.Close)
 
-		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
 		invoice, err := client.GetInvoice(context.Background(), "provider-account-1", "INV-1001")
@@ -139,7 +139,7 @@ var _ = Describe("M360 invoice reader", func() {
 		}))
 		DeferCleanup(server.Close)
 
-		client, err := NewClient(Config{BaseURL: server.URL, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
 		Expect(err).NotTo(HaveOccurred())
 
 		page, err := client.ListInvoices(context.Background(), billing.InvoiceQuery{
