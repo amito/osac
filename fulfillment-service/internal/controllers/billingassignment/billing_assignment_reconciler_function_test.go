@@ -175,22 +175,57 @@ func TestReconcileClearsPreviousAccountBeforeLinkingReplacement(t *testing.T) {
 }
 
 func TestReconcileNeverOverwritesAccountBoundToAnotherTenant(t *testing.T) {
-	provider := &providerStub{accounts: map[string]billing.Account{
-		"native": {Reference: "native", ExternalID: "tenant-b", State: billing.AccountStateActive},
-	}}
+	for _, test := range []struct {
+		name  string
+		state billing.AccountState
+	}{
+		{name: "active account", state: billing.AccountStateActive},
+		{name: "inactive account", state: billing.AccountStateInactive},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider := &providerStub{accounts: map[string]billing.Account{
+				"native": {Reference: "native", ExternalID: "tenant-b", State: test.state},
+			}}
+			assignments := &assignmentClientStub{}
+			function := newTestFunction(provider, assignments, accountClientStub{"osac": "native"})
+			current := assignment("assignment", "tenant-a", "osac", false)
+			assignments.items = []*privatev1.TenantBillingAssignment{current}
+
+			if err := function.Reconcile(context.Background(), current); err != nil {
+				t.Fatalf("Reconcile() returned a retryable error for an account bound to another tenant: %v", err)
+			}
+			if len(provider.updates) != 0 {
+				t.Fatalf("provider updates = %v, want no update", provider.updates)
+			}
+			if got := provider.accounts["native"].ExternalID; got != "tenant-b" {
+				t.Fatalf("external ID = %q, want tenant-b", got)
+			}
+			if assignments.state != privatev1.TenantBillingAssignmentConnectionState_TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_FAILED {
+				t.Fatalf("connection state = %v, want FAILED", assignments.state)
+			}
+			if assignments.message != "ACCOUNT_ALREADY_BOUND" {
+				t.Fatalf("failed message = %q, want ACCOUNT_ALREADY_BOUND", assignments.message)
+			}
+		})
+	}
+}
+
+func TestReconcileProviderErrorRemainsPendingAndRetryable(t *testing.T) {
+	provider := &providerStub{getErr: errors.New("provider temporarily unavailable")}
 	assignments := &assignmentClientStub{}
 	function := newTestFunction(provider, assignments, accountClientStub{"osac": "native"})
 	current := assignment("assignment", "tenant-a", "osac", false)
-	assignments.items = []*privatev1.TenantBillingAssignment{current}
 
-	err := function.Reconcile(context.Background(), current)
-	if err == nil {
-		t.Fatal("Reconcile() succeeded for an account bound to another tenant")
+	if err := function.Reconcile(context.Background(), current); err == nil {
+		t.Fatal("Reconcile() returned no error for a transient provider failure")
+	}
+	if assignments.state != privatev1.TenantBillingAssignmentConnectionState_TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_PENDING {
+		t.Fatalf("connection state = %v, want PENDING", assignments.state)
+	}
+	if assignments.message != "PROVIDER_UNAVAILABLE" {
+		t.Fatalf("pending message = %q, want PROVIDER_UNAVAILABLE", assignments.message)
 	}
 	if len(provider.updates) != 0 {
 		t.Fatalf("provider updates = %v, want no update", provider.updates)
-	}
-	if assignments.message != "ACCOUNT_ALREADY_BOUND" {
-		t.Fatalf("pending message = %q, want ACCOUNT_ALREADY_BOUND", assignments.message)
 	}
 }
