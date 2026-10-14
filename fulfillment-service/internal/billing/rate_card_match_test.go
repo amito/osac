@@ -279,6 +279,11 @@ func TestResolveRateCardItemRejectsInvalidRuleAndCurrency(t *testing.T) {
 			items:    []RateCardItem{},
 			currency: "U$D",
 		},
+		{
+			name:     "unrecognized ISO currency code",
+			items:    []RateCardItem{},
+			currency: "ZZZ",
+		},
 	}
 
 	for _, test := range tests {
@@ -288,5 +293,36 @@ func TestResolveRateCardItemRejectsInvalidRuleAndCurrency(t *testing.T) {
 				t.Fatalf("ResolveRateCardItem() error = %v, want ErrInvalidRateCard", err)
 			}
 		})
+	}
+}
+
+func TestResolveRateCardItemNormalizesISO4217CurrencyCodes(t *testing.T) {
+	item := RateCardItem{
+		Service:      "compute_instance",
+		CurrencyCode: "usd",
+		Amount:       "3.00",
+		Unit:         RateUnitHour,
+	}
+
+	got, err := ResolveRateCardItem([]RateCardItem{item}, "compute_instance", "usd", nil)
+	if err != nil {
+		t.Fatalf("ResolveRateCardItem() error = %v", err)
+	}
+	if got.CurrencyCode != "USD" {
+		t.Fatalf("ResolveRateCardItem() currency = %q, want normalized ISO code USD", got.CurrencyCode)
+	}
+}
+
+func TestResolveRateCardItemRejectsUnrecognizedRateCurrency(t *testing.T) {
+	item := RateCardItem{
+		Service:      "compute_instance",
+		CurrencyCode: "ZZZ",
+		Amount:       "3.00",
+		Unit:         RateUnitHour,
+	}
+
+	_, err := ResolveRateCardItem([]RateCardItem{item}, "compute_instance", "USD", nil)
+	if !errors.Is(err, ErrInvalidRateCard) {
+		t.Fatalf("ResolveRateCardItem() error = %v, want ErrInvalidRateCard", err)
 	}
 }

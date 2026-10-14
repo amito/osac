@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"golang.org/x/text/currency"
 )
 
 type RateCardSource int
@@ -97,9 +99,17 @@ func ResolveRateCardItem(
 		ambiguous        bool
 	)
 	for _, item := range items {
-		if strings.TrimSpace(item.Service) != service || strings.ToUpper(strings.TrimSpace(item.CurrencyCode)) != currency {
+		if strings.TrimSpace(item.Service) != service {
 			continue
 		}
+		itemCurrency := strings.ToUpper(strings.TrimSpace(item.CurrencyCode))
+		if !validCurrencyCode(itemCurrency) {
+			return RateCardItem{}, fmt.Errorf("%w: rate currency must be an ISO-4217 code", ErrInvalidRateCard)
+		}
+		if itemCurrency != currency {
+			continue
+		}
+		item.CurrencyCode = itemCurrency
 		specificity, matches, err := rateCardItemSpecificity(item, dimensions)
 		if err != nil {
 			return RateCardItem{}, err
@@ -125,15 +135,8 @@ func ResolveRateCardItem(
 }
 
 func validCurrencyCode(value string) bool {
-	if len(value) != 3 {
-		return false
-	}
-	for _, character := range value {
-		if character < 'A' || character > 'Z' {
-			return false
-		}
-	}
-	return true
+	_, err := currency.ParseISO(strings.ToUpper(strings.TrimSpace(value)))
+	return err == nil
 }
 
 func rateCardItemSpecificity(item RateCardItem, dimensions map[string]string) (int, bool, error) {
