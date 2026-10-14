@@ -155,10 +155,8 @@ func (s *PriceEstimatesServer) Create(ctx context.Context,
 		if component.Gap {
 			return nil, grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_COVERAGE_GAP")
 		}
-	}
-	for _, component := range components {
-		if component.Rate == nil {
-			return nil, grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_CONFIGURATION_UNSUPPORTED")
+		if component.Stale || component.Rate == nil {
+			return nil, grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_COVERAGE_UNAVAILABLE")
 		}
 	}
 	status := publicv1.PriceEstimateStatus_PRICE_ESTIMATE_STATUS_CURRENT
@@ -177,9 +175,6 @@ func (s *PriceEstimatesServer) Create(ctx context.Context,
 		}
 		if !addEstimateAmount(hourlyTotal, hourly) || !addEstimateAmount(monthlyTotal, monthly) {
 			return nil, grpcstatus.Error(grpccodes.Internal, "BILLING_ESTIMATE_INVALID_RATE")
-		}
-		if component.Stale {
-			status = publicv1.PriceEstimateStatus_PRICE_ESTIMATE_STATUS_STALE
 		}
 		estimateComponents = append(estimateComponents, publicv1.PriceEstimateComponent_builder{
 			Service:       component.Request.Service,

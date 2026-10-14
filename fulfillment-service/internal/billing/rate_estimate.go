@@ -77,8 +77,8 @@ const (
 // decimal places; the provider amount and unit remain unchanged in the API.
 func NormalizeRecurringRate(amount string, unit RateUnit) (hourly, monthly string, err error) {
 	value, ok := new(big.Rat).SetString(strings.TrimSpace(amount))
-	if !ok || value.Sign() < 0 {
-		return "", "", errors.New("rate amount must be a non-negative decimal")
+	if !ok {
+		return "", "", errors.New("rate amount must be a decimal")
 	}
 	month := big.NewRat(hoursPerBillingMonth, 1)
 	switch unit {
