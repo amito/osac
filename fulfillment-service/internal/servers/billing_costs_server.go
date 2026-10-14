@@ -39,6 +39,7 @@ type BillingCostsServerBuilder struct {
 	logger      *slog.Logger
 	providerKey string
 	provider    billing.CostProvider
+	circuit     *catalogPricingCircuitBreaker
 	store       assignedBillingAccountStore
 	tenancy     auth.TenancyLogic
 }
@@ -48,6 +49,7 @@ type BillingCostsServer struct {
 	logger      *slog.Logger
 	providerKey string
 	provider    billing.CostProvider
+	circuit     *catalogPricingCircuitBreaker
 	store       assignedBillingAccountStore
 	tenancy     auth.TenancyLogic
 }
@@ -66,6 +68,14 @@ func (b *BillingCostsServerBuilder) SetLogger(value *slog.Logger) *BillingCostsS
 func (b *BillingCostsServerBuilder) SetProvider(providerKey string, value billing.CostProvider) *BillingCostsServerBuilder {
 	b.providerKey = providerKey
 	b.provider = value
+	return b
+}
+
+// SetPricingResolver shares the billing provider circuit with rate-card reads.
+func (b *BillingCostsServerBuilder) SetPricingResolver(value *CatalogPricingResolver) *BillingCostsServerBuilder {
+	if value != nil {
+		b.circuit = &value.circuit
+	}
 	return b
 }
 
@@ -90,6 +100,7 @@ func (b *BillingCostsServerBuilder) Build() (*BillingCostsServer, error) {
 		logger:      b.logger,
 		providerKey: b.providerKey,
 		provider:    b.provider,
+		circuit:     b.circuit,
 		store:       b.store,
 		tenancy:     b.tenancy,
 	}, nil
@@ -133,14 +144,15 @@ func (s *BillingCostsServer) List(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	costs, err := billing.RetryProviderRead(ctx, func(ctx context.Context) ([]billing.Cost, error) {
-		return s.provider.ListCosts(ctx, billing.CostQuery{
-			AccountReference: account.ProviderAccountReference,
-			FromDate:         request.GetFromDate(),
-			ToDate:           request.GetToDate(),
-		})
+	costs, err := s.listProviderCosts(ctx, billing.CostQuery{
+		AccountReference: account.ProviderAccountReference,
+		FromDate:         request.GetFromDate(),
+		ToDate:           request.GetToDate(),
 	})
 	if err != nil {
+		if errors.Is(err, billing.ErrCostHeaderLimitExceeded) {
+			return nil, grpcstatus.Error(grpccodes.FailedPrecondition, "BILLING_COST_RANGE_TOO_LARGE")
+		}
 		s.logger.ErrorContext(ctx, "failed to list provider costs")
 		return nil, grpcstatus.Error(grpccodes.Unavailable, "provider costs are unavailable")
 	}
@@ -212,6 +224,34 @@ func (s *BillingCostsServer) List(ctx context.Context,
 	}.Build(), nil
 }
 
+func (s *BillingCostsServer) listProviderCosts(ctx context.Context, query billing.CostQuery) ([]billing.Cost, error) {
+	probe := false
+	if s.circuit != nil {
+		allowed := false
+		allowed, probe = s.circuit.allow(time.Now())
+		if !allowed {
+			return nil, errPricingCircuitOpen
+		}
+	}
+	costs, err := billing.RetryProviderRead(ctx, func(ctx context.Context) ([]billing.Cost, error) {
+		return s.provider.ListCosts(ctx, query)
+	})
+	if s.circuit == nil {
+		return costs, err
+	}
+	if err == nil {
+		s.circuit.recordSuccess(probe)
+	} else if errors.Is(err, context.Canceled) {
+		s.circuit.recordNeutral(probe)
+	} else if errors.Is(err, billing.ErrProviderUnavailable) || errors.Is(err, context.DeadlineExceeded) {
+		s.circuit.recordFailure(time.Now(), probe)
+	} else {
+		// A provider response such as a result-size limit is not an outage.
+		s.circuit.recordSuccess(probe)
+	}
+	return costs, err
+}
+
 func (s *BillingCostsServer) assignedAccount(ctx context.Context, tenantID string) (billing.AssignedAccount, error) {
 	if err := auth.ValidateTenantAssignment(ctx, s.tenancy, tenantID); err != nil {
 		return billing.AssignedAccount{}, convertTenantErrorToGRPC(ctx, err, s.logger, tenantID)
@@ -251,6 +291,9 @@ func validateBillingCostDateRange(fromDate, toDate string) error {
 	}
 	if from.After(to) {
 		return errors.New("from_date must be on or before to_date")
+	}
+	if to.Sub(from) >= 366*24*time.Hour {
+		return errors.New("cost date range exceeds 366 days")
 	}
 	return nil
 }

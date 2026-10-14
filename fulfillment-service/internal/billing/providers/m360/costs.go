@@ -29,7 +29,12 @@ import (
 	"github.com/osac-project/osac/fulfillment-service/internal/billing"
 )
 
-const costDetailConcurrency = 8
+const (
+	costDetailConcurrency = 8
+	maxCostHeaders        = 500
+	maxCostPages          = maxCostHeaders / invoicePageSize
+	maxCostRangeDays      = 366
+)
 
 var _ billing.CostProvider = (*Client)(nil)
 
@@ -145,8 +150,8 @@ func (c *Client) ListCosts(ctx context.Context, query billing.CostQuery) ([]bill
 }
 
 func (c *Client) listRatedTransactionHeaders(ctx context.Context, query billing.CostQuery) ([]m360RatedTransactionHeader, error) {
-	transactions := make([]m360RatedTransactionHeader, 0)
-	for page := 0; ; page++ {
+	transactions := make([]m360RatedTransactionHeader, 0, invoicePageSize)
+	for page := 0; page < maxCostPages; page++ {
 		endpoint := c.apiURL("rated-transactions")
 		params := endpoint.Query()
 		params.Set("page", strconv.Itoa(page))
@@ -159,14 +164,30 @@ func (c *Client) listRatedTransactionHeaders(ctx context.Context, query billing.
 		if err := c.requestJSON(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
 			return nil, err
 		}
-		if response.Total < 0 || response.Total > maxInvoiceTotal {
+		if response.Total < 0 || response.TotalPages < 0 {
 			return nil, errors.New("M360 rated transaction list contained an invalid total")
 		}
+		if response.Total > maxCostHeaders || response.TotalPages > maxCostPages {
+			return nil, billing.ErrCostHeaderLimitExceeded
+		}
+		if len(response.Content) > invoicePageSize || len(transactions)+len(response.Content) > maxCostHeaders {
+			return nil, billing.ErrCostHeaderLimitExceeded
+		}
+		if !response.Last && response.TotalPages == 0 {
+			return nil, errors.New("M360 rated transaction list omitted its page count")
+		}
 		transactions = append(transactions, response.Content...)
-		if response.Last || len(response.Content) == 0 || (response.TotalPages > 0 && page+1 >= response.TotalPages) {
+		if response.Last {
+			if response.Total > 0 && len(transactions) != response.Total {
+				return nil, errors.New("M360 rated transaction list ended before its declared total")
+			}
 			return transactions, nil
 		}
+		if len(response.Content) == 0 || page+1 >= response.TotalPages || (response.Total > 0 && len(transactions) >= response.Total) {
+			return nil, errors.New("M360 rated transaction list ended before its last page")
+		}
 	}
+	return nil, billing.ErrCostHeaderLimitExceeded
 }
 
 func (c *Client) getRatedTransactionDetails(ctx context.Context,
@@ -221,6 +242,9 @@ func validateCostDateRange(fromDate, toDate string) error {
 	}
 	if from.After(to) {
 		return errors.New("from_date must be on or before to_date")
+	}
+	if to.Sub(from) >= maxCostRangeDays*24*time.Hour {
+		return errors.New("cost date range exceeds 366 days")
 	}
 	return nil
 }
