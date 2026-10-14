@@ -166,5 +166,10 @@ func rateCardItemSpecificity(item RateCardItem, dimensions map[string]string) (i
 			return 0, false, fmt.Errorf("%w: condition operator is unsupported", ErrInvalidRateCard)
 		}
 	}
+	for dimension := range dimensions {
+		if _, covered := seen[dimension]; !covered {
+			return 0, false, nil
+		}
+	}
 	return specificity, true, nil
 }
