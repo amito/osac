@@ -154,6 +154,7 @@ func TestBillingCostsListFiltersToVisibleProjects(t *testing.T) {
 	require.Equal(t, int32(1), response.GetSize())
 	require.Equal(t, "project-a", response.GetItems()[0].GetProjectId())
 	require.Equal(t, "vm-1", response.GetItems()[0].GetResourceId())
+	require.True(t, response.GetItems()[0].HasAsOf(), "successful cost reads should include as_of")
 }
 
 func TestBillingCostsPaginatesVisibleAggregatesAtLimit20(t *testing.T) {

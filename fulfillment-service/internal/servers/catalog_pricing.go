@@ -32,6 +32,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	grpccodes "google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -124,9 +125,10 @@ type catalogRateCardEntry struct {
 }
 
 type catalogRateCardLoad struct {
-	done  chan struct{}
-	items []billing.RateCardItem
-	err   error
+	done      chan struct{}
+	items     []billing.RateCardItem
+	fetchedAt time.Time
+	err       error
 }
 
 // NewCatalogPricingResolver creates a resolver for the configured billing provider.
@@ -194,6 +196,7 @@ func (r *CatalogPricingResolver) Resolve(
 	expected := make([]int, len(requests))
 	failed := make([]bool, len(requests))
 	staleResults := make([]bool, len(requests))
+	asOfTimes := make([]time.Time, len(requests))
 	components := make([][]*publicv1.CatalogPriceComponent, len(requests))
 	for index, request := range requests {
 		if !request.Supported || request.Service == "" {
@@ -218,7 +221,7 @@ func (r *CatalogPricingResolver) Resolve(
 	}
 	sort.Strings(services)
 	for _, service := range services {
-		rateItems, usedStale := r.getRateCardItems(ctx, account, service)
+		rateItems, usedStale, fetchedAt := r.getCatalogRateCardItems(ctx, account, service)
 		if rateItems == nil {
 			for _, lookup := range lookupsByService[service] {
 				failed[lookup.requestIndex] = true
@@ -226,6 +229,9 @@ func (r *CatalogPricingResolver) Resolve(
 			continue
 		}
 		for _, lookup := range lookupsByService[service] {
+			if !usedStale {
+				asOfTimes[lookup.requestIndex] = fetchedAt
+			}
 			matched, matchErr := r.resolveRateCardItem(rateItems, service, account.CurrencyCode, lookup.request.Dimensions)
 			if matchErr != nil {
 				failed[lookup.requestIndex] = true
@@ -254,12 +260,16 @@ func (r *CatalogPricingResolver) Resolve(
 		if staleResults[index] {
 			status = publicv1.CatalogPricingStatus_CATALOG_PRICING_STATUS_STALE
 		}
-		results[index] = publicv1.CatalogItemPricing_builder{
+		pricing := publicv1.CatalogItemPricing_builder{
 			Status:       status,
 			CurrencyCode: &account.CurrencyCode,
 			PriceMayVary: request.PriceMayVary,
 			Components:   components[index],
-		}.Build()
+		}
+		if status == publicv1.CatalogPricingStatus_CATALOG_PRICING_STATUS_CURRENT && !asOfTimes[index].IsZero() {
+			pricing.AsOf = timestamppb.New(asOfTimes[index])
+		}
+		results[index] = pricing.Build()
 	}
 	return results
 }
@@ -441,6 +451,18 @@ func (r *CatalogPricingResolver) getRateCardItems(
 	account billing.AssignedAccount,
 	service string,
 ) ([]billing.RateCardItem, bool) {
+	items, stale, _ := r.getCatalogRateCardItems(ctx, account, service)
+	return items, stale
+}
+
+// getCatalogRateCardItems returns the OSAC fetch time for a successful lookup.
+// A stale fallback retains the previous fetch time but callers must not present
+// it as a current observation.
+func (r *CatalogPricingResolver) getCatalogRateCardItems(
+	ctx context.Context,
+	account billing.AssignedAccount,
+	service string,
+) ([]billing.RateCardItem, bool, time.Time) {
 	key := catalogRateCardKey{
 		providerKey: r.providerKey,
 		account:     account.ProviderAccountReference,
@@ -453,24 +475,24 @@ func (r *CatalogPricingResolver) getRateCardItems(
 	entry, hasEntry := r.cache[key]
 	if hasEntry && now.Sub(entry.fetchedAt) < catalogPricingCacheTTL {
 		r.mu.Unlock()
-		return entry.items, false
+		return entry.items, false, entry.fetchedAt
 	}
 	if loading, ok := r.inFlight[key]; ok {
 		r.mu.Unlock()
 		select {
 		case <-ctx.Done():
 			if hasEntry {
-				return entry.items, true
+				return entry.items, true, entry.fetchedAt
 			}
-			return nil, false
+			return nil, false, time.Time{}
 		case <-loading.done:
 			if loading.err == nil {
-				return loading.items, false
+				return loading.items, false, loading.fetchedAt
 			}
 			if hasEntry {
-				return entry.items, true
+				return entry.items, true, entry.fetchedAt
 			}
-			return nil, false
+			return nil, false, time.Time{}
 		}
 	}
 	loading := &catalogRateCardLoad{done: make(chan struct{})}
@@ -488,33 +510,39 @@ func (r *CatalogPricingResolver) getRateCardItems(
 		// distinct from nil returned after a failed lookup, which means unavailable.
 		items = []billing.RateCardItem{}
 	}
-	return r.finishRateCardLoad(key, loading, items, err)
+	fetchedAt := time.Time{}
+	if err == nil {
+		fetchedAt = r.now()
+	}
+	return r.finishRateCardLoad(key, loading, items, fetchedAt, err)
 }
 
 func (r *CatalogPricingResolver) finishRateCardLoad(
 	key catalogRateCardKey,
 	loading *catalogRateCardLoad,
 	items []billing.RateCardItem,
+	fetchedAt time.Time,
 	loadErr error,
-) ([]billing.RateCardItem, bool) {
+) ([]billing.RateCardItem, bool, time.Time) {
 	r.mu.Lock()
 	loading.items = items
+	loading.fetchedAt = fetchedAt
 	loading.err = loadErr
 	if loadErr == nil {
-		r.cache[key] = catalogRateCardEntry{items: items, fetchedAt: r.now()}
+		r.cache[key] = catalogRateCardEntry{items: items, fetchedAt: fetchedAt}
 	}
 	delete(r.inFlight, key)
 	close(loading.done)
 	if loadErr == nil {
 		r.mu.Unlock()
-		return items, false
+		return items, false, fetchedAt
 	}
 	entry, hasEntry := r.cache[key]
 	r.mu.Unlock()
 	if hasEntry {
-		return entry.items, true
+		return entry.items, true, entry.fetchedAt
 	}
-	return nil, false
+	return nil, false, time.Time{}
 }
 
 func listRateCardsWithRetries(ctx context.Context, provider billing.RateCardProvider, query billing.RateCardQuery) ([]billing.RateCardItem, error) {

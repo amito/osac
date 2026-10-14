@@ -19,6 +19,7 @@ syntax = "proto3";
 package osac.public.v1;
 
 import "buf/validate/validate.proto";
+import "google/protobuf/timestamp.proto";
 
 // CatalogPricing is the current provider-derived pricing for a catalog item's
 // default configuration.
@@ -36,6 +37,10 @@ message CatalogItemPricing {
   // Whether user-selectable configuration values can change the resulting
   // price.
   bool price_may_vary = 4;
+
+  // Time OSAC fetched the current provider pricing. Unset for stale or
+  // unavailable pricing.
+  google.protobuf.Timestamp as_of = 5;
 }
 
 // CatalogPricingStatus describes the freshness and availability of a catalog

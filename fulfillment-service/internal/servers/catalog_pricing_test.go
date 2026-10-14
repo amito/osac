@@ -18,7 +18,9 @@ package servers
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/billing"
 	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
@@ -46,10 +48,44 @@ func TestCatalogPricingSeparatesBaseAndAdditionalDiskAmounts(t *testing.T) {
 	if len(got) != 1 || got[0].GetStatus() != publicv1.CatalogPricingStatus_CATALOG_PRICING_STATUS_CURRENT || len(got[0].GetComponents()) != 3 {
 		t.Fatalf("catalog pricing = %v, want base and two priced disks", got)
 	}
+	if !got[0].HasAsOf() {
+		t.Fatal("current catalog pricing has no as_of timestamp")
+	}
 	for i, want := range []string{"10", "3", "5"} {
 		if got[0].GetComponents()[i].GetAmount() != want {
 			t.Fatalf("component %d amount = %q, want %q", i, got[0].GetComponents()[i].GetAmount(), want)
 		}
+	}
+}
+
+func TestCatalogPricingAsOfIsUnsetOnStaleFallback(t *testing.T) {
+	store := &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
+		ProviderKey: "m360", ProviderAccountReference: "native-account", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+	}}
+	provider := &catalogPricingRateCardProviderStub{items: []billing.RateCardItem{{
+		Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "4.50", Unit: billing.RateUnitHour,
+	}}}
+	resolver := NewCatalogPricingResolver("m360", provider, store)
+	now := time.Date(2026, time.October, 14, 12, 0, 0, 0, time.UTC)
+	resolver.now = func() time.Time { return now }
+	request := CatalogPricingRequest{Service: billing.ServiceComputeInstance, Supported: true}
+
+	current := resolver.Resolve(context.Background(), "tenant-a", []CatalogPricingRequest{request})[0]
+	if !current.HasAsOf() || !current.GetAsOf().AsTime().Equal(now) {
+		t.Fatalf("current as_of = %v, want %v", current.GetAsOf(), now)
+	}
+
+	now = now.Add(catalogPricingCacheTTL + time.Second)
+	provider.err = errors.New("provider unavailable")
+	stale := resolver.Resolve(context.Background(), "tenant-a", []CatalogPricingRequest{request})[0]
+	if stale.GetStatus() != publicv1.CatalogPricingStatus_CATALOG_PRICING_STATUS_STALE {
+		t.Fatalf("stale status = %v, want STALE", stale.GetStatus())
+	}
+	if len(stale.GetComponents()) != 1 || stale.GetComponents()[0].GetAmount() != "4.50" {
+		t.Fatalf("stale components = %v, want retained amount", stale.GetComponents())
+	}
+	if stale.HasAsOf() {
+		t.Fatalf("stale pricing as_of = %v, want unset", stale.GetAsOf())
 	}
 }
 
