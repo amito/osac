@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -74,6 +75,10 @@ func (s *AccountStore) SyncAccounts(
 	for _, account := range accounts {
 		if account.Reference == "" || account.DisplayName == "" {
 			return nil, errors.New("provider account ID and display name are required")
+		}
+		account.Currency = strings.ToUpper(strings.TrimSpace(account.Currency))
+		if account.Currency != "" && !validCurrencyCode(account.Currency) {
+			return nil, fmt.Errorf("provider account currency %q is not a valid ISO-4217 code", account.Currency)
 		}
 		id := uuid.New()
 		var storedID, storedCurrency string

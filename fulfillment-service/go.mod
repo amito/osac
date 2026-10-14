@@ -50,6 +50,7 @@ require (
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba
 	golang.org/x/sync v0.24.0
 	golang.org/x/term v0.46.0
+	golang.org/x/text v0.42.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20260825221802-da73d73af1c5
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260911204522-f61a6ca850bd
 	google.golang.org/grpc v1.84.0
@@ -201,7 +202,6 @@ require (
 	github.com/spf13/pflag v1.0.10
 	golang.org/x/net v0.59.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
 )
 
 replace (

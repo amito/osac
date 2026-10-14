@@ -24,6 +24,39 @@ import (
 )
 
 var _ = Describe("billing account store", func() {
+	It("normalizes a provider currency to its uppercase ISO-4217 code", func() {
+		store := billing.NewAccountStore()
+		account := billing.Account{Reference: "m360-account-lowercase-currency", DisplayName: "Acme", Currency: "usd"}
+
+		accounts, err := store.SyncAccounts(ctx, "m360", []billing.Account{account}, time.Now().UTC())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(accounts).To(HaveLen(1))
+		Expect(accounts[0].GetBaseCurrency()).To(Equal("USD"))
+	})
+
+	It("keeps a missing initial provider currency empty", func() {
+		store := billing.NewAccountStore()
+		account := billing.Account{Reference: "m360-account-empty-currency", DisplayName: "Acme"}
+
+		accounts, err := store.SyncAccounts(ctx, "m360", []billing.Account{account}, time.Now().UTC())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(accounts).To(HaveLen(1))
+		Expect(accounts[0].GetBaseCurrency()).To(BeEmpty())
+	})
+
+	It("rejects unsupported provider currency codes", func() {
+		store := billing.NewAccountStore()
+		for _, currency := range []string{"US", "ZZZ"} {
+			account := billing.Account{
+				Reference:   "m360-account-invalid-currency-" + currency,
+				DisplayName: "Acme",
+				Currency:    currency,
+			}
+			_, err := store.SyncAccounts(ctx, "m360", []billing.Account{account}, time.Now().UTC())
+			Expect(err).To(HaveOccurred(), "currency %q must not be persisted", currency)
+		}
+	})
+
 	It("keeps a stable opaque OSAC ID when a provider account is rediscovered", func() {
 		store := billing.NewAccountStore()
 		observedAt := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
