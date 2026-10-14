@@ -196,8 +196,13 @@ func (s *BillingCostsServer) List(ctx context.Context,
 		}
 		if !visibility.IsTotal() {
 			if cost.ProjectID == nil {
-				return nil, grpcstatus.Error(grpccodes.FailedPrecondition, "PROJECT_COST_ATTRIBUTION_UNAVAILABLE")
+				// A tenant-scoped caller cannot safely see a cost without project attribution.
+				// Skip that row while preserving the rest of the caller's visible costs.
+				continue
 			}
+			// IsProjectVisible also grants access to descendants of each visible project.
+			// Keep provider rows at their original project/resource level; synthesizing
+			// parent rollups here could double-count rows when clients sum the response.
 			if !visibility.IsProjectVisible(tenantID, *cost.ProjectID) {
 				continue
 			}

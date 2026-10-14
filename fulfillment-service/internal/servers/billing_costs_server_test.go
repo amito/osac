@@ -105,14 +105,19 @@ func (s *costAccountStoreStub) GetAssignedAccount(_ context.Context, tenant stri
 
 func newCostTenancyLogic(t *testing.T, projectVisibility ...string) *auth.MockTenancyLogic {
 	t.Helper()
-	controller := gomock.NewController(t)
-	logic := auth.NewMockTenancyLogic(controller)
 	visibilityBuilder := auth.NewVisibility()
 	for _, project := range projectVisibility {
 		visibilityBuilder.AddVisibleProject("tenant-a", project)
 	}
 	visibility, err := visibilityBuilder.Build()
 	require.NoError(t, err)
+	return newCostTenancyLogicWithVisibility(t, visibility)
+}
+
+func newCostTenancyLogicWithVisibility(t *testing.T, visibility *auth.Visibility) *auth.MockTenancyLogic {
+	t.Helper()
+	controller := gomock.NewController(t)
+	logic := auth.NewMockTenancyLogic(controller)
 	logic.EXPECT().DetermineVisibility(gomock.Any()).Return(visibility, nil).AnyTimes()
 	logic.EXPECT().DetermineAssignableTenants(gomock.Any()).Return(collections.NewSet("tenant-a"), nil).AnyTimes()
 	return logic
@@ -218,49 +223,80 @@ func TestBillingCostsPaginatesVisibleAggregatesAtLimit20(t *testing.T) {
 	}
 }
 
-func TestBillingCostsRejectsUnattributedCostsForTenantCaller(t *testing.T) {
-	provider := &costProviderStub{costs: []billing.Cost{{
-		ResourceID: new("vm-1"), Service: billing.ServiceComputeInstance, Amount: "4.50", CurrencyCode: "USD",
-	}}}
-	store := &costAccountStoreStub{account: billing.AssignedAccount{
-		ProviderKey: "m360", ProviderAccountReference: "native-account-1", CurrencyCode: "USD", ConnectionState: "CONNECTED",
-	}}
-	server := newBillingCostsServer(t, provider, store, "project-a")
-	ctx := config.TenantIntoContext(context.Background(), "tenant-a")
-
-	_, err := server.List(ctx, publicv1.BillingCostsListRequest_builder{FromDate: "2026-08-01", ToDate: "2026-08-31"}.Build())
-	status, ok := grpcstatus.FromError(err)
-	require.True(t, ok)
-	require.Equal(t, grpccodes.FailedPrecondition, status.Code())
-	require.Equal(t, "PROJECT_COST_ATTRIBUTION_UNAVAILABLE", status.Message())
-}
-
-func TestBillingCostsAllowsUnattributedCostsForTotalVisibility(t *testing.T) {
-	provider := &costProviderStub{costs: []billing.Cost{{
-		ResourceID: new("vm-1"), Service: billing.ServiceComputeInstance, Amount: "4.50", CurrencyCode: "USD",
-	}}}
-	store := &costAccountStoreStub{account: billing.AssignedAccount{
-		ProviderKey: "m360", ProviderAccountReference: "native-account-1", CurrencyCode: "USD", ConnectionState: "CONNECTED",
-	}}
-	controller := gomock.NewController(t)
-	tenancy := auth.NewMockTenancyLogic(controller)
-	tenancy.EXPECT().DetermineVisibility(gomock.Any()).Return(auth.TotalVisibility(), nil).AnyTimes()
-	tenancy.EXPECT().DetermineAssignableTenants(gomock.Any()).Return(collections.NewSet("tenant-a"), nil).AnyTimes()
-	server, err := NewBillingCostsServer().
-		SetLogger(newBillingTestLogger()).
-		SetProvider("m360", provider).
-		SetAccountStore(store).
-		SetTenancyLogic(tenancy).
+func TestBillingCostsFiltersRowsByProjectVisibility(t *testing.T) {
+	partialVisibility, err := auth.NewVisibility().
+		AddVisibleProject("tenant-a", "project-a").
 		Build()
 	require.NoError(t, err)
-	ctx := config.TenantIntoContext(context.Background(), "tenant-a")
+	totalVisibility := auth.TotalVisibility()
 
-	response, err := server.List(ctx, publicv1.BillingCostsListRequest_builder{
-		FromDate: "2026-08-01", ToDate: "2026-08-31",
-	}.Build())
-	require.NoError(t, err)
-	require.Len(t, response.GetItems(), 1)
-	require.False(t, response.GetItems()[0].HasProjectId())
+	testCases := []struct {
+		name       string
+		visibility *auth.Visibility
+		costs      []billing.Cost
+		wantRows   []string
+	}{
+		{
+			name:       "tenant caller skips unattributed and hidden rows but includes visible descendants",
+			visibility: partialVisibility,
+			costs: []billing.Cost{
+				{ResourceID: new("vm-unattributed"), Service: billing.ServiceComputeInstance, Amount: "2.00", CurrencyCode: "USD"},
+				{ProjectID: new("project-a.child"), ResourceID: new("vm-child"), Service: billing.ServiceComputeInstance, Amount: "4.50", CurrencyCode: "USD"},
+				{ProjectID: new("project-b"), ResourceID: new("vm-hidden"), Service: billing.ServiceComputeInstance, Amount: "7.00", CurrencyCode: "USD"},
+			},
+			wantRows: []string{"project-a.child|vm-child"},
+		},
+		{
+			name:       "tenant caller returns an empty list when every row is unattributed",
+			visibility: partialVisibility,
+			costs: []billing.Cost{
+				{ResourceID: new("vm-unattributed"), Service: billing.ServiceComputeInstance, Amount: "2.00", CurrencyCode: "USD"},
+			},
+			wantRows: []string{},
+		},
+		{
+			name:       "total visibility retains unattributed and otherwise hidden rows",
+			visibility: totalVisibility,
+			costs: []billing.Cost{
+				{ResourceID: new("vm-unattributed"), Service: billing.ServiceComputeInstance, Amount: "2.00", CurrencyCode: "USD"},
+				{ProjectID: new("project-b.child"), ResourceID: new("vm-other-project"), Service: billing.ServiceComputeInstance, Amount: "7.00", CurrencyCode: "USD"},
+			},
+			wantRows: []string{"<unattributed>|vm-unattributed", "project-b.child|vm-other-project"},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			provider := &costProviderStub{costs: testCase.costs}
+			store := &costAccountStoreStub{account: billing.AssignedAccount{
+				ProviderKey: "m360", ProviderAccountReference: "native-account-1", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+			}}
+			server, err := NewBillingCostsServer().
+				SetLogger(newBillingTestLogger()).
+				SetProvider("m360", provider).
+				SetAccountStore(store).
+				SetTenancyLogic(newCostTenancyLogicWithVisibility(t, testCase.visibility)).
+				Build()
+			require.NoError(t, err)
+			ctx := config.TenantIntoContext(context.Background(), "tenant-a")
+
+			response, err := server.List(ctx, publicv1.BillingCostsListRequest_builder{
+				FromDate: "2026-08-01", ToDate: "2026-08-31",
+			}.Build())
+			require.NoError(t, err)
+			gotRows := make([]string, 0, len(response.GetItems()))
+			for _, item := range response.GetItems() {
+				projectID := "<unattributed>"
+				if item.HasProjectId() {
+					projectID = item.GetProjectId()
+				}
+				gotRows = append(gotRows, projectID+"|"+item.GetResourceId())
+			}
+			require.Equal(t, testCase.wantRows, gotRows, "visible provider rows should be returned once, without synthesized parent rollups")
+			require.Equal(t, int32(len(testCase.wantRows)), response.GetTotal())
+			require.Equal(t, int32(len(testCase.wantRows)), response.GetSize())
+		})
+	}
 }
 
 func TestBillingCostsRejectsProviderCurrencyMismatch(t *testing.T) {
