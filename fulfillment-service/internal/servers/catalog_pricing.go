@@ -37,6 +37,7 @@ import (
 
 const (
 	catalogPricingCacheTTL                = 5 * time.Minute
+	catalogPricingCacheMaxEntries         = 256
 	catalogPricingTimeout                 = 15 * time.Second
 	catalogPricingRetryCount              = billing.ProviderReadRetryCount
 	catalogPricingMaxConcurrency          = 4
@@ -530,6 +531,7 @@ func (r *CatalogPricingResolver) finishRateCardLoad(
 	loading.err = loadErr
 	if loadErr == nil {
 		r.cache[key] = catalogRateCardEntry{items: items, fetchedAt: fetchedAt}
+		r.evictOldestCatalogRateCardEntriesLocked()
 	}
 	delete(r.inFlight, key)
 	close(loading.done)
@@ -543,6 +545,26 @@ func (r *CatalogPricingResolver) finishRateCardLoad(
 		return entry.items, true, entry.fetchedAt
 	}
 	return nil, false, time.Time{}
+}
+
+// evictOldestCatalogRateCardEntriesLocked bounds memory without removing
+// expired entries during normal reads. Retaining those entries allows a failed
+// refresh to return their rates as STALE; they are only evicted under capacity
+// pressure, oldest fetched entry first.
+func (r *CatalogPricingResolver) evictOldestCatalogRateCardEntriesLocked() {
+	for len(r.cache) > catalogPricingCacheMaxEntries {
+		var oldestKey catalogRateCardKey
+		var oldestFetchedAt time.Time
+		first := true
+		for key, entry := range r.cache {
+			if first || entry.fetchedAt.Before(oldestFetchedAt) {
+				oldestKey = key
+				oldestFetchedAt = entry.fetchedAt
+				first = false
+			}
+		}
+		delete(r.cache, oldestKey)
+	}
 }
 
 func listRateCardsWithRetries(ctx context.Context, provider billing.RateCardProvider, query billing.RateCardQuery) ([]billing.RateCardItem, error) {

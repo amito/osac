@@ -19,6 +19,7 @@ package servers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -187,6 +188,48 @@ func TestCatalogPricingResolverUsesExpiredCacheAsStaleOnRefreshFailure(t *testin
 	second := resolver.Resolve(context.Background(), "tenant-a", request)
 	if second[0].GetStatus() != publicv1.CatalogPricingStatus_CATALOG_PRICING_STATUS_STALE || len(second[0].GetComponents()) != 1 {
 		t.Fatalf("second Resolve() = %v, want stale pricing with a component", second[0])
+	}
+}
+
+func TestCatalogPricingResolverBoundsCacheByEvictingOldestEntry(t *testing.T) {
+	provider := &catalogPricingRateCardProviderStub{items: []billing.RateCardItem{{
+		Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "3.00", Unit: billing.RateUnitHour,
+	}}}
+	resolver := NewCatalogPricingResolver("m360", provider, nil)
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	resolver.now = func() time.Time { return now }
+
+	var oldestKey catalogRateCardKey
+	var newestKey catalogRateCardKey
+	for i := 0; i < catalogPricingCacheMaxEntries+1; i++ {
+		now = now.Add(time.Second)
+		account := billing.AssignedAccount{
+			ProviderAccountReference: fmt.Sprintf("account-%d", i),
+			CurrencyCode:             "USD",
+		}
+		key := catalogRateCardKey{
+			providerKey: "m360",
+			account:     account.ProviderAccountReference,
+			currency:    account.CurrencyCode,
+			service:     billing.ServiceComputeInstance,
+		}
+		if i == 0 {
+			oldestKey = key
+		}
+		newestKey = key
+		if items, stale, _ := resolver.getCatalogRateCardItems(context.Background(), account, billing.ServiceComputeInstance); len(items) == 0 || stale {
+			t.Fatalf("cache lookup %d = (%v, stale=%t), want fresh rate card", i, items, stale)
+		}
+	}
+
+	if got := len(resolver.cache); got != catalogPricingCacheMaxEntries {
+		t.Fatalf("catalog rate-card cache size = %d, want limit %d", got, catalogPricingCacheMaxEntries)
+	}
+	if _, exists := resolver.cache[oldestKey]; exists {
+		t.Fatalf("oldest cache key %q was retained after reaching the limit", oldestKey.account)
+	}
+	if _, exists := resolver.cache[newestKey]; !exists {
+		t.Fatalf("newest cache key %q was evicted", newestKey.account)
 	}
 }
 
