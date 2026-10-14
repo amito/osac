@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/billing"
+	"github.com/osac-project/osac/fulfillment-service/internal/collections"
+	"github.com/osac-project/osac/fulfillment-service/internal/config"
 	publicv1 "github.com/osac-project/osac/proto/gen/osac/public/v1"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -217,14 +219,65 @@ func TestCatalogPricingCanBeBypassedForInternalCatalogInventoryReads(t *testing.
 	}}}
 	resolver := NewCatalogPricingResolver("m360", provider, store)
 
-	got := resolveCatalogPricing(
+	got, err := resolveCatalogPricing(
 		withoutCatalogPricing(context.Background()),
 		nil,
+		nil,
 		resolver,
+		"",
 		[]CatalogPricingRequest{{Service: billing.ServiceComputeInstance, Supported: true}},
 	)
-	if got != nil || store.calls != 0 || provider.calls != 0 {
+	if err != nil || got != nil || store.calls != 0 || provider.calls != 0 {
 		t.Fatalf("internal inventory lookup got=%v account calls=%d provider calls=%d, want bypassed pricing", got, store.calls, provider.calls)
+	}
+}
+
+func TestResolveCatalogPricingUsesTenantContextInsteadOfRequestedTenant(t *testing.T) {
+	store := &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
+		ProviderKey: "m360", ProviderAccountReference: "tenant-a-account", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+	}}
+	provider := &catalogPricingRateCardProviderStub{items: []billing.RateCardItem{{
+		Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "3.00", Unit: billing.RateUnitHour,
+	}}}
+	resolver := NewCatalogPricingResolver("m360", provider, store)
+	tenancy := billingPricingTestTenancy{assignable: collections.NewSet("tenant-a", "tenant-b")}
+	ctx := config.TenantIntoContext(context.Background(), "tenant-a")
+
+	got, err := resolveCatalogPricing(ctx, nil, tenancy, resolver, "tenant-b", []CatalogPricingRequest{{
+		Service: billing.ServiceComputeInstance,
+	}})
+	if err != nil {
+		t.Fatalf("resolveCatalogPricing() error = %v", err)
+	}
+	if len(got) != 1 || got[0].GetStatus() != publicv1.CatalogPricingStatus_CATALOG_PRICING_STATUS_CURRENT {
+		t.Fatalf("resolveCatalogPricing() = %v, want one current price", got)
+	}
+	if store.tenant != "tenant-a" {
+		t.Fatalf("account lookup tenant = %q, want active tenant context %q", store.tenant, "tenant-a")
+	}
+}
+
+func TestResolveCatalogPricingReturnsUnavailableWithoutTenantContext(t *testing.T) {
+	store := &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
+		ProviderKey: "m360", ProviderAccountReference: "tenant-a-account", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+	}}
+	provider := &catalogPricingRateCardProviderStub{items: []billing.RateCardItem{{
+		Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "3.00", Unit: billing.RateUnitHour,
+	}}}
+	resolver := NewCatalogPricingResolver("m360", provider, store)
+	tenancy := billingPricingTestTenancy{assignable: collections.NewSet("tenant-a", "tenant-b")}
+
+	got, err := resolveCatalogPricing(context.Background(), nil, tenancy, resolver, "tenant-b", []CatalogPricingRequest{{
+		Service: billing.ServiceComputeInstance, PriceMayVary: true,
+	}})
+	if err != nil {
+		t.Fatalf("resolveCatalogPricing() error = %v", err)
+	}
+	if len(got) != 1 || got[0].GetStatus() != publicv1.CatalogPricingStatus_CATALOG_PRICING_STATUS_UNAVAILABLE || len(got[0].GetComponents()) != 0 || !got[0].GetPriceMayVary() {
+		t.Fatalf("resolveCatalogPricing() = %v, want unavailable pricing without components and with price_may_vary", got)
+	}
+	if store.calls != 0 || provider.calls != 0 || provider.accountCalls != 0 {
+		t.Fatalf("pricing lookup calls: account=%d rate_card=%d provider_account=%d, want none without tenant context", store.calls, provider.calls, provider.accountCalls)
 	}
 }
 
