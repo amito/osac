@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check optional billing configuration in Fulfillment Helm renders."""
+"""Check optional billing configuration in Fulfillment and metering Helm renders."""
 
 from __future__ import annotations
 
@@ -61,6 +61,12 @@ def render(
                 "global.billing.m360.apiKeySecret.name=ci-m360-credentials",
                 "--set-string",
                 "global.billing.m360.apiKeySecret.key=integration-token",
+                "--set-string",
+                "metering.m360Adapter.m360.apiUrl=https://legacy-m360.ci.example.com",
+                "--set-string",
+                "metering.m360Adapter.m360.apiVersion=legacy-v9",
+                "--set-string",
+                "metering.m360Adapter.m360.apiKeySecret=legacy-metering-credentials",
                 "--set",
                 "global.osacDeploymentId=ci/osac",
                 "--set",
@@ -104,10 +110,7 @@ def check_m360() -> None:
         assert "--billing-m360-api-url=https://m360.ci.example.com" in deployment, process
         assert "--billing-m360-api-version=v1" in deployment, process
 
-    adapter = select_deployment(manifest, "metering/templates/m360-adapter-deployment.yaml")
-    assert "secretName: ci-metering-m360-credentials" in adapter
-    assert 'value: "https://legacy-m360.ci.example.com"' in adapter
-    assert 'value: "v1"' in adapter
+    assert not contains_deployment(manifest, "metering/templates/m360-adapter-deployment.yaml")
 
 
 def check_shared_m360() -> None:
@@ -126,6 +129,10 @@ def check_shared_m360() -> None:
     assert "key: integration-token" in adapter
     assert 'value: "https://m360.ci.example.com"' in adapter
     assert 'value: "v1"' in adapter
+
+
+def contains_deployment(manifest: str, source_file: str) -> bool:
+    return f"# Source: osac/charts/{source_file}\n" in manifest
 
 
 def check_invalid_provider() -> None:

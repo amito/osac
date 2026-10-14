@@ -408,6 +408,10 @@ ui:
 # --- Metering ---
 metering:
   enabled: false
+  # Global billing.provider controls whether the adapter is deployed. Set false
+  # only to keep the M360 metering adapter off when M360 billing is configured.
+  m360Adapter:
+    enabled: true
   image:
     repository: ghcr.io/osac-project/metering-service
     tag: latest  # PLACEHOLDER -- overwritten at release time by osac-build-and-publish.yaml

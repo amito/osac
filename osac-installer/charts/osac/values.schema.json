@@ -1877,12 +1877,12 @@
         },
         "m360Adapter": {
           "type": "object",
-          "description": "Monetize360 metering adapter",
+          "description": "Monetize360 metering adapter. It is deployed only when global.billing.provider is m360; set enabled to false as a kill switch.",
           "properties": {
             "enabled": {
               "type": "boolean",
-              "description": "Enable the M360 metering adapter",
-              "default": false
+              "description": "Keep the M360 metering adapter enabled when global.billing.provider is m360",
+              "default": true
             },
             "image": {
               "type": "object",
@@ -1902,19 +1902,19 @@
             },
             "m360": {
               "type": "object",
-              "description": "M360 API connection settings",
+              "description": "Deprecated and ignored. Configure the shared connection under global.billing.m360.",
               "properties": {
                 "apiUrl": {
                   "type": "string",
-                  "description": "Monetize360 Usage API endpoint"
+                  "description": "Deprecated and ignored; use global.billing.m360.apiUrl"
                 },
                 "apiKeySecret": {
                   "type": "string",
-                  "description": "Name of K8s Secret containing the API key"
+                  "description": "Deprecated and ignored; use global.billing.m360.apiKeySecret.name"
                 },
                 "apiVersion": {
                   "type": "string",
-                  "description": "M360 API version",
+                  "description": "Deprecated and ignored; use global.billing.m360.apiVersion",
                   "default": "v1"
                 }
               },
