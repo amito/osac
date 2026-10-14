@@ -33,9 +33,10 @@ import (
 )
 
 type providerStub struct {
-	accounts map[string]billing.Account
-	updates  []string
-	getErr   error
+	accounts  map[string]billing.Account
+	updates   []string
+	getErr    error
+	updateErr map[string]error
 }
 
 func (*providerStub) GetStatus(context.Context) (billing.ProviderStatus, error) {
@@ -58,6 +59,9 @@ func (p *providerStub) GetAccount(_ context.Context, reference string) (billing.
 }
 
 func (p *providerStub) UpdateAccountExternalID(_ context.Context, reference, expectedExternalID, externalID string) error {
+	if err := p.updateErr[reference]; err != nil {
+		return err
+	}
 	account := p.accounts[reference]
 	if account.ExternalID != expectedExternalID {
 		return billing.ErrAccountExternalIDChanged
@@ -151,7 +155,7 @@ func TestReconcileLinksAndVerifiesAssignment(t *testing.T) {
 	}
 }
 
-func TestReconcileClearsPreviousAccountBeforeLinkingReplacement(t *testing.T) {
+func TestReconcileLinksReplacementBeforeClearingPreviousAccount(t *testing.T) {
 	provider := &providerStub{accounts: map[string]billing.Account{
 		"native-old": {Reference: "native-old", ExternalID: "tenant-a", State: billing.AccountStateActive},
 		"native-new": {Reference: "native-new", State: billing.AccountStateActive},
@@ -168,9 +172,43 @@ func TestReconcileClearsPreviousAccountBeforeLinkingReplacement(t *testing.T) {
 	if err := function.Reconcile(context.Background(), current); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"native-old:", "native-new:tenant-a"}
+	want := []string{"native-new:tenant-a", "native-old:"}
 	if !reflect.DeepEqual(provider.updates, want) {
 		t.Fatalf("provider update order = %v, want %v", provider.updates, want)
+	}
+}
+
+func TestReconcileKeepsPreviousAccountLinkedWhenReplacementUpdateFails(t *testing.T) {
+	provider := &providerStub{
+		accounts: map[string]billing.Account{
+			"native-old": {Reference: "native-old", ExternalID: "tenant-a", State: billing.AccountStateActive},
+			"native-new": {Reference: "native-new", State: billing.AccountStateActive},
+		},
+		updateErr: map[string]error{"native-new": errors.New("provider update failed")},
+	}
+	assignments := &assignmentClientStub{}
+	function := newTestFunction(provider, assignments, accountClientStub{
+		"osac-old": "native-old",
+		"osac-new": "native-new",
+	})
+	old := assignment("assignment-old", "tenant-a", "osac-old", true)
+	current := assignment("assignment-new", "tenant-a", "osac-new", false)
+	assignments.items = []*privatev1.TenantBillingAssignment{old, current}
+
+	if err := function.Reconcile(context.Background(), current); err == nil {
+		t.Fatal("Reconcile() returned no error when the replacement link failed")
+	}
+	if got := provider.accounts["native-old"].ExternalID; got != "tenant-a" {
+		t.Fatalf("previous account external ID = %q, want tenant-a", got)
+	}
+	if len(provider.updates) != 0 {
+		t.Fatalf("provider updates = %v, want no completed updates", provider.updates)
+	}
+	if assignments.state != privatev1.TenantBillingAssignmentConnectionState_TENANT_BILLING_ASSIGNMENT_CONNECTION_STATE_PENDING {
+		t.Fatalf("connection state = %v, want PENDING", assignments.state)
+	}
+	if assignments.message != "PROVIDER_UPDATE_FAILED" {
+		t.Fatalf("pending message = %q, want PROVIDER_UPDATE_FAILED", assignments.message)
 	}
 }
 
