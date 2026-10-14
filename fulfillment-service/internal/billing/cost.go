@@ -26,13 +26,18 @@ var ErrCostHeaderLimitExceeded = errors.New("billing cost transaction limit exce
 // CostQuery selects provider-calculated costs for one account and date range.
 type CostQuery struct {
 	AccountReference string
-	FromDate         string
-	ToDate           string
+	// TenantID is the authorized OSAC tenant requesting costs. It is separate
+	// from any tenant attribution returned by the provider.
+	TenantID string
+	FromDate string
+	ToDate   string
 }
 
 // Cost is an aggregate for one OSAC service, project, and resource in a period.
 // Missing project or resource attribution is represented by a nil field.
 type Cost struct {
+	// TenantID is provider row attribution. It may be nil when unavailable.
+	TenantID     *string
 	ProjectID    *string
 	ResourceID   *string
 	Service      string

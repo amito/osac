@@ -39,10 +39,17 @@ const (
 var _ billing.CostProvider = (*Client)(nil)
 
 // ListCosts reads rated transaction details and aggregates them by OSAC service,
-// project, and resource for the requested account and period.
+// project, and resource for the requested account and period. M360 does not
+// provide tenant attribution on rated transaction details, so this adapter
+// attributes costs to the linked tenant supplied in the query. This relies on
+// OSAC's current one-to-one tenant-to-billing-account mapping.
 func (c *Client) ListCosts(ctx context.Context, query billing.CostQuery) ([]billing.Cost, error) {
 	if strings.TrimSpace(query.AccountReference) == "" {
 		return nil, errors.New("M360 cost account reference is required")
+	}
+	tenantID := strings.TrimSpace(query.TenantID)
+	if tenantID == "" {
+		return nil, errors.New("M360 cost tenant id is required")
 	}
 	if err := validateCostDateRange(query.FromDate, query.ToDate); err != nil {
 		return nil, errors.New("M360 cost date range is invalid")
@@ -124,6 +131,7 @@ func (c *Client) ListCosts(ctx context.Context, query billing.CostQuery) ([]bill
 			return nil, errors.New("M360 rated transaction amounts could not be combined")
 		}
 		result = append(result, billing.Cost{
+			TenantID:     &tenantID,
 			ProjectID:    groupStringPointer(group.projectID, group.projectKnown),
 			ResourceID:   groupStringPointer(group.resourceID, group.resourceKnown),
 			Service:      group.service,
