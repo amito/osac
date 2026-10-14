@@ -577,8 +577,9 @@ The authorization policy distinguishes between the following subject categories:
    methods (`IdentityProviders/Create`, `Get`, `List`, `Update`, `Delete`).
 
 3. **Tenant IdP Manager Subjects**: Users with the `tenant-idp-manager` realm role.
-   They inherit all client permissions **plus** access to IdP management methods
-   (`IdentityProviders/Create`, `Get`, `List`, `Update`, `Delete`). They cannot manage users.
+   They inherit the non-billing client permissions **plus** access to IdP management methods
+   (`IdentityProviders/Create`, `Get`, `List`, `Update`, `Delete`). They cannot manage users or call
+   billing APIs.
 
 4. **Client Subjects**: All other authenticated users (JWT tokens from Keycloak that are not admin, tenant-admin, or tenant-idp-manager).
 
@@ -617,6 +618,18 @@ The authorization policy allows:
 
 4. **Admin Users**:
    - All methods (full access)
+
+### Billing Method Access
+
+| Methods | Who can call them |
+|---|---|
+| `BillingCosts/List`, `PricingQueries/Create`, `PriceEstimates/Create` | Client users and tenant admins. Results are limited by tenant and project visibility. |
+| `BillingAccounts/List`, `TenantBillingAssignments/*`, `CatalogPricingInputs/List`, `ProviderRateCardItems/List` | Platform admins only. |
+| `BillingProviderStatuses/Get` | Platform admins and Cloud Infrastructure Admins. |
+
+Tenant IdP managers do not inherit the billing permissions granted to client users. `BillingProviderStatuses/Get`
+reports billing-provider status; it does not show whether metering usage is reaching the provider. Check the
+metering delivery-lag and dead-letter-queue (DLQ) metrics for usage-pipeline health.
 
 ### Authorization Levels
 
@@ -901,7 +914,8 @@ authorization. The Rego policy reads groups from the `groups` claim and roles fr
 
 2. **Cloud Infrastructure Admin Users**:
    - Users in the `cloud-infrastructure-admins` group
-   - Can read `BillingProviderStatuses/Get` to check deployment-wide provider health
+   - Can read `BillingProviderStatuses/Get` to check deployment-wide billing-provider status
+   - Must use metering delivery-lag and DLQ metrics to check usage-pipeline health
    - Do not receive Cloud Provider Admin or ordinary client permissions from this group
 
 3. **Tenant Admin Users**:

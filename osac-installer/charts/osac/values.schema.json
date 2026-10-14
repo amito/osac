@@ -10,7 +10,7 @@
       "properties": {
         "billing": {
           "$ref": "#/properties/service/properties/billing",
-          "description": "Optional billing provider connection shared by Fulfillment and the metering adapter. When billing.provider is m360, the existing API-key Secret must be created in the OSAC namespace."
+          "description": "Optional billing connection shared by Fulfillment and metering. M360 is the only supported provider; an empty provider disables billing. When provider is m360, reference an API-key Secret created in the OSAC namespace before installation."
         },
         "clusterDomain": {
           "type": "string",
@@ -709,7 +709,7 @@
         },
         "billing": {
           "type": "object",
-          "description": "Optional fulfillment-chart billing configuration. global.billing takes precedence and is shared with the metering adapter.",
+          "description": "Optional billing configuration. This release supports only M360; an empty provider disables billing. global.billing takes precedence and is shared with the metering adapter.",
           "properties": {
             "provider": {
               "type": "string",
@@ -730,10 +730,11 @@
                 },
                 "apiKeySecret": {
                   "type": "object",
+                  "description": "Reference to a Kubernetes Secret created in the OSAC namespace before installation; required when provider is m360.",
                   "properties": {
                     "name": {
                       "type": "string",
-                      "description": "Existing Secret containing the M360 API key"
+                      "description": "Name of the existing Secret containing the M360 API key; required when provider is m360."
                     },
                     "key": {
                       "type": "string",
