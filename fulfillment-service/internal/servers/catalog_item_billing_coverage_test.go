@@ -89,15 +89,55 @@ func TestCatalogItemBillingCoverageSkipsUnpublishedAndSharedCatalogs(t *testing.
 }
 
 func TestCatalogItemBillingCoverageBlocksPublishDuringProviderOutage(t *testing.T) {
-	provider := &catalogPricingRateCardProviderStub{err: errors.Join(billing.ErrProviderUnavailable, errors.New("provider unavailable"))}
-	resolver := NewCatalogPricingResolver("m360", provider, &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
-		ProviderKey: "m360", ProviderAccountReference: "native-account", CurrencyCode: "USD", ConnectionState: "CONNECTED",
-	}})
+	for _, test := range []struct {
+		name        string
+		configure   func(*catalogPricingRateCardProviderStub)
+		openCircuit bool
+		wantCode    codes.Code
+	}{
+		{
+			name: "rate-card provider outage",
+			configure: func(provider *catalogPricingRateCardProviderStub) {
+				provider.err = errors.Join(billing.ErrProviderUnavailable, errors.New("provider unavailable"))
+			},
+			wantCode: codes.Unavailable,
+		},
+		{
+			name: "account status timeout",
+			configure: func(provider *catalogPricingRateCardProviderStub) {
+				provider.accountErr = context.DeadlineExceeded
+			},
+			wantCode: codes.DeadlineExceeded,
+		},
+		{
+			name:        "open pricing circuit",
+			openCircuit: true,
+			wantCode:    codes.Unavailable,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider := &catalogPricingRateCardProviderStub{}
+			if test.configure != nil {
+				test.configure(provider)
+			}
+			resolver := NewCatalogPricingResolver("m360", provider, &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
+				ProviderKey: "m360", ProviderAccountReference: "native-account", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+			}})
+			if test.openCircuit {
+				for i := 0; i < catalogPricingCircuitFailureThreshold; i++ {
+					resolver.circuit.recordFailure(resolver.now(), false)
+				}
+			}
 
-	err := checkCatalogItemBillingCoverage(context.Background(), resolver, "tenant-a", true, []CatalogPricingRequest{{
-		Service: billing.ServiceComputeInstance, Supported: true,
-	}})
-	if !errors.Is(err, ErrBillingCoverageUnavailable) || status.Code(err) != codes.Unavailable {
-		t.Fatalf("checkCatalogItemBillingCoverage() error = %v, want provider outage to block publish", err)
+			coverageErr := checkCatalogItemBillingCoverage(context.Background(), resolver, "tenant-a", true, []CatalogPricingRequest{{
+				Service: billing.ServiceComputeInstance, Supported: true,
+			}})
+			if !errors.Is(coverageErr, ErrBillingCoverageUnavailable) || status.Code(coverageErr) != test.wantCode {
+				t.Fatalf("checkCatalogItemBillingCoverage() error = %v, want provider unavailability to block publish", coverageErr)
+			}
+			if createErr := coverageErrorForCreate(context.Background(), nil, coverageErr); createErr != nil {
+				t.Fatalf("coverageErrorForCreate() error = %v, want the same provider failure to allow launch", createErr)
+			}
+		})
 	}
 }

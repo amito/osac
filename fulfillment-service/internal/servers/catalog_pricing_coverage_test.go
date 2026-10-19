@@ -61,6 +61,9 @@ func TestCatalogPricingResolverCheckCoverageUsesFreshProviderRates(t *testing.T)
 	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(status.Convert(err).Message(), "BILLING_COVERAGE_GAP") {
 		t.Fatalf("CheckCoverage() error = %v, want failed precondition for missing current coverage", err)
 	}
+	if createErr := coverageErrorForCreate(context.Background(), nil, err); status.Code(createErr) != codes.FailedPrecondition {
+		t.Fatalf("coverageErrorForCreate() error = %v, want missing coverage to block launch", createErr)
+	}
 	if provider.calls != 3 {
 		t.Fatalf("provider calls = %d, want fresh provider lookups despite catalog cache", provider.calls)
 	}
@@ -97,7 +100,11 @@ func TestCatalogPricingCoverageRequiresEachAdditionalDiskRate(t *testing.T) {
 }
 
 func TestCatalogPricingResolverCheckCoverageIdentifiesProviderFailure(t *testing.T) {
-	provider := &catalogPricingRateCardProviderStub{err: errors.Join(billing.ErrProviderUnavailable, errors.New("private provider error"))}
+	provider := &catalogPricingRateCardProviderStub{err: errors.Join(
+		billing.ErrProviderUnavailable,
+		billing.ErrProviderReadRetryable,
+		errors.New("private provider error"),
+	)}
 	resolver := NewCatalogPricingResolver("m360", provider, &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
 		ProviderKey: "m360", ProviderAccountReference: "native-account", CurrencyCode: "USD", ConnectionState: "CONNECTED",
 	}})
@@ -111,8 +118,83 @@ func TestCatalogPricingResolverCheckCoverageIdentifiesProviderFailure(t *testing
 	if !errors.Is(err, ErrBillingCoverageUnavailable) {
 		t.Fatalf("CheckCoverage() error = %v, want provider-unavailable classification", err)
 	}
+	if createErr := coverageErrorForCreate(context.Background(), nil, err); createErr != nil {
+		t.Fatalf("coverageErrorForCreate() error = %v, want provider outage to allow launch", createErr)
+	}
 	if provider.calls != catalogPricingRetryCount+1 {
 		t.Fatalf("provider calls = %d, want %d retry attempts", provider.calls, catalogPricingRetryCount+1)
+	}
+}
+
+func TestCatalogPricingResolverCheckCoverageAllowsLaunchDuringAccountStatusTimeout(t *testing.T) {
+	provider := &catalogPricingRateCardProviderStub{accountErr: context.DeadlineExceeded}
+	resolver := NewCatalogPricingResolver("m360", provider, &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
+		ProviderKey: "m360", ProviderAccountReference: "native-account", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+	}})
+
+	err := resolver.CheckCoverage(context.Background(), "tenant-a", []CatalogPricingRequest{{
+		Service: billing.ServiceComputeInstance, Supported: true,
+	}})
+	if status.Code(err) != codes.DeadlineExceeded || status.Convert(err).Message() != "BILLING_COVERAGE_TIMEOUT" {
+		t.Fatalf("CheckCoverage() error = %v, want timeout classified as coverage unavailable", err)
+	}
+	if !errors.Is(err, ErrBillingCoverageUnavailable) {
+		t.Fatalf("CheckCoverage() error = %v, want provider-unavailable classification", err)
+	}
+	if createErr := coverageErrorForCreate(context.Background(), nil, err); createErr != nil {
+		t.Fatalf("coverageErrorForCreate() error = %v, want account API timeout to allow launch", createErr)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("rate-card calls = %d, want no lookup after account status timeout", provider.calls)
+	}
+}
+
+func TestCatalogPricingResolverCheckCoverageAllowsLaunchWhenPricingCircuitIsOpen(t *testing.T) {
+	provider := &catalogPricingRateCardProviderStub{}
+	resolver := NewCatalogPricingResolver("m360", provider, &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
+		ProviderKey: "m360", ProviderAccountReference: "native-account", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+	}})
+	for i := 0; i < catalogPricingCircuitFailureThreshold; i++ {
+		resolver.circuit.recordFailure(resolver.now(), false)
+	}
+
+	err := resolver.CheckCoverage(context.Background(), "tenant-a", []CatalogPricingRequest{{
+		Service: billing.ServiceComputeInstance, Supported: true,
+	}})
+	if status.Code(err) != codes.Unavailable || status.Convert(err).Message() != "BILLING_COVERAGE_UNAVAILABLE" {
+		t.Fatalf("CheckCoverage() error = %v, want open pricing circuit classified as unavailable", err)
+	}
+	if !errors.Is(err, ErrBillingCoverageUnavailable) {
+		t.Fatalf("CheckCoverage() error = %v, want provider-unavailable classification", err)
+	}
+	if createErr := coverageErrorForCreate(context.Background(), nil, err); createErr != nil {
+		t.Fatalf("coverageErrorForCreate() error = %v, want open pricing circuit to allow launch", createErr)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("rate-card calls = %d, want no lookup while pricing circuit is open", provider.calls)
+	}
+}
+
+func TestCatalogPricingResolverCheckCoverageRejectsAmbiguousRateCard(t *testing.T) {
+	condition := billing.RateCondition{Dimension: "instance_type", Operator: billing.RateMatchEquals, Value: "small"}
+	provider := &catalogPricingRateCardProviderStub{items: []billing.RateCardItem{
+		{Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "3.00", Unit: billing.RateUnitHour, Conditions: []billing.RateCondition{condition}},
+		{Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "4.00", Unit: billing.RateUnitHour, Conditions: []billing.RateCondition{condition}},
+	}}
+	resolver := NewCatalogPricingResolver("m360", provider, &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
+		ProviderKey: "m360", ProviderAccountReference: "native-account", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+	}})
+	err := resolver.CheckCoverage(context.Background(), "tenant-a", []CatalogPricingRequest{{
+		Service: billing.ServiceComputeInstance, Dimensions: map[string]string{"instance_type": "small"}, Supported: true,
+	}})
+	if status.Code(err) != codes.FailedPrecondition || status.Convert(err).Message() != "BILLING_RATE_AMBIGUOUS" {
+		t.Fatalf("CheckCoverage() error = %v, want ambiguous rates to block launch", err)
+	}
+	if errors.Is(err, ErrBillingCoverageUnavailable) {
+		t.Fatalf("CheckCoverage() error = %v, ambiguity must not be treated as provider unavailability", err)
+	}
+	if createErr := coverageErrorForCreate(context.Background(), nil, err); status.Code(createErr) != codes.FailedPrecondition {
+		t.Fatalf("coverageErrorForCreate() error = %v, want ambiguous rates to block launch", createErr)
 	}
 }
 
@@ -125,6 +207,7 @@ func TestCoverageErrorForCreate(t *testing.T) {
 		{name: "rate provider outage", err: coverageProviderError(codes.Unavailable, "BILLING_COVERAGE_UNAVAILABLE")},
 		{name: "provider timeout", err: coverageProviderError(codes.DeadlineExceeded, "BILLING_COVERAGE_TIMEOUT")},
 		{name: "coverage gap", err: status.Error(codes.FailedPrecondition, "BILLING_COVERAGE_GAP"), want: status.Error(codes.FailedPrecondition, "BILLING_COVERAGE_GAP")},
+		{name: "ambiguous rate", err: status.Error(codes.FailedPrecondition, "BILLING_RATE_AMBIGUOUS"), want: status.Error(codes.FailedPrecondition, "BILLING_RATE_AMBIGUOUS")},
 		{name: "no assignment", err: status.Error(codes.FailedPrecondition, "BILLING_ACCOUNT_UNAVAILABLE"), want: status.Error(codes.FailedPrecondition, "BILLING_ACCOUNT_UNAVAILABLE")},
 		{name: "account lookup failure", err: status.Error(codes.Internal, "BILLING_ACCOUNT_LOOKUP_FAILED"), want: status.Error(codes.Internal, "BILLING_ACCOUNT_LOOKUP_FAILED")},
 	} {
@@ -147,6 +230,9 @@ func TestCatalogPricingResolverCheckCoverageRequiresConnectedAssignment(t *testi
 	}
 	if errors.Is(err, ErrBillingCoverageUnavailable) {
 		t.Fatalf("CheckCoverage() error = %v, missing assignment must block launch", err)
+	}
+	if createErr := coverageErrorForCreate(context.Background(), nil, err); status.Code(createErr) != codes.FailedPrecondition {
+		t.Fatalf("coverageErrorForCreate() error = %v, want missing assignment to block launch", createErr)
 	}
 	if provider.calls != 0 {
 		t.Fatalf("provider calls = %d, want no provider calls without assignment", provider.calls)
@@ -207,6 +293,9 @@ func TestCatalogPricingResolverCheckCoverageRequiresCurrentActiveAccount(t *test
 			if status.Code(err) != codes.FailedPrecondition || status.Convert(err).Message() != "BILLING_ACCOUNT_UNAVAILABLE" {
 				t.Fatalf("CheckCoverage() error = %v, want BILLING_ACCOUNT_UNAVAILABLE", err)
 			}
+			if createErr := coverageErrorForCreate(context.Background(), nil, err); status.Code(createErr) != codes.FailedPrecondition {
+				t.Fatalf("coverageErrorForCreate() error = %v, want inactive account to block launch", createErr)
+			}
 			if provider.accountCalls != 1 || provider.calls != 0 {
 				t.Fatalf("account/rate-card calls = (%d, %d), want current account check and no rate-card lookup", provider.accountCalls, provider.calls)
 			}
@@ -230,6 +319,9 @@ func TestCatalogPricingResolverCheckCoverageFailsClosedWhenAccountStatusCannotBe
 	}
 	if strings.Contains(status.Convert(err).Message(), "provider account details unavailable") || provider.calls != 0 {
 		t.Fatalf("CheckCoverage() leaked account status error or queried rates: %v, calls=%d", err, provider.calls)
+	}
+	if !errors.Is(err, ErrBillingCoverageUnavailable) || coverageErrorForCreate(context.Background(), nil, err) != nil {
+		t.Fatalf("CheckCoverage() error = %v, provider account API outage should allow launch", err)
 	}
 }
 
