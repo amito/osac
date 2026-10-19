@@ -38,7 +38,6 @@ func TestPriceEstimateUsesSelectedConfiguration(t *testing.T) {
 		Service:      billing.ServiceComputeInstance,
 		CurrencyCode: "USD",
 		Conditions: []billing.RateCondition{
-			{Dimension: "image_ref", Operator: billing.RateMatchEquals, Value: "fedora-16"},
 			{Dimension: "instance_type", Operator: billing.RateMatchEquals, Value: "large"},
 		},
 		Amount: "10.25",
@@ -79,7 +78,6 @@ func TestPriceEstimateSumsSelectedAdditionalDiskRates(t *testing.T) {
 		{
 			Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "10", Unit: billing.RateUnitHour,
 			Conditions: []billing.RateCondition{
-				{Dimension: "image_ref", Operator: billing.RateMatchEquals, Value: "fedora-16"},
 				{Dimension: "instance_type", Operator: billing.RateMatchEquals, Value: "large"},
 			},
 		},
@@ -147,7 +145,6 @@ func TestPriceEstimateAcceptsNegativeHourlyCreditRate(t *testing.T) {
 		Service:      billing.ServiceComputeInstance,
 		CurrencyCode: "USD",
 		Conditions: []billing.RateCondition{
-			{Dimension: "image_ref", Operator: billing.RateMatchEquals, Value: "fedora-16"},
 			{Dimension: "instance_type", Operator: billing.RateMatchEquals, Value: "large"},
 		},
 		Amount: "-1",
@@ -320,7 +317,6 @@ func TestPriceEstimateRejectsRetainedRateAfterRefreshFailure(t *testing.T) {
 		Service:      billing.ServiceComputeInstance,
 		CurrencyCode: "USD",
 		Conditions: []billing.RateCondition{
-			{Dimension: "image_ref", Operator: billing.RateMatchEquals, Value: "fedora-16"},
 			{Dimension: "instance_type", Operator: billing.RateMatchEquals, Value: "large"},
 		},
 		Amount: "4.50",

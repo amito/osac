@@ -16,7 +16,6 @@ package servers
 import (
 	"context"
 	"errors"
-	"strconv"
 
 	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
 	publicv1 "github.com/osac-project/osac/proto/gen/osac/public/v1"
@@ -117,17 +116,7 @@ func computeInstanceTemplatePricingDimensions(template *privatev1.ComputeInstanc
 	if template == nil || template.GetSpecDefaults() == nil {
 		return nil
 	}
-	defaults := template.GetSpecDefaults()
-	bootDisk := defaults.GetBootDisk()
-	size := int32(0)
-	if bootDisk != nil && bootDisk.HasSizeGib() {
-		size = bootDisk.GetSizeGib()
-	}
-	storageTier := ""
-	if bootDisk != nil {
-		storageTier = bootDisk.GetStorageTier().GetName()
-	}
-	return computeTemplatePricingDimensions(defaults.GetInstanceType().GetName(), defaults.GetDiskImage().GetName(), size, storageTier)
+	return computeTemplatePricingDimensions(template.GetSpecDefaults().GetInstanceType().GetName())
 }
 
 func clusterTemplatePricingDimensions(template *privatev1.ClusterTemplate) map[string]string {
@@ -144,21 +133,11 @@ func bareMetalTemplatePricingDimensions(template *privatev1.BareMetalInstanceTem
 	return bareMetalTemplatePricingDimensionsFromType(template.GetInstanceType().GetName())
 }
 
-func computeTemplatePricingDimensions(instanceType, imageRef string, bootDiskSize int32, storageTier string) map[string]string {
-	dimensions := make(map[string]string, 4)
-	if instanceType != "" {
-		dimensions["instance_type"] = instanceType
+func computeTemplatePricingDimensions(instanceType string) map[string]string {
+	if instanceType == "" {
+		return nil
 	}
-	if imageRef != "" {
-		dimensions["image_ref"] = imageRef
-	}
-	if bootDiskSize > 0 {
-		dimensions["boot_disk_size_gib"] = strconv.FormatInt(int64(bootDiskSize), 10)
-	}
-	if storageTier != "" {
-		dimensions["storage_tier"] = storageTier
-	}
-	return dimensions
+	return map[string]string{"instance_type": instanceType}
 }
 
 func clusterTemplatePricingDimensionsFromVersion(version string) map[string]string {

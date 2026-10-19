@@ -17,9 +17,11 @@ limitations under the License.
 package servers
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/billing"
+	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
 	publicv1 "github.com/osac-project/osac/proto/gen/osac/public/v1"
 )
 
@@ -31,6 +33,10 @@ func TestComputeCatalogPricingRequestUsesLockedAndDefaultValues(t *testing.T) {
 		InstanceType: publicv1.InstanceTypeReferenceFieldPolicy_builder{Editable: publicv1.EditableInstanceTypeReferenceField_builder{
 			DefaultValue: instanceType,
 		}.Build()}.Build(),
+		BootDisk: publicv1.ComputeInstanceBootDiskFieldPolicies_builder{
+			SizeGib:     publicv1.Int32FieldPolicy_builder{Locked: testInt32Pointer(40)}.Build(),
+			StorageTier: publicv1.StorageTierReferenceFieldPolicy_builder{Locked: publicv1.StorageTierReference_builder{Name: "premium"}.Build()}.Build(),
+		}.Build(),
 	}.Build()
 	item := publicv1.ComputeInstanceCatalogItem_builder{Title: "Small Fedora VM", Fields: fields}.Build()
 
@@ -38,8 +44,8 @@ func TestComputeCatalogPricingRequestUsesLockedAndDefaultValues(t *testing.T) {
 	if len(got) != 1 || got[0].Service != billing.ServiceComputeInstance || !got[0].Supported {
 		t.Fatalf("computeCatalogPricingRequests() = %v, want one supported compute request", got)
 	}
-	if got[0].Dimensions["image_ref"] != "fedora-16" || got[0].Dimensions["instance_type"] != "small" {
-		t.Fatalf("pricing dimensions = %v, want locked image and default instance type", got[0].Dimensions)
+	if want := map[string]string{"instance_type": "small"}; !reflect.DeepEqual(got[0].Dimensions, want) {
+		t.Fatalf("pricing dimensions = %v, want %v", got[0].Dimensions, want)
 	}
 	if got[0].Description != "Small Fedora VM" || !got[0].PriceMayVary {
 		t.Fatalf("pricing request = %+v, want catalog title and variable price", got[0])
@@ -59,9 +65,33 @@ func TestComputeCatalogPricingRequestSeparatesSingleAdditionalDisk(t *testing.T)
 	item := publicv1.ComputeInstanceCatalogItem_builder{Fields: fields}.Build()
 	requests := computeCatalogPricingRequests([]*publicv1.ComputeInstanceCatalogItem{item})
 	components := catalogPricingComponents(requests[0])
-	if len(components) != 2 || components[0].Dimensions["instance_type"] != "large" || components[0].Dimensions["additional_disk_size_gib"] != "" ||
-		components[1].Dimensions["instance_type"] != "" || components[1].Dimensions["additional_disk_size_gib"] != "50" || components[1].Dimensions["additional_storage_tier"] != "premium" {
+	if len(components) != 2 || !reflect.DeepEqual(components[0].Dimensions, map[string]string{"instance_type": "large"}) ||
+		!reflect.DeepEqual(components[1].Dimensions, map[string]string{"additional_disk_size_gib": "50", "additional_storage_tier": "premium"}) {
 		t.Fatalf("catalog components = %+v, want separate VM and disk", components)
+	}
+}
+
+func TestComputeCatalogPricingRequestUsesOnlyInstanceTypeFromTemplateDefaults(t *testing.T) {
+	item := publicv1.ComputeInstanceCatalogItem_builder{Id: "vm-small"}.Build()
+	defaults := map[string]map[string]string{"vm-small": {
+		"instance_type": "small", "image_ref": "fedora-16", "boot_disk_size_gib": "40", "storage_tier": "premium",
+	}}
+	got := computeCatalogPricingRequestsWithTemplateDefaults([]*publicv1.ComputeInstanceCatalogItem{item}, defaults)
+	if len(got) != 1 || !reflect.DeepEqual(got[0].Dimensions, map[string]string{"instance_type": "small"}) {
+		t.Fatalf("compute catalog pricing requests = %+v, want only template instance_type", got)
+	}
+}
+
+func TestComputeInstanceTemplatePricingDimensionsUseOnlyInstanceType(t *testing.T) {
+	template := privatev1.ComputeInstanceTemplate_builder{SpecDefaults: privatev1.ComputeInstanceTemplateSpecDefaults_builder{
+		InstanceType: privatev1.InstanceTypeReference_builder{Name: "small"}.Build(),
+		DiskImage:    privatev1.DiskImageReference_builder{Name: "fedora-16"}.Build(),
+		BootDisk: privatev1.ComputeInstanceDisk_builder{
+			SizeGib: testInt32Pointer(40), StorageTier: privatev1.StorageTierReference_builder{Name: "premium"}.Build(),
+		}.Build(),
+	}.Build()}.Build()
+	if got, want := computeInstanceTemplatePricingDimensions(template), map[string]string{"instance_type": "small"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("template pricing dimensions = %v, want %v", got, want)
 	}
 }
 

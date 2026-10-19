@@ -38,9 +38,7 @@ func TestComputeInstanceCoverageRequestsUseResolvedResourceValues(t *testing.T) 
 	if len(requests) != 1 || !requests[0].Supported || requests[0].Service != billing.ServiceComputeInstance {
 		t.Fatalf("computeInstanceCoverageRequests() = %+v, want one supported compute request", requests)
 	}
-	want := map[string]string{
-		"instance_type": "m7.large", "image_ref": "fedora-16", "boot_disk_size_gib": "40", "storage_tier": "premium",
-	}
+	want := map[string]string{"instance_type": "m7.large"}
 	if !reflect.DeepEqual(requests[0].Dimensions, want) {
 		t.Fatalf("dimensions = %#v, want %#v", requests[0].Dimensions, want)
 	}
@@ -50,6 +48,9 @@ func TestComputeInstanceCoverageRequestsCheckEachAdditionalDisk(t *testing.T) {
 	instance := privatev1.ComputeInstance_builder{Spec: privatev1.ComputeInstanceSpec_builder{
 		InstanceType: privatev1.InstanceTypeReference_builder{Name: "m7.large"}.Build(),
 		DiskImage:    privatev1.DiskImageReference_builder{Name: "fedora-16"}.Build(),
+		BootDisk: privatev1.ComputeInstanceDisk_builder{
+			SizeGib: testInt32Pointer(40), StorageTier: privatev1.StorageTierReference_builder{Name: "premium"}.Build(),
+		}.Build(),
 		AdditionalDisks: []*privatev1.ComputeInstanceDisk{
 			privatev1.ComputeInstanceDisk_builder{SizeGib: testInt32Pointer(50), StorageTier: privatev1.StorageTierReference_builder{Name: "premium"}.Build()}.Build(),
 			privatev1.ComputeInstanceDisk_builder{SizeGib: testInt32Pointer(100), StorageTier: privatev1.StorageTierReference_builder{Name: "archive"}.Build()}.Build(),
@@ -60,16 +61,17 @@ func TestComputeInstanceCoverageRequestsCheckEachAdditionalDisk(t *testing.T) {
 	if len(requests) != 3 {
 		t.Fatalf("computeInstanceCoverageRequests() = %+v, want base and two disk requests", requests)
 	}
-	if requests[0].Dimensions["instance_type"] != "m7.large" || requests[0].Dimensions["image_ref"] != "fedora-16" {
-		t.Fatalf("base coverage request = %+v, want compute dimensions", requests[0])
+	if !reflect.DeepEqual(requests[0].Dimensions, map[string]string{"instance_type": "m7.large"}) {
+		t.Fatalf("base coverage request = %+v, want only instance_type", requests[0])
 	}
-	for _, request := range requests[1:] {
-		if !request.Supported || request.Dimensions["instance_type"] != "" || request.Dimensions["image_ref"] != "" {
-			t.Fatalf("additional disk coverage request = %+v, want disk dimensions only", request)
+	for index, want := range []map[string]string{
+		{"additional_disk_size_gib": "50", "additional_storage_tier": "premium"},
+		{"additional_disk_size_gib": "100", "additional_storage_tier": "archive"},
+	} {
+		request := requests[index+1]
+		if !request.Supported || !reflect.DeepEqual(request.Dimensions, want) {
+			t.Fatalf("additional disk coverage request %d = %+v, want dimensions %#v", index, request, want)
 		}
-	}
-	if requests[1].Dimensions["additional_disk_size_gib"] == requests[2].Dimensions["additional_disk_size_gib"] || requests[1].Dimensions["additional_storage_tier"] == requests[2].Dimensions["additional_storage_tier"] {
-		t.Fatalf("additional disk requests = %+v, want both distinct disk configurations", requests)
 	}
 }
 

@@ -53,13 +53,13 @@ func ApplyComputeInstancePricingConfiguration(
 	if spec == nil || fields == nil {
 		return nil, ErrInvalidPricingConfiguration
 	}
-	if request.Dimensions == nil {
-		request.Dimensions = make(map[string]string)
+	instanceType := request.Dimensions["instance_type"]
+	request.Dimensions = make(map[string]string, 1)
+	if instanceType != "" {
+		request.Dimensions["instance_type"] = instanceType
 	}
 	request.Components = nil
 	request.Supported = true
-	delete(request.Dimensions, "additional_disk_size_gib")
-	delete(request.Dimensions, "additional_storage_tier")
 	if err := applyComputeInstancePricingSelections(request.Dimensions, spec, fields); err != nil {
 		return nil, err
 	}
@@ -79,13 +79,14 @@ func applyComputeInstancePricingSelections(
 	spec *publicv1.ComputeInstanceSpec,
 	fields *publicv1.ComputeInstanceCatalogItemFields,
 ) error {
-	if err := applyReferencePricingSelection(dimensions, "image_ref", spec.GetDiskImage().GetName(), fields.GetDiskImage().GetLocked().GetName(), fields.GetDiskImage().GetEditable() != nil); err != nil {
+	nonBillableDimensions := make(map[string]string)
+	if err := applyReferencePricingSelection(nonBillableDimensions, "image_ref", spec.GetDiskImage().GetName(), fields.GetDiskImage().GetLocked().GetName(), fields.GetDiskImage().GetEditable() != nil); err != nil {
 		return err
 	}
 	if err := applyReferencePricingSelection(dimensions, "instance_type", spec.GetInstanceType().GetName(), fields.GetInstanceType().GetLocked().GetName(), fields.GetInstanceType().GetEditable() != nil); err != nil {
 		return err
 	}
-	return applyComputeInstanceBootDiskPricingSelection(dimensions, spec.GetBootDisk(), fields.GetBootDisk())
+	return applyComputeInstanceBootDiskPricingSelection(nonBillableDimensions, spec.GetBootDisk(), fields.GetBootDisk())
 }
 
 func applyComputeInstanceBootDiskPricingSelection(

@@ -41,12 +41,7 @@ func computeCatalogPricingRequestsWithTemplateDefaults(
 			Supported:   true,
 		}
 		if fields := item.GetFields(); fields != nil {
-			request.PriceMayVary = addDiskImagePricingDimension(request.Dimensions, "image_ref", fields.GetDiskImage()) || request.PriceMayVary
 			request.PriceMayVary = addInstanceTypePricingDimension(request.Dimensions, "instance_type", fields.GetInstanceType()) || request.PriceMayVary
-			if bootDisk := fields.GetBootDisk(); bootDisk != nil {
-				request.PriceMayVary = addInt32PricingDimension(request.Dimensions, "boot_disk_size_gib", bootDisk.GetSizeGib()) || request.PriceMayVary
-				request.PriceMayVary = addStorageTierPricingDimension(request.Dimensions, "storage_tier", bootDisk.GetStorageTier()) || request.PriceMayVary
-			}
 			request.PriceMayVary = addComputeAdditionalDiskPricingDimensions(&request, fields.GetAdditionalDisks()) || request.PriceMayVary
 		}
 		requests[i] = applyTemplatePricingDefaults(request, templateDefaults[item.GetId()])
@@ -122,7 +117,7 @@ func applyTemplatePricingDefaults(request CatalogPricingRequest, defaults map[st
 		if value == "" {
 			continue
 		}
-		if request.Service == billing.ServiceComputeInstance && (dimension == "additional_disk_size_gib" || dimension == "additional_storage_tier") {
+		if request.Service == billing.ServiceComputeInstance && dimension != "instance_type" {
 			continue
 		}
 		if request.Service == billing.ServiceCluster && (dimension == "baremetal_instance_type" || dimension == "node_count") {
@@ -180,19 +175,6 @@ func addInstanceTypePricingDimension(dimensions map[string]string, dimension str
 	return addReferencePricingDimension(dimensions, dimension, locked.GetName(), defaultValue.GetName(), editable != nil, defaultValue != nil)
 }
 
-func addStorageTierPricingDimension(dimensions map[string]string, dimension string, policy *publicv1.StorageTierReferenceFieldPolicy) bool {
-	if policy == nil {
-		return false
-	}
-	locked := policy.GetLocked()
-	editable := policy.GetEditable()
-	var defaultValue *publicv1.StorageTierReference
-	if editable != nil {
-		defaultValue = editable.GetDefaultValue()
-	}
-	return addReferencePricingDimension(dimensions, dimension, locked.GetName(), defaultValue.GetName(), editable != nil, defaultValue != nil)
-}
-
 func addBareMetalInstanceTypePricingDimension(dimensions map[string]string, dimension string, policy *publicv1.BareMetalInstanceTypeReferenceFieldPolicy) bool {
 	if policy == nil {
 		return false
@@ -228,25 +210,6 @@ func addReferencePricingDimension(dimensions map[string]string, dimension, locke
 		dimensions[dimension] = defaultValue
 	}
 	return editable
-}
-
-func addInt32PricingDimension(dimensions map[string]string, dimension string, policy *publicv1.Int32FieldPolicy) bool {
-	if policy == nil {
-		return false
-	}
-	if policy.HasLocked() {
-		if policy.GetLocked() > 0 {
-			dimensions[dimension] = strconv.FormatInt(int64(policy.GetLocked()), 10)
-		}
-		return false
-	}
-	if editable := policy.GetEditable(); editable != nil {
-		if editable.HasDefaultValue() && editable.GetDefaultValue() > 0 {
-			dimensions[dimension] = strconv.FormatInt(int64(editable.GetDefaultValue()), 10)
-		}
-		return true
-	}
-	return false
 }
 
 func addComputeAdditionalDiskPricingDimensions(request *CatalogPricingRequest, policy *publicv1.ComputeInstanceDiskListFieldPolicy) bool {

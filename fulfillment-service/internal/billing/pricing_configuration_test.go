@@ -31,10 +31,14 @@ func TestApplyComputeInstancePricingConfigurationUsesSelectedValues(t *testing.T
 		InstanceType: publicv1.InstanceTypeReferenceFieldPolicy_builder{Editable: publicv1.EditableInstanceTypeReferenceField_builder{
 			DefaultValue: defaultType,
 		}.Build()}.Build(),
+		BootDisk: publicv1.ComputeInstanceBootDiskFieldPolicies_builder{
+			SizeGib:     publicv1.Int32FieldPolicy_builder{Locked: pricingTestInt32(40)}.Build(),
+			StorageTier: publicv1.StorageTierReferenceFieldPolicy_builder{Locked: publicv1.StorageTierReference_builder{Name: "premium"}.Build()}.Build(),
+		}.Build(),
 	}.Build()
 	request := CatalogPricingRequest{
 		Service:      ServiceComputeInstance,
-		Dimensions:   map[string]string{"image_ref": "fedora-16", "instance_type": "small"},
+		Dimensions:   map[string]string{"image_ref": "fedora-16", "instance_type": "small", "boot_disk_size_gib": "40", "storage_tier": "premium"},
 		Description:  "Small Fedora VM",
 		PriceMayVary: true,
 		Supported:    true,
@@ -43,15 +47,22 @@ func TestApplyComputeInstancePricingConfigurationUsesSelectedValues(t *testing.T
 	spec := publicv1.ComputeInstanceSpec_builder{
 		DiskImage:    publicv1.DiskImageReference_builder{Name: "fedora-16"}.Build(),
 		InstanceType: selectedType,
+		BootDisk: publicv1.ComputeInstanceDisk_builder{
+			SizeGib: pricingTestInt32(40), StorageTier: publicv1.StorageTierReference_builder{Name: "premium"}.Build(),
+		}.Build(),
 	}.Build()
 
 	got, err := ApplyComputeInstancePricingConfiguration(request, spec, fields)
 	if err != nil {
 		t.Fatalf("ApplyComputeInstancePricingConfiguration() error = %v", err)
 	}
-	if len(got) != 1 || got[0].Dimensions["image_ref"] != "fedora-16" || got[0].Dimensions["instance_type"] != "large" {
-		t.Fatalf("pricing requests = %v, want selected instance type and locked image", got)
+	if len(got) != 1 || !reflect.DeepEqual(got[0].Dimensions, map[string]string{"instance_type": "large"}) {
+		t.Fatalf("pricing requests = %v, want only selected instance type", got)
 	}
+}
+
+func pricingTestInt32(value int32) *int32 {
+	return &value
 }
 
 func TestApplyComputeInstancePricingConfigurationSeparatesAdditionalDisks(t *testing.T) {

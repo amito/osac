@@ -35,13 +35,6 @@ func computeInstanceCoverageRequests(instance *privatev1.ComputeInstance) []Cata
 	}
 	spec := instance.GetSpec()
 	addNamedReference(request.Dimensions, "instance_type", spec.GetInstanceType())
-	addNamedReference(request.Dimensions, "image_ref", spec.GetDiskImage())
-	if bootDisk := spec.GetBootDisk(); bootDisk != nil {
-		if bootDisk.GetSizeGib() > 0 {
-			request.Dimensions["boot_disk_size_gib"] = strconv.FormatInt(int64(bootDisk.GetSizeGib()), 10)
-		}
-		addNamedReference(request.Dimensions, "storage_tier", bootDisk.GetStorageTier())
-	}
 	additionalDisks := spec.GetAdditionalDisks()
 	if len(additionalDisks) == 0 {
 		return []CatalogPricingRequest{request}

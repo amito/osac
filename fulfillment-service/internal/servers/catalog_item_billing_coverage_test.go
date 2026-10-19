@@ -32,13 +32,13 @@ func TestCatalogItemBillingCoverageChecksPublishedTenantCatalogs(t *testing.T) {
 	}}
 	provider := &catalogPricingRateCardProviderStub{items: []billing.RateCardItem{{
 		Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "4.50", Unit: billing.RateUnitHour,
-		Conditions: []billing.RateCondition{{Dimension: "image_ref", Operator: billing.RateMatchEquals, Value: "fedora-16"}},
+		Conditions: []billing.RateCondition{{Dimension: "instance_type", Operator: billing.RateMatchEquals, Value: "small"}},
 	}}}
 	resolver := NewCatalogPricingResolver("m360", provider, store)
 	requests := []CatalogPricingRequest{{
 		Service: billing.ServiceComputeInstance,
 		Dimensions: map[string]string{
-			"image_ref": "fedora-16",
+			"instance_type": "small",
 		},
 		Supported: true,
 	}}
@@ -52,7 +52,7 @@ func TestCatalogItemBillingCoverageChecksPublishedTenantCatalogs(t *testing.T) {
 
 	provider.items = []billing.RateCardItem{{
 		Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "4.50", Unit: billing.RateUnitHour,
-		Conditions: []billing.RateCondition{{Dimension: "image_ref", Operator: billing.RateMatchEquals, Value: "rhel-9.6"}},
+		Conditions: []billing.RateCondition{{Dimension: "instance_type", Operator: billing.RateMatchEquals, Value: "large"}},
 	}}
 	err := checkCatalogItemBillingCoverage(context.Background(), resolver, "tenant-a", true, requests)
 	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(status.Convert(err).Message(), "BILLING_COVERAGE_GAP") {
