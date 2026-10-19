@@ -70,7 +70,7 @@ func TestBillingCostsMapsProviderHeaderCapToFailedPrecondition(t *testing.T) {
 	require.Equal(t, "BILLING_COST_RANGE_TOO_LARGE", status.Message())
 }
 
-func TestBillingCostsHonorsSharedProviderCircuit(t *testing.T) {
+func TestBillingCostsCircuitIsIndependentFromPricingCircuit(t *testing.T) {
 	provider := &costProviderStub{}
 	store := &costAccountStoreStub{account: billing.AssignedAccount{
 		ProviderKey: "m360", ProviderAccountReference: "native-account-1", CurrencyCode: "USD", ConnectionState: "CONNECTED",
@@ -80,16 +80,53 @@ func TestBillingCostsHonorsSharedProviderCircuit(t *testing.T) {
 	server, err := NewBillingCostsServer().
 		SetLogger(newBillingTestLogger()).
 		SetProvider("m360", provider).
-		SetPricingResolver(resolver).
 		SetAccountStore(store).
 		SetTenancyLogic(newCostTenancyLogic(t, "project-a")).
 		Build()
 	require.NoError(t, err)
+	require.NotSame(t, &resolver.circuit, &server.circuit.catalogPricingCircuitBreaker, "cost reads must own independent breaker state")
+	require.True(t, server.circuit.openUntil.IsZero(), "an open pricing circuit must not open the cost circuit")
 	ctx := config.TenantIntoContext(context.Background(), "tenant-a")
 
 	_, err = server.List(ctx, publicv1.BillingCostsListRequest_builder{FromDate: "2026-08-01", ToDate: "2026-08-31"}.Build())
+	require.NoError(t, err)
+	require.Equal(t, 1, provider.calls, "an open pricing circuit must not block cost reads")
+}
+
+func TestBillingCostsCircuitDoesNotOpenPricingCircuit(t *testing.T) {
+	costProvider := &costProviderStub{}
+	costServer := newBillingCostsServer(t, costProvider, &costAccountStoreStub{account: billing.AssignedAccount{
+		ProviderKey: "m360", ProviderAccountReference: "native-account-1", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+	}}, "project-a")
+	ctx := context.Background()
+	now := time.Now()
+	for i := 0; i < catalogPricingCircuitFailureThreshold; i++ {
+		costServer.circuit.recordFailure(now.Add(time.Duration(i)*time.Millisecond), false)
+	}
+	if costServer.circuit.openUntil.IsZero() {
+		t.Fatal("cost circuit did not open after repeated provider failures")
+	}
+	_, err := costServer.List(config.TenantIntoContext(ctx, "tenant-a"), publicv1.BillingCostsListRequest_builder{
+		FromDate: "2026-08-01", ToDate: "2026-08-31",
+	}.Build())
 	require.Equal(t, grpccodes.Unavailable, grpcstatus.Code(err))
-	require.Zero(t, provider.calls)
+	require.Zero(t, costProvider.calls, "an open cost circuit must reject cost reads")
+
+	rateProvider := &catalogPricingRateCardProviderStub{items: []billing.RateCardItem{{
+		Service: billing.ServiceComputeInstance, CurrencyCode: "USD", Amount: "4.50", Unit: billing.RateUnitHour,
+		Conditions: []billing.RateCondition{{Dimension: "instance_type", Operator: billing.RateMatchEquals, Value: "large"}},
+	}}}
+	resolver := NewCatalogPricingResolver("m360", rateProvider, &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
+		ProviderKey: "m360", ProviderAccountReference: "native-account-1", CurrencyCode: "USD", ConnectionState: "CONNECTED",
+	}})
+	if err := resolver.CheckCoverage(ctx, "tenant-a", []CatalogPricingRequest{{
+		Service: billing.ServiceComputeInstance, Dimensions: map[string]string{"instance_type": "large"}, Supported: true,
+	}}); err != nil {
+		t.Fatalf("CheckCoverage() after cost failures = %v, want coverage from the rate provider", err)
+	}
+	if costServer.circuit.openUntil.IsZero() || !resolver.circuit.openUntil.IsZero() {
+		t.Fatalf("circuit state after CheckCoverage() = cost %v, pricing %v; want only cost circuit open", costServer.circuit.openUntil, resolver.circuit.openUntil)
+	}
 }
 
 type costAccountStoreStub struct {

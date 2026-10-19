@@ -36,11 +36,12 @@ const (
 	billingCostMaxLimit     = 100
 )
 
+var errBillingCostCircuitOpen = errors.New("billing cost circuit is open")
+
 type BillingCostsServerBuilder struct {
 	logger      *slog.Logger
 	providerKey string
 	provider    billing.CostProvider
-	circuit     *catalogPricingCircuitBreaker
 	store       assignedBillingAccountStore
 	tenancy     auth.TenancyLogic
 }
@@ -50,9 +51,15 @@ type BillingCostsServer struct {
 	logger      *slog.Logger
 	providerKey string
 	provider    billing.CostProvider
-	circuit     *catalogPricingCircuitBreaker
+	circuit     costReadCircuitBreaker
 	store       assignedBillingAccountStore
 	tenancy     auth.TenancyLogic
+}
+
+// costReadCircuitBreaker has independent state from pricing coverage lookups.
+// It uses the same breaker policy while keeping cost read failures isolated.
+type costReadCircuitBreaker struct {
+	catalogPricingCircuitBreaker
 }
 
 var _ publicv1.BillingCostsServer = (*BillingCostsServer)(nil)
@@ -69,14 +76,6 @@ func (b *BillingCostsServerBuilder) SetLogger(value *slog.Logger) *BillingCostsS
 func (b *BillingCostsServerBuilder) SetProvider(providerKey string, value billing.CostProvider) *BillingCostsServerBuilder {
 	b.providerKey = providerKey
 	b.provider = value
-	return b
-}
-
-// SetPricingResolver shares the billing provider circuit with rate-card reads.
-func (b *BillingCostsServerBuilder) SetPricingResolver(value *CatalogPricingResolver) *BillingCostsServerBuilder {
-	if value != nil {
-		b.circuit = &value.circuit
-	}
 	return b
 }
 
@@ -101,7 +100,6 @@ func (b *BillingCostsServerBuilder) Build() (*BillingCostsServer, error) {
 		logger:      b.logger,
 		providerKey: b.providerKey,
 		provider:    b.provider,
-		circuit:     b.circuit,
 		store:       b.store,
 		tenancy:     b.tenancy,
 	}, nil
@@ -255,20 +253,13 @@ func (s *BillingCostsServer) visibleBillingCosts(
 }
 
 func (s *BillingCostsServer) listProviderCosts(ctx context.Context, query billing.CostQuery) ([]billing.Cost, error) {
-	probe := false
-	if s.circuit != nil {
-		allowed := false
-		allowed, probe = s.circuit.allow(time.Now())
-		if !allowed {
-			return nil, errPricingCircuitOpen
-		}
+	allowed, probe := s.circuit.allow(time.Now())
+	if !allowed {
+		return nil, errBillingCostCircuitOpen
 	}
 	costs, err := billing.RetryProviderRead(ctx, func(ctx context.Context) ([]billing.Cost, error) {
 		return s.provider.ListCosts(ctx, query)
 	})
-	if s.circuit == nil {
-		return costs, err
-	}
 	if err == nil {
 		s.circuit.recordSuccess(probe)
 	} else if errors.Is(err, context.Canceled) {
