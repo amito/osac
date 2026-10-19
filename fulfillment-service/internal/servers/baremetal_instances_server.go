@@ -34,7 +34,6 @@ type BareMetalInstancesServerBuilder struct {
 	tenancyLogic      auth.TenancyLogic
 	metricsRegisterer prometheus.Registerer
 	secretStore       vault.SecretStore
-	pricingResolver   *CatalogPricingResolver
 }
 
 var _ publicv1.BareMetalInstancesServer = (*BareMetalInstancesServer)(nil)
@@ -82,11 +81,6 @@ func (b *BareMetalInstancesServerBuilder) SetSecretStore(value vault.SecretStore
 	return b
 }
 
-func (b *BareMetalInstancesServerBuilder) SetPricingResolver(value *CatalogPricingResolver) *BareMetalInstancesServerBuilder {
-	b.pricingResolver = value
-	return b
-}
-
 func (b *BareMetalInstancesServerBuilder) Build() (result *BareMetalInstancesServer, err error) {
 	if b.logger == nil {
 		err = errors.New("logger is mandatory")
@@ -125,7 +119,6 @@ func (b *BareMetalInstancesServerBuilder) Build() (result *BareMetalInstancesSer
 		SetTenancyLogic(b.tenancyLogic).
 		SetMetricsRegisterer(b.metricsRegisterer).
 		SetSecretStore(b.secretStore).
-		SetPricingResolver(b.pricingResolver).
 		SetFilterDesc((*publicv1.BareMetalInstance)(nil).ProtoReflect().Descriptor()).
 		Build()
 	if err != nil {

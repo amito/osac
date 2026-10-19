@@ -32,7 +32,6 @@ type BareMetalInstanceCatalogItemsServerBuilder struct {
 	attributionLogic  auth.AttributionLogic
 	tenancyLogic      auth.TenancyLogic
 	metricsRegisterer prometheus.Registerer
-	pricingResolver   *CatalogPricingResolver
 }
 
 var _ publicv1.BareMetalInstanceCatalogItemsServer = (*BareMetalInstanceCatalogItemsServer)(nil)
@@ -40,12 +39,11 @@ var _ publicv1.BareMetalInstanceCatalogItemsServer = (*BareMetalInstanceCatalogI
 type BareMetalInstanceCatalogItemsServer struct {
 	publicv1.UnimplementedBareMetalInstanceCatalogItemsServer
 
-	logger          *slog.Logger
-	delegate        *PrivateBareMetalInstanceCatalogItemsServer
-	inMapper        *GenericMapper[*publicv1.BareMetalInstanceCatalogItem, *privatev1.BareMetalInstanceCatalogItem]
-	outMapper       *GenericMapper[*privatev1.BareMetalInstanceCatalogItem, *publicv1.BareMetalInstanceCatalogItem]
-	tenancyLogic    auth.TenancyLogic
-	pricingResolver *CatalogPricingResolver
+	logger       *slog.Logger
+	delegate     *PrivateBareMetalInstanceCatalogItemsServer
+	inMapper     *GenericMapper[*publicv1.BareMetalInstanceCatalogItem, *privatev1.BareMetalInstanceCatalogItem]
+	outMapper    *GenericMapper[*privatev1.BareMetalInstanceCatalogItem, *publicv1.BareMetalInstanceCatalogItem]
+	tenancyLogic auth.TenancyLogic
 }
 
 func NewBareMetalInstanceCatalogItemsServer() *BareMetalInstanceCatalogItemsServerBuilder {
@@ -74,12 +72,6 @@ func (b *BareMetalInstanceCatalogItemsServerBuilder) SetTenancyLogic(value auth.
 // access objects. This is optional. If not set, no metrics will be recorded.
 func (b *BareMetalInstanceCatalogItemsServerBuilder) SetMetricsRegisterer(value prometheus.Registerer) *BareMetalInstanceCatalogItemsServerBuilder {
 	b.metricsRegisterer = value
-	return b
-}
-
-// SetPricingResolver adds provider-derived pricing to catalog reads when billing is configured.
-func (b *BareMetalInstanceCatalogItemsServerBuilder) SetPricingResolver(value *CatalogPricingResolver) *BareMetalInstanceCatalogItemsServerBuilder {
-	b.pricingResolver = value
 	return b
 }
 
@@ -113,7 +105,6 @@ func (b *BareMetalInstanceCatalogItemsServerBuilder) Build() (result *BareMetalI
 		SetAttributionLogic(b.attributionLogic).
 		SetTenancyLogic(b.tenancyLogic).
 		SetMetricsRegisterer(b.metricsRegisterer).
-		SetPricingResolver(b.pricingResolver).
 		SetFilterDesc((*publicv1.BareMetalInstanceCatalogItem)(nil).ProtoReflect().Descriptor()).
 		Build()
 	if err != nil {
@@ -121,12 +112,11 @@ func (b *BareMetalInstanceCatalogItemsServerBuilder) Build() (result *BareMetalI
 	}
 
 	result = &BareMetalInstanceCatalogItemsServer{
-		logger:          b.logger,
-		delegate:        delegate,
-		inMapper:        inMapper,
-		outMapper:       outMapper,
-		tenancyLogic:    b.tenancyLogic,
-		pricingResolver: b.pricingResolver,
+		logger:       b.logger,
+		delegate:     delegate,
+		inMapper:     inMapper,
+		outMapper:    outMapper,
+		tenancyLogic: b.tenancyLogic,
 	}
 	return
 }

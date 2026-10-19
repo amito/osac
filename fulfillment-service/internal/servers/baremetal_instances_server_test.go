@@ -23,7 +23,6 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
-	"github.com/osac-project/osac/fulfillment-service/internal/billing"
 	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
 	publicv1 "github.com/osac-project/osac/proto/gen/osac/public/v1"
 )
@@ -125,23 +124,14 @@ var _ = Describe("Bare metal instances server", func() {
 			Expect(response.GetObject().GetSpec().GetInstanceType().GetId()).To(Equal("default-type"))
 		})
 
-		It("creates an instance when BMaaS rate coverage is missing", func() {
-			provider := &catalogPricingRateCardProviderStub{}
-			resolver := NewCatalogPricingResolver("m360", provider, &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
-				ProviderKey: "m360", ProviderAccountReference: "provider-account", CurrencyCode: "USD", ConnectionState: "CONNECTED",
-			}})
-			coverageErr := resolver.CheckCoverage(ctx, testTenant, []CatalogPricingRequest{{Service: billing.ServiceBareMetalInstance, Supported: true}})
-			Expect(status.Code(coverageErr)).To(Equal(codes.FailedPrecondition))
-			callsBeforeCreate := provider.calls
-
-			serverWithBilling, err := NewBareMetalInstancesServer().
+		It("creates an instance without BM pricing coverage", func() {
+			bareMetalServer, err := NewBareMetalInstancesServer().
 				SetLogger(logger).
 				SetAttributionLogic(attribution).
 				SetTenancyLogic(tenancy).
-				SetPricingResolver(resolver).
 				Build()
 			Expect(err).NotTo(HaveOccurred())
-			response, err := serverWithBilling.Create(ctx, publicv1.BareMetalInstancesCreateRequest_builder{
+			response, err := bareMetalServer.Create(ctx, publicv1.BareMetalInstancesCreateRequest_builder{
 				Object: publicv1.BareMetalInstance_builder{
 					Metadata: publicv1.Metadata_builder{Name: "bm-without-rate-coverage"}.Build(),
 					Spec: publicv1.BareMetalInstanceSpec_builder{
@@ -153,7 +143,6 @@ var _ = Describe("Bare metal instances server", func() {
 			}.Build())
 			Expect(err).NotTo(HaveOccurred())
 			Expect(response.GetObject().GetId()).NotTo(BeEmpty())
-			Expect(provider.calls).To(Equal(callsBeforeCreate), "BMaaS create must not query pricing coverage")
 		})
 
 		It("Returns a warning for a deprecated disk_image", func() {

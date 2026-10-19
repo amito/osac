@@ -25,7 +25,6 @@ import (
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"github.com/osac-project/osac/fulfillment-service/internal/auth"
-	"github.com/osac-project/osac/fulfillment-service/internal/billing"
 	"github.com/osac-project/osac/fulfillment-service/internal/database/dao"
 	privatev1 "github.com/osac-project/osac/proto/gen/osac/private/v1"
 	publicv1 "github.com/osac-project/osac/proto/gen/osac/public/v1"
@@ -143,15 +142,7 @@ var _ = Describe("Bare metal instance catalog items server", func() {
 			Expect(object.GetPublished()).To(BeTrue())
 		})
 
-		It("publishes a BM catalog item when rate coverage is missing", func() {
-			provider := &catalogPricingRateCardProviderStub{}
-			resolver := NewCatalogPricingResolver("m360", provider, &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
-				ProviderKey: "m360", ProviderAccountReference: "provider-account", CurrencyCode: "USD", ConnectionState: "CONNECTED",
-			}})
-			coverageErr := resolver.CheckCoverage(ctx, testTenant, []CatalogPricingRequest{{Service: billing.ServiceBareMetalInstance, Supported: true}})
-			Expect(status.Code(coverageErr)).To(Equal(codes.FailedPrecondition))
-			callsBeforePublish := provider.calls
-
+		It("publishes a BM catalog item without billing pricing support", func() {
 			draft, err := server.Create(ctx, publicv1.BareMetalInstanceCatalogItemsCreateRequest_builder{
 				Object: publicv1.BareMetalInstanceCatalogItem_builder{
 					Metadata:  publicv1.Metadata_builder{Name: fmt.Sprintf("bm-no-rate-%s", uuid.NewString()[:8])}.Build(),
@@ -162,20 +153,12 @@ var _ = Describe("Bare metal instance catalog items server", func() {
 			}.Build())
 			Expect(err).NotTo(HaveOccurred())
 
-			serverWithBilling, err := NewBareMetalInstanceCatalogItemsServer().
-				SetLogger(logger).
-				SetAttributionLogic(attribution).
-				SetTenancyLogic(tenancy).
-				SetPricingResolver(resolver).
-				Build()
-			Expect(err).NotTo(HaveOccurred())
-			response, err := serverWithBilling.Update(ctx, publicv1.BareMetalInstanceCatalogItemsUpdateRequest_builder{
+			response, err := server.Update(ctx, publicv1.BareMetalInstanceCatalogItemsUpdateRequest_builder{
 				Object:     publicv1.BareMetalInstanceCatalogItem_builder{Id: draft.GetObject().GetId(), Published: true}.Build(),
 				UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"published"}},
 			}.Build())
 			Expect(err).NotTo(HaveOccurred())
 			Expect(response.GetObject().GetPublished()).To(BeTrue())
-			Expect(provider.calls).To(Equal(callsBeforePublish), "BMaaS publish must not query pricing coverage")
 		})
 		It("Updates object through the public API", func() {
 			createResponse, err := server.Create(ctx, publicv1.BareMetalInstanceCatalogItemsCreateRequest_builder{
@@ -302,7 +285,7 @@ var _ = Describe("Bare metal instance catalog items server", func() {
 			Expect(getResponse.GetObject().GetId()).To(Equal(id))
 		})
 
-		It("omits pricing from BM catalog reads when billing is configured", func() {
+		It("omits pricing from BM catalog reads", func() {
 			created, err := server.Create(ctx, publicv1.BareMetalInstanceCatalogItemsCreateRequest_builder{
 				Object: publicv1.BareMetalInstanceCatalogItem_builder{
 					Title:     "Published BM item without pricing",
@@ -313,19 +296,7 @@ var _ = Describe("Bare metal instance catalog items server", func() {
 			}.Build())
 			Expect(err).NotTo(HaveOccurred())
 
-			provider := &catalogPricingRateCardProviderStub{}
-			resolver := NewCatalogPricingResolver("m360", provider, &catalogPricingAccountStoreStub{account: billing.AssignedAccount{
-				ProviderKey: "m360", ProviderAccountReference: "provider-account", CurrencyCode: "USD", ConnectionState: "CONNECTED",
-			}})
-			serverWithBilling, err := NewBareMetalInstanceCatalogItemsServer().
-				SetLogger(logger).
-				SetAttributionLogic(attribution).
-				SetTenancyLogic(tenancy).
-				SetPricingResolver(resolver).
-				Build()
-			Expect(err).NotTo(HaveOccurred())
-
-			list, err := serverWithBilling.List(ctx, publicv1.BareMetalInstanceCatalogItemsListRequest_builder{}.Build())
+			list, err := server.List(ctx, publicv1.BareMetalInstanceCatalogItemsListRequest_builder{}.Build())
 			Expect(err).NotTo(HaveOccurred())
 			found := false
 			for _, item := range list.GetItems() {
@@ -335,10 +306,9 @@ var _ = Describe("Bare metal instance catalog items server", func() {
 				}
 			}
 			Expect(found).To(BeTrue())
-			get, err := serverWithBilling.Get(ctx, publicv1.BareMetalInstanceCatalogItemsGetRequest_builder{Id: created.GetObject().GetId()}.Build())
+			get, err := server.Get(ctx, publicv1.BareMetalInstanceCatalogItemsGetRequest_builder{Id: created.GetObject().GetId()}.Build())
 			Expect(err).NotTo(HaveOccurred())
 			Expect(get.GetObject().GetPricing()).To(BeNil())
-			Expect(provider.calls).To(BeZero())
 		})
 
 		It("Reads unpublished object within normal visibility", func() {

@@ -39,7 +39,6 @@ type PrivateBareMetalInstanceCatalogItemsServerBuilder struct {
 	tenancyLogic      auth.TenancyLogic
 	metricsRegisterer prometheus.Registerer
 	filterDesc        protoreflect.MessageDescriptor
-	pricingResolver   *CatalogPricingResolver
 }
 
 var _ privatev1.BareMetalInstanceCatalogItemsServer = (*PrivateBareMetalInstanceCatalogItemsServer)(nil)
@@ -55,7 +54,6 @@ type PrivateBareMetalInstanceCatalogItemsServer struct {
 	networkClassesDao         *dao.GenericDAO[*privatev1.NetworkClass]
 	securityGroupsDao         *dao.GenericDAO[*privatev1.SecurityGroup]
 	outMapper                 *GenericMapper[*privatev1.BareMetalInstanceCatalogItem, *publicv1.BareMetalInstanceCatalogItem]
-	pricingResolver           *CatalogPricingResolver
 }
 
 func NewPrivateBareMetalInstanceCatalogItemsServer() *PrivateBareMetalInstanceCatalogItemsServerBuilder {
@@ -79,11 +77,6 @@ func (b *PrivateBareMetalInstanceCatalogItemsServerBuilder) SetTenancyLogic(valu
 
 func (b *PrivateBareMetalInstanceCatalogItemsServerBuilder) SetMetricsRegisterer(value prometheus.Registerer) *PrivateBareMetalInstanceCatalogItemsServerBuilder {
 	b.metricsRegisterer = value
-	return b
-}
-
-func (b *PrivateBareMetalInstanceCatalogItemsServerBuilder) SetPricingResolver(value *CatalogPricingResolver) *PrivateBareMetalInstanceCatalogItemsServerBuilder {
-	b.pricingResolver = value
 	return b
 }
 
@@ -198,7 +191,6 @@ func (b *PrivateBareMetalInstanceCatalogItemsServerBuilder) Build() (result *Pri
 		networkClassesDao:         networkClassesDao,
 		securityGroupsDao:         securityGroupsDao,
 		outMapper:                 outMapper,
-		pricingResolver:           b.pricingResolver,
 	}
 	return
 }
