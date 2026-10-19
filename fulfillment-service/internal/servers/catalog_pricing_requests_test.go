@@ -114,24 +114,42 @@ func TestBareMetalCatalogPricingRequestUsesCatalogAndResourceValues(t *testing.T
 	}
 }
 
-func TestClusterCatalogPricingRequestUsesVersionAndSingleNodeSet(t *testing.T) {
+func TestClusterCatalogPricingRequestUsesOnlyNodeSetBillableDimensions(t *testing.T) {
 	version := publicv1.ClusterVersionReference_builder{Name: "openshift-4.18"}.Build()
-	instanceType := publicv1.BareMetalInstanceTypeReference_builder{Name: "gpu-node"}.Build()
-	nodeSet := publicv1.ClusterCatalogNodeSet_builder{Size: 3, BaremetalInstanceType: instanceType}.Build()
+	instanceType := publicv1.BareMetalInstanceTypeReference_builder{Name: "cpu-node"}.Build()
+	gpuInstanceType := publicv1.BareMetalInstanceTypeReference_builder{Name: "gpu-node"}.Build()
 	fields := publicv1.ClusterCatalogItemFields_builder{
 		Version: publicv1.ClusterVersionReferenceFieldPolicy_builder{Locked: version}.Build(),
 		NodeSets: publicv1.ClusterNodeSetMapPolicy_builder{Locked: publicv1.ClusterNodeSetMap_builder{
-			Items: map[string]*publicv1.ClusterCatalogNodeSet{"workers": nodeSet},
+			Items: map[string]*publicv1.ClusterCatalogNodeSet{
+				"compute": publicv1.ClusterCatalogNodeSet_builder{Size: 3, BaremetalInstanceType: instanceType}.Build(),
+				"gpu":     publicv1.ClusterCatalogNodeSet_builder{Size: 2, BaremetalInstanceType: gpuInstanceType}.Build(),
+			},
 		}.Build()}.Build(),
 	}.Build()
-	item := publicv1.ClusterCatalogItem_builder{Title: "GPU cluster", Fields: fields}.Build()
+	template := publicv1.ClusterTemplateReference_builder{Name: "standard"}.Build()
+	item := publicv1.ClusterCatalogItem_builder{Title: "GPU cluster", Template: template, Fields: fields}.Build()
 
 	got := clusterCatalogPricingRequests([]*publicv1.ClusterCatalogItem{item})
 	if len(got) != 1 || got[0].Service != billing.ServiceCluster || !got[0].Supported {
 		t.Fatalf("clusterCatalogPricingRequests() = %v, want one supported cluster request", got)
 	}
-	components := catalogPricingComponents(got[0])
-	if len(components) != 2 || got[0].Dimensions["release_image"] != "openshift-4.18" || got[0].Dimensions["node_count"] != "" || components[1].Dimensions["baremetal_instance_type"] != "gpu-node" || components[1].Dimensions["node_count"] != "3" {
-		t.Fatalf("pricing components = %v, want base version and one node set", components)
+	request := applyTemplatePricingDefaults(got[0], map[string]string{
+		"cluster_template":        "template-default",
+		"release_image":           "template-version",
+		"baremetal_instance_type": "template-node",
+		"node_count":              "10",
+	})
+	components := catalogPricingComponents(request)
+	if len(request.Dimensions) != 0 || len(components) != 2 {
+		t.Fatalf("cluster pricing request = %+v with components %v, want only two node-set components", request, components)
+	}
+	for index, want := range []map[string]string{
+		{"baremetal_instance_type": "cpu-node", "node_count": "3"},
+		{"baremetal_instance_type": "gpu-node", "node_count": "2"},
+	} {
+		if !reflect.DeepEqual(components[index].Dimensions, want) {
+			t.Fatalf("node-set component %d dimensions = %v, want %#v", index, components[index].Dimensions, want)
+		}
 	}
 }

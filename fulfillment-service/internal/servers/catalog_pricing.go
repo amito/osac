@@ -326,9 +326,11 @@ func buildCatalogPricingResults(
 
 func catalogPricingComponents(request CatalogPricingRequest) []billing.CatalogPricingComponentRequest {
 	components := make([]billing.CatalogPricingComponentRequest, 0, len(request.Components)+1)
-	components = append(components, billing.CatalogPricingComponentRequest{
-		Dimensions: request.Dimensions, Description: request.Description,
-	})
+	if request.Service != billing.ServiceCluster || len(request.Components) == 0 {
+		components = append(components, billing.CatalogPricingComponentRequest{
+			Dimensions: request.Dimensions, Description: request.Description,
+		})
+	}
 	return append(components, request.Components...)
 }
 

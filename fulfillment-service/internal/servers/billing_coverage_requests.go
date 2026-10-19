@@ -68,8 +68,6 @@ func clusterCoverageRequests(cluster *privatev1.Cluster) []CatalogPricingRequest
 		return []CatalogPricingRequest{base}
 	}
 	spec := cluster.GetSpec()
-	addNamedReference(base.Dimensions, "cluster_template", spec.GetTemplate())
-	addNamedReference(base.Dimensions, "release_image", spec.GetVersion())
 	if len(spec.GetNodeSets()) == 0 {
 		base.Supported = false
 		return []CatalogPricingRequest{base}
@@ -79,18 +77,15 @@ func clusterCoverageRequests(cluster *privatev1.Cluster) []CatalogPricingRequest
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	requests := []CatalogPricingRequest{base}
+	requests := make([]CatalogPricingRequest, 0, len(spec.GetNodeSets()))
 	for _, name := range names {
 		nodeSet := spec.GetNodeSets()[name]
 		request := CatalogPricingRequest{
 			Service:      base.Service,
-			Dimensions:   make(map[string]string, len(base.Dimensions)+2),
+			Dimensions:   make(map[string]string, 2),
 			Supported:    base.Supported && nodeSet != nil,
 			Description:  name,
 			PriceMayVary: true,
-		}
-		for dimension, value := range base.Dimensions {
-			request.Dimensions[dimension] = value
 		}
 		if nodeSet != nil {
 			addNamedReference(request.Dimensions, "baremetal_instance_type", nodeSet.GetBaremetalInstanceType())

@@ -75,7 +75,7 @@ func TestComputeInstanceCoverageRequestsCheckEachAdditionalDisk(t *testing.T) {
 	}
 }
 
-func TestClusterCoverageRequestsCheckEachNodeSet(t *testing.T) {
+func TestClusterCoverageRequestsUseOnlyNodeSetDimensions(t *testing.T) {
 	cluster := privatev1.Cluster_builder{Spec: privatev1.ClusterSpec_builder{
 		Template: privatev1.ClusterTemplateReference_builder{Name: "standard"}.Build(),
 		Version:  privatev1.ClusterVersionReference_builder{Name: "4.18"}.Build(),
@@ -90,16 +90,17 @@ func TestClusterCoverageRequestsCheckEachNodeSet(t *testing.T) {
 	}.Build()}.Build()
 
 	requests := clusterCoverageRequests(cluster)
-	if len(requests) != 3 {
-		t.Fatalf("clusterCoverageRequests() = %+v, want base and two node-set requests", requests)
+	if len(requests) != 2 {
+		t.Fatalf("clusterCoverageRequests() = %+v, want only two node-set requests", requests)
 	}
-	for _, request := range requests {
-		if !request.Supported || request.Service != billing.ServiceCluster || request.Dimensions["cluster_template"] != "standard" || request.Dimensions["release_image"] != "4.18" {
-			t.Fatalf("cluster coverage request = %+v, want resolved shared dimensions", request)
+	for index, want := range []map[string]string{
+		{"baremetal_instance_type": "cpu", "node_count": "3"},
+		{"baremetal_instance_type": "gpu", "node_count": "2"},
+	} {
+		request := requests[index]
+		if !request.Supported || request.Service != billing.ServiceCluster || !reflect.DeepEqual(request.Dimensions, want) {
+			t.Fatalf("cluster coverage request %d = %+v, want only node-set dimensions %#v", index, request, want)
 		}
-	}
-	if requests[0].Dimensions["baremetal_instance_type"] != "" || requests[1].Dimensions["baremetal_instance_type"] == requests[2].Dimensions["baremetal_instance_type"] {
-		t.Fatalf("cluster requests = %+v, want distinct node-set instance types", requests)
 	}
 }
 

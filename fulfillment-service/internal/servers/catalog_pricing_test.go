@@ -19,6 +19,7 @@ package servers
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -89,21 +90,29 @@ func TestCatalogPricingAsOfIsUnsetOnStaleFallback(t *testing.T) {
 	}
 }
 
-func TestCatalogPricingDoesNotRepeatClusterTemplateRateForNodeSets(t *testing.T) {
-	request := CatalogPricingRequest{Service: billing.ServiceCluster, Dimensions: map[string]string{"cluster_template": "standard"}, Supported: true,
+func TestCatalogPricingUsesOnlyClusterNodeSetComponents(t *testing.T) {
+	request := CatalogPricingRequest{Service: billing.ServiceCluster, Supported: true,
 		Components: []billing.CatalogPricingComponentRequest{
-			{Dimensions: map[string]string{"cluster_template": "standard", "baremetal_instance_type": "cpu", "node_count": "3"}},
-			{Dimensions: map[string]string{"cluster_template": "standard", "baremetal_instance_type": "gpu", "node_count": "2"}},
+			{Dimensions: map[string]string{"baremetal_instance_type": "cpu", "node_count": "3"}},
+			{Dimensions: map[string]string{"baremetal_instance_type": "gpu", "node_count": "2"}},
 		}}
 	components := catalogPricingComponents(request)
-	if len(components) != 3 || components[0].Dimensions["node_count"] != "" {
-		t.Fatalf("cluster pricing components = %+v, want one template and two node sets", components)
+	if len(components) != 2 {
+		t.Fatalf("cluster pricing components = %+v, want only two node sets", components)
+	}
+	for index, want := range []map[string]string{
+		{"baremetal_instance_type": "cpu", "node_count": "3"},
+		{"baremetal_instance_type": "gpu", "node_count": "2"},
+	} {
+		if !reflect.DeepEqual(components[index].Dimensions, want) {
+			t.Fatalf("node-set component %d dimensions = %+v, want %#v", index, components[index].Dimensions, want)
+		}
 	}
 	provider := &catalogPricingRateCardProviderStub{items: []billing.RateCardItem{{
 		Service: billing.ServiceCluster, CurrencyCode: "USD", Amount: "4", Unit: billing.RateUnitMonth,
 		Conditions: []billing.RateCondition{{Dimension: "cluster_template", Operator: billing.RateMatchEquals, Value: "standard"}},
 	}}}
-	for _, node := range components[1:] {
+	for _, node := range components {
 		if _, err := billing.ResolveRateCardItem(provider.items, request.Service, "USD", node.Dimensions); err == nil {
 			t.Fatal("template-only rate unexpectedly covers a node set")
 		}

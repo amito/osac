@@ -65,12 +65,8 @@ func clusterCatalogPricingRequestsWithTemplateDefaults(
 			Description: catalogPriceDescription(item.GetTitle(), "Cluster"),
 			Supported:   true,
 		}
-		if template := item.GetTemplate(); template != nil && template.GetName() != "" {
-			request.Dimensions["cluster_template"] = template.GetName()
-		}
 		if fields := item.GetFields(); fields != nil {
-			request.PriceMayVary = addClusterVersionPricingDimension(request.Dimensions, "release_image", fields.GetVersion())
-			request.PriceMayVary = addClusterNodeSetPricingDimensions(&request, fields.GetNodeSets()) || request.PriceMayVary
+			request.PriceMayVary = addClusterNodeSetPricingDimensions(&request, fields.GetNodeSets())
 		}
 		requests[i] = applyTemplatePricingDefaults(request, templateDefaults[item.GetId()])
 	}
@@ -117,6 +113,9 @@ func applyTemplatePricingDefaults(request CatalogPricingRequest, defaults map[st
 		if value == "" {
 			continue
 		}
+		if request.Service == billing.ServiceCluster {
+			continue
+		}
 		if request.Service == billing.ServiceComputeInstance && dimension != "instance_type" {
 			continue
 		}
@@ -138,7 +137,7 @@ func applyTemplatePricingDefaults(request CatalogPricingRequest, defaults map[st
 			if request.Service == billing.ServiceComputeInstance && dimension != "additional_disk_size_gib" && dimension != "additional_storage_tier" {
 				continue
 			}
-			if request.Service == billing.ServiceCluster && dimension != "cluster_template" && dimension != "release_image" && dimension != "baremetal_instance_type" && dimension != "node_count" {
+			if request.Service == billing.ServiceCluster && dimension != "baremetal_instance_type" && dimension != "node_count" {
 				continue
 			}
 			if _, present := request.Components[i].Dimensions[dimension]; !present {
@@ -182,19 +181,6 @@ func addBareMetalInstanceTypePricingDimension(dimensions map[string]string, dime
 	locked := policy.GetLocked()
 	editable := policy.GetEditable()
 	var defaultValue *publicv1.BareMetalInstanceTypeReference
-	if editable != nil {
-		defaultValue = editable.GetDefaultValue()
-	}
-	return addReferencePricingDimension(dimensions, dimension, locked.GetName(), defaultValue.GetName(), editable != nil, defaultValue != nil)
-}
-
-func addClusterVersionPricingDimension(dimensions map[string]string, dimension string, policy *publicv1.ClusterVersionReferenceFieldPolicy) bool {
-	if policy == nil {
-		return false
-	}
-	locked := policy.GetLocked()
-	editable := policy.GetEditable()
-	var defaultValue *publicv1.ClusterVersionReference
 	if editable != nil {
 		defaultValue = editable.GetDefaultValue()
 	}
@@ -289,7 +275,7 @@ func addClusterNodeSetPricingDimensions(request *CatalogPricingRequest, policy *
 			request.Components = nil
 			return editable != nil
 		}
-		dimensions := cloneCatalogPricingDimensions(request.Dimensions)
+		dimensions := make(map[string]string, 2)
 		addClusterNodeSetDimensions(dimensions, nodeSet)
 		request.Components = append(request.Components, billing.CatalogPricingComponentRequest{
 			Dimensions:  dimensions,
@@ -306,14 +292,6 @@ func addClusterNodeSetDimensions(dimensions map[string]string, nodeSet *publicv1
 	if nodeSet.GetSize() > 0 {
 		dimensions["node_count"] = strconv.FormatInt(int64(nodeSet.GetSize()), 10)
 	}
-}
-
-func cloneCatalogPricingDimensions(dimensions map[string]string) map[string]string {
-	cloned := make(map[string]string, len(dimensions))
-	for key, value := range dimensions {
-		cloned[key] = value
-	}
-	return cloned
 }
 
 func catalogPriceDescription(title, fallback string) string {
