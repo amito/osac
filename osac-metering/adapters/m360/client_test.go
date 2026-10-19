@@ -81,7 +81,7 @@ var _ = Describe("m360Client", func() {
 		It("returns NonRetryableError on 400", func() {
 			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusBadRequest)
-				_, _ = w.Write([]byte(`{"error":"bad request"}`))
+				_, _ = w.Write([]byte(`{"error":"bad request","account":"fake-native-account-123","payload":"private fixture"}`))
 			}))
 			client = newTestM360Client(server.URL, "v1", "key")
 
@@ -90,7 +90,7 @@ var _ = Describe("m360Client", func() {
 			Expect(err).To(HaveOccurred())
 			var nonRetryable *adapters.NonRetryableError
 			Expect(errors.As(err, &nonRetryable)).To(BeTrue())
-			Expect(err.Error()).NotTo(ContainSubstring("bad request"))
+			Expect(err.Error()).To(Equal("M360 request returned HTTP 400"))
 		})
 
 		It("returns NonRetryableError on 401", func() {
