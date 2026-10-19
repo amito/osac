@@ -159,6 +159,39 @@ var _ = Describe("M360 actual cost reader", func() {
 		}}))
 	})
 
+	It("attributes missing tenant ids to the linked tenant and drops foreign tenant headers or details", func() {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			writer.Header().Set("Content-Type", "application/json")
+			switch request.URL.Path {
+			case "/api/v1/external/services":
+				_, _ = fmt.Fprint(writer, `{"success":true,"data":{"content":[{"Id":"service-1","Code":"compute_instance"}],"last":true}}`)
+			case "/api/v1/external/rated-transactions":
+				_, _ = fmt.Fprint(writer, `{"success":true,"data":{"content":[{"Id":"local","ServiceId":"service-1"},{"Id":"foreign","ServiceId":"service-1"},{"Id":"missing","ServiceId":"service-1"},{"Id":"foreign-header","ServiceId":"service-1","tenantId":"tenant-b"}],"totalElements":4,"totalPages":1,"last":true}}`)
+			case "/api/v1/external/rated-transactions/local":
+				_, _ = fmt.Fprint(writer, `{"success":true,"data":{"id":"local","serviceId":"service-1","amount":1,"currency":"USD","tenantId":"tenant-a","projectId":"project-a","resourceId":"vm-local"}}`)
+			case "/api/v1/external/rated-transactions/foreign":
+				_, _ = fmt.Fprint(writer, `{"success":true,"data":{"id":"foreign","serviceId":"service-1","amount":100,"currency":"USD","tenant_id":"tenant-b","projectId":"project-a","resourceId":"vm-foreign"}}`)
+			case "/api/v1/external/rated-transactions/missing":
+				_, _ = fmt.Fprint(writer, `{"success":true,"data":{"id":"missing","serviceId":"service-1","amount":2,"currency":"USD","projectId":"project-a","resourceId":"vm-missing"}}`)
+			default:
+				Fail("unexpected M360 path: " + request.URL.Path)
+			}
+		}))
+		DeferCleanup(server.Close)
+		client, err := NewClient(Config{BaseURL: server.URL, AllowInsecureHTTP: true, APIKey: "test-token", APIVersion: "v1", HTTPClient: server.Client()})
+		Expect(err).NotTo(HaveOccurred())
+
+		costs, err := client.ListCosts(context.Background(), billing.CostQuery{
+			AccountReference: "account-1", TenantID: "tenant-a", FromDate: "2026-08-01", ToDate: "2026-08-31",
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(costs).To(HaveLen(2))
+		Expect(costs[0].TenantID).To(Equal(new("tenant-a")))
+		Expect(costs[0].ResourceID).To(Equal(new("vm-local")))
+		Expect(costs[1].TenantID).To(Equal(new("tenant-a")))
+		Expect(costs[1].ResourceID).To(Equal(new("vm-missing")))
+	})
+
 	It("preserves missing project attribution instead of treating it as the default project", func() {
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			writer.Header().Set("Content-Type", "application/json")

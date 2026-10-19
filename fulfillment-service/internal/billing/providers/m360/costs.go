@@ -39,9 +39,9 @@ const (
 var _ billing.CostProvider = (*Client)(nil)
 
 // ListCosts reads rated transaction details and aggregates them by OSAC service,
-// project, and resource for the requested account and period. M360 does not
-// provide tenant attribution on rated transaction details, so this adapter
-// attributes costs to the linked tenant supplied in the query. This relies on
+// project, and resource for the requested account and period. When M360 omits
+// tenant attribution, this adapter attributes costs to the linked tenant supplied
+// in the query. Explicit attribution to another tenant is dropped. This relies on
 // OSAC's current one-to-one tenant-to-billing-account mapping.
 func (c *Client) ListCosts(ctx context.Context, query billing.CostQuery) ([]billing.Cost, error) {
 	if strings.TrimSpace(query.AccountReference) == "" {
@@ -73,6 +73,9 @@ func (c *Client) ListCosts(ctx context.Context, query billing.CostQuery) ([]bill
 		if _, supported := osacServices[transaction.ServiceID]; !supported {
 			continue
 		}
+		if foreignCostTenant(tenantID, transaction.TenantID, transaction.TenantIDSnake) {
+			continue
+		}
 		if !validPathSegment(transaction.ID) {
 			return nil, errors.New("M360 rated transaction list contained an invalid identifier")
 		}
@@ -87,6 +90,9 @@ func (c *Client) ListCosts(ctx context.Context, query billing.CostQuery) ([]bill
 		header := selected[i]
 		if detail.ID == "" || detail.ID != header.ID {
 			return nil, errors.New("M360 rated transaction response did not match the requested transaction")
+		}
+		if foreignCostTenant(tenantID, detail.TenantID, detail.TenantIDSnake) {
+			continue
 		}
 		serviceID := detail.ServiceID
 		if serviceID == "" {
@@ -265,19 +271,32 @@ type m360RatedTransactionPage struct {
 }
 
 type m360RatedTransactionHeader struct {
-	ID        string `json:"Id"`
-	ServiceID string `json:"ServiceId"`
+	ID            string  `json:"Id"`
+	ServiceID     string  `json:"ServiceId"`
+	TenantID      *string `json:"tenantId"`
+	TenantIDSnake *string `json:"tenant_id"`
 }
 
 type m360RatedTransactionDetail struct {
 	ID              string      `json:"id"`
 	ServiceID       string      `json:"serviceId"`
+	TenantID        *string     `json:"tenantId"`
+	TenantIDSnake   *string     `json:"tenant_id"`
 	Amount          m360Decimal `json:"amount"`
 	Currency        string      `json:"currency"`
 	ProjectID       *string     `json:"projectId"`
 	ProjectIDSnake  *string     `json:"project_id"`
 	ResourceID      *string     `json:"resourceId"`
 	ResourceIDSnake *string     `json:"resource_id"`
+}
+
+func foreignCostTenant(linkedTenant string, attributedTenants ...*string) bool {
+	for _, tenant := range attributedTenants {
+		if tenant != nil && strings.TrimSpace(*tenant) != linkedTenant {
+			return true
+		}
+	}
+	return false
 }
 
 type costGroup struct {

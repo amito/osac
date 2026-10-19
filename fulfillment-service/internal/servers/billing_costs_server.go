@@ -210,7 +210,10 @@ func (s *BillingCostsServer) visibleBillingCosts(
 ) ([]billing.Cost, error) {
 	visibleCosts := make([]billing.Cost, 0, len(costs))
 	for _, cost := range costs {
-		if cost.TenantID != nil {
+		if cost.TenantID == nil {
+			// The linked account belongs to this tenant under the current 1:1 model.
+			cost.TenantID = &tenantID
+		} else {
 			attributedTenantID := strings.TrimSpace(*cost.TenantID)
 			if attributedTenantID != tenantID {
 				continue

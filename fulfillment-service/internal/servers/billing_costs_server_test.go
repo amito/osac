@@ -174,7 +174,7 @@ func newBillingCostsServer(t *testing.T, provider *costProviderStub, store *cost
 
 func TestBillingCostsListFiltersToVisibleProjects(t *testing.T) {
 	provider := &costProviderStub{costs: []billing.Cost{
-		{ProjectID: new("project-a"), ResourceID: new("vm-1"), Service: billing.ServiceComputeInstance, Amount: "4.50", CurrencyCode: "USD"},
+		{ProjectID: new("project-a"), ResourceID: new("vm-1"), Service: billing.ServiceComputeInstance, Amount: "4.50", CurrencyCode: "USD", PeriodStart: "2026-08-01", PeriodEnd: "2026-08-31"},
 		{ProjectID: new("project-b"), ResourceID: new("vm-2"), Service: billing.ServiceComputeInstance, Amount: "7.00", CurrencyCode: "USD"},
 	}}
 	store := &costAccountStoreStub{account: billing.AssignedAccount{
@@ -184,9 +184,11 @@ func TestBillingCostsListFiltersToVisibleProjects(t *testing.T) {
 	offset, limit := int32(0), int32(10)
 	ctx := config.TenantIntoContext(context.Background(), "tenant-a")
 
+	before := time.Now()
 	response, err := server.List(ctx, publicv1.BillingCostsListRequest_builder{
 		FromDate: "2026-08-01", ToDate: "2026-08-31", Offset: &offset, Limit: &limit,
 	}.Build())
+	after := time.Now()
 	require.NoError(t, err)
 	require.Equal(t, "tenant-a", store.tenant)
 	require.Equal(t, "native-account-1", provider.query.AccountReference)
@@ -198,6 +200,10 @@ func TestBillingCostsListFiltersToVisibleProjects(t *testing.T) {
 	require.Equal(t, "project-a", response.GetItems()[0].GetProjectId())
 	require.Equal(t, "vm-1", response.GetItems()[0].GetResourceId())
 	require.True(t, response.GetItems()[0].HasAsOf(), "successful cost reads should include as_of")
+	require.Equal(t, "2026-08-01", response.GetItems()[0].GetPeriodStart())
+	require.Equal(t, "2026-08-31", response.GetItems()[0].GetPeriodEnd())
+	require.False(t, response.GetItems()[0].GetAsOf().AsTime().Before(before))
+	require.False(t, response.GetItems()[0].GetAsOf().AsTime().After(after))
 }
 
 func TestBillingCostsDropsRowsAttributedToAnotherTenant(t *testing.T) {
@@ -214,6 +220,10 @@ func TestBillingCostsDropsRowsAttributedToAnotherTenant(t *testing.T) {
 			TenantID: new(" \t "), ProjectID: new("project-a"), ResourceID: new("vm-3"),
 			Service: billing.ServiceComputeInstance, Amount: "8.00", CurrencyCode: "USD",
 		},
+		{
+			ProjectID: new("project-a"), ResourceID: new("vm-4"),
+			Service: billing.ServiceComputeInstance, Amount: "9.00", CurrencyCode: "USD",
+		},
 	}}
 	store := &costAccountStoreStub{account: billing.AssignedAccount{
 		ProviderKey: "m360", ProviderAccountReference: "native-account-1", CurrencyCode: "USD", ConnectionState: "CONNECTED",
@@ -226,9 +236,23 @@ func TestBillingCostsDropsRowsAttributedToAnotherTenant(t *testing.T) {
 	}.Build())
 	require.NoError(t, err)
 	require.Equal(t, "tenant-a", provider.query.TenantID)
-	require.Equal(t, int32(1), response.GetTotal())
-	require.Len(t, response.GetItems(), 1)
+	require.Equal(t, int32(2), response.GetTotal())
+	require.Len(t, response.GetItems(), 2)
 	require.Equal(t, "vm-1", response.GetItems()[0].GetResourceId())
+	require.Equal(t, "vm-4", response.GetItems()[1].GetResourceId())
+}
+
+func TestVisibleBillingCostsAttributesMissingTenantToLinkedTenant(t *testing.T) {
+	server := newBillingCostsServer(t, &costProviderStub{}, &costAccountStoreStub{}, "project-a")
+	visibility, err := auth.NewVisibility().AddVisibleProject("tenant-a", "project-a").Build()
+	require.NoError(t, err)
+	costs, err := server.visibleBillingCosts(context.Background(), []billing.Cost{{
+		ProjectID: new("project-a"), Service: billing.ServiceComputeInstance, Amount: "1.00", CurrencyCode: "USD",
+	}}, "tenant-a", "USD", visibility)
+	require.NoError(t, err)
+	require.Len(t, costs, 1)
+	require.NotNil(t, costs[0].TenantID)
+	require.Equal(t, "tenant-a", *costs[0].TenantID)
 }
 
 func TestBillingCostsPaginatesVisibleAggregatesAtLimit20(t *testing.T) {
