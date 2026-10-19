@@ -254,28 +254,6 @@ func ApplyClusterPricingConfiguration(
 	return requests, nil
 }
 
-// ApplyBareMetalPricingConfiguration overlays the selected bare-metal type and
-// image on the catalog item's locked and default values.
-func ApplyBareMetalPricingConfiguration(
-	request CatalogPricingRequest,
-	spec *publicv1.BareMetalInstanceSpec,
-	fields *publicv1.BareMetalInstanceCatalogItemFields,
-) (CatalogPricingRequest, error) {
-	if spec == nil || fields == nil {
-		return request, ErrInvalidPricingConfiguration
-	}
-	if request.Dimensions == nil {
-		request.Dimensions = make(map[string]string)
-	}
-	if err := applyReferencePricingSelection(request.Dimensions, "bm_instance_type", spec.GetInstanceType().GetName(), fields.GetInstanceType().GetLocked().GetName(), fields.GetInstanceType().GetEditable() != nil); err != nil {
-		return request, err
-	}
-	if err := applyReferencePricingSelection(request.Dimensions, "image_ref", spec.GetDiskImage().GetName(), fields.GetDiskImage().GetLocked().GetName(), fields.GetDiskImage().GetEditable() != nil); err != nil {
-		return request, err
-	}
-	return request, nil
-}
-
 func applyReferencePricingSelection(dimensions map[string]string, dimension, selected, locked string, editable bool) error {
 	selected = strings.TrimSpace(selected)
 	locked = strings.TrimSpace(locked)

@@ -95,25 +95,6 @@ func TestComputeInstanceTemplatePricingDimensionsUseOnlyInstanceType(t *testing.
 	}
 }
 
-func TestBareMetalCatalogPricingRequestUsesCatalogAndResourceValues(t *testing.T) {
-	instanceType := publicv1.BareMetalInstanceTypeReference_builder{Name: "gpu-node"}.Build()
-	image := publicv1.DiskImageReference_builder{Name: "rhel-9.6"}.Build()
-	fields := publicv1.BareMetalInstanceCatalogItemFields_builder{
-		InstanceType: publicv1.BareMetalInstanceTypeReferenceFieldPolicy_builder{Locked: instanceType}.Build(),
-		DiskImage:    publicv1.DiskImageReferenceFieldPolicy_builder{Locked: image}.Build(),
-	}.Build()
-	metadata := publicv1.Metadata_builder{Name: "gpu"}.Build()
-	item := publicv1.BareMetalInstanceCatalogItem_builder{Metadata: metadata, Title: "GPU node", Fields: fields}.Build()
-
-	got := bareMetalCatalogPricingRequests([]*publicv1.BareMetalInstanceCatalogItem{item})
-	if len(got) != 1 || got[0].Service != billing.ServiceBareMetalInstance || !got[0].Supported {
-		t.Fatalf("bareMetalCatalogPricingRequests() = %v, want one supported bare-metal request", got)
-	}
-	if got[0].Dimensions["catalog_item"] != "gpu" || got[0].Dimensions["bm_instance_type"] != "gpu-node" || got[0].Dimensions["image_ref"] != "rhel-9.6" {
-		t.Fatalf("pricing dimensions = %v, want catalog item, instance type, and image", got[0].Dimensions)
-	}
-}
-
 func TestClusterCatalogPricingRequestUsesOnlyNodeSetBillableDimensions(t *testing.T) {
 	version := publicv1.ClusterVersionReference_builder{Name: "openshift-4.18"}.Build()
 	instanceType := publicv1.BareMetalInstanceTypeReference_builder{Name: "cpu-node"}.Build()

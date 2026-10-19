@@ -104,23 +104,6 @@ func TestClusterCoverageRequestsUseOnlyNodeSetDimensions(t *testing.T) {
 	}
 }
 
-func TestBareMetalCoverageRequestUsesResolvedResourceValues(t *testing.T) {
-	instance := privatev1.BareMetalInstance_builder{Spec: privatev1.BareMetalInstanceSpec_builder{
-		CatalogItem:  privatev1.BareMetalInstanceCatalogItemReference_builder{Name: "gpu-node"}.Build(),
-		InstanceType: privatev1.BareMetalInstanceTypeReference_builder{Name: "h100"}.Build(),
-		DiskImage:    privatev1.DiskImageReference_builder{Name: "rhel-9.6"}.Build(),
-	}.Build()}.Build()
-
-	requests := bareMetalInstanceCoverageRequests(instance)
-	if len(requests) != 1 || !requests[0].Supported || requests[0].Service != billing.ServiceBareMetalInstance {
-		t.Fatalf("bareMetalInstanceCoverageRequests() = %+v, want one supported BM request", requests)
-	}
-	want := map[string]string{"catalog_item": "gpu-node", "bm_instance_type": "h100", "image_ref": "rhel-9.6"}
-	if !reflect.DeepEqual(requests[0].Dimensions, want) {
-		t.Fatalf("dimensions = %#v, want %#v", requests[0].Dimensions, want)
-	}
-}
-
 func testInt32Pointer(value int32) *int32 {
 	return &value
 }

@@ -115,7 +115,7 @@ func TestCatalogPricingInputsMarksEditableValuesAsOpenEnded(t *testing.T) {
 	}
 }
 
-func TestCatalogPricingInputsIncludesClusterAndBareMetalValues(t *testing.T) {
+func TestCatalogPricingInputsIncludesClusterValuesButExcludesBareMetal(t *testing.T) {
 	cluster := publicv1.ClusterCatalogItem_builder{
 		Id:       "cluster-1",
 		Metadata: publicv1.Metadata_builder{Name: "openshift-cluster"}.Build(),
@@ -154,11 +154,14 @@ func TestCatalogPricingInputsIncludesClusterAndBareMetalValues(t *testing.T) {
 		{service: "cluster_order", dimension: "release_image", value: "openshift-4-18"},
 		{service: "cluster_order", dimension: "baremetal_instance_type", value: "bm-standard"},
 		{service: "cluster_order", dimension: "node_count", value: "3"},
-		{service: "bare_metal_instance", dimension: "bm_instance_type", value: "bm-standard"},
-		{service: "bare_metal_instance", dimension: "catalog_item", value: "bm-standard-item"},
 	} {
 		if input := findCatalogPricingInput(inputs, testCase.service, testCase.dimension, testCase.value); input == nil {
 			t.Errorf("missing %s/%s=%s inventory row", testCase.service, testCase.dimension, testCase.value)
+		}
+	}
+	for _, input := range inputs {
+		if input.GetService() == "bare_metal_instance" {
+			t.Errorf("unexpected BMaaS pricing input: %s/%s=%s", input.GetService(), input.GetDimension(), input.GetValue())
 		}
 	}
 }

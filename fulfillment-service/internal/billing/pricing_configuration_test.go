@@ -138,28 +138,3 @@ func TestApplyClusterPricingConfigurationUsesSelectedNodeSet(t *testing.T) {
 		t.Fatalf("pricing requests = %v, want base version and selected node set", got)
 	}
 }
-
-func TestApplyBareMetalPricingConfigurationUsesSelectedValues(t *testing.T) {
-	t.Parallel()
-
-	request := CatalogPricingRequest{
-		Service:    ServiceBareMetalInstance,
-		Dimensions: map[string]string{"bm_instance_type": "small", "image_ref": "rhel-9.6"},
-		Supported:  true,
-	}
-	fields := publicv1.BareMetalInstanceCatalogItemFields_builder{
-		InstanceType: publicv1.BareMetalInstanceTypeReferenceFieldPolicy_builder{Editable: publicv1.EditableBareMetalInstanceTypeReferenceField_builder{}.Build()}.Build(),
-		DiskImage:    publicv1.DiskImageReferenceFieldPolicy_builder{Editable: publicv1.EditableDiskImageReferenceField_builder{}.Build()}.Build(),
-	}.Build()
-	instanceType := publicv1.BareMetalInstanceTypeReference_builder{Name: "large"}.Build()
-	image := publicv1.DiskImageReference_builder{Name: "rhel-9.7"}.Build()
-	spec := publicv1.BareMetalInstanceSpec_builder{InstanceType: instanceType, DiskImage: image}.Build()
-
-	got, err := ApplyBareMetalPricingConfiguration(request, spec, fields)
-	if err != nil {
-		t.Fatalf("ApplyBareMetalPricingConfiguration() error = %v", err)
-	}
-	if got.Dimensions["bm_instance_type"] != "large" || got.Dimensions["image_ref"] != "rhel-9.7" {
-		t.Fatalf("pricing dimensions = %v, want selected bare metal type and image", got.Dimensions)
-	}
-}

@@ -40,23 +40,17 @@ type clusterCatalogItemsLister interface {
 	List(context.Context, *publicv1.ClusterCatalogItemsListRequest) (*publicv1.ClusterCatalogItemsListResponse, error)
 }
 
-type bareMetalCatalogItemsLister interface {
-	List(context.Context, *publicv1.BareMetalInstanceCatalogItemsListRequest) (*publicv1.BareMetalInstanceCatalogItemsListResponse, error)
-}
-
 type CatalogPricingInputsServerBuilder struct {
-	logger         *slog.Logger
-	computeItems   computeCatalogItemsLister
-	clusterItems   clusterCatalogItemsLister
-	bareMetalItems bareMetalCatalogItemsLister
+	logger       *slog.Logger
+	computeItems computeCatalogItemsLister
+	clusterItems clusterCatalogItemsLister
 }
 
 type CatalogPricingInputsServer struct {
 	publicv1.UnimplementedCatalogPricingInputsServer
-	logger         *slog.Logger
-	computeItems   computeCatalogItemsLister
-	clusterItems   clusterCatalogItemsLister
-	bareMetalItems bareMetalCatalogItemsLister
+	logger       *slog.Logger
+	computeItems computeCatalogItemsLister
+	clusterItems clusterCatalogItemsLister
 }
 
 var _ publicv1.CatalogPricingInputsServer = (*CatalogPricingInputsServer)(nil)
@@ -80,20 +74,14 @@ func (b *CatalogPricingInputsServerBuilder) SetClusterCatalogItems(value cluster
 	return b
 }
 
-func (b *CatalogPricingInputsServerBuilder) SetBareMetalInstanceCatalogItems(value bareMetalCatalogItemsLister) *CatalogPricingInputsServerBuilder {
-	b.bareMetalItems = value
-	return b
-}
-
 func (b *CatalogPricingInputsServerBuilder) Build() (*CatalogPricingInputsServer, error) {
 	if b.logger == nil {
 		return nil, errors.New("logger is mandatory")
 	}
 	return &CatalogPricingInputsServer{
-		logger:         b.logger,
-		computeItems:   b.computeItems,
-		clusterItems:   b.clusterItems,
-		bareMetalItems: b.bareMetalItems,
+		logger:       b.logger,
+		computeItems: b.computeItems,
+		clusterItems: b.clusterItems,
 	}, nil
 }
 
@@ -122,32 +110,23 @@ func (s *CatalogPricingInputsServer) List(ctx context.Context,
 	if err != nil {
 		return nil, s.listError(ctx, "cluster", err)
 	}
-	bareMetalItems, err := listBareMetalCatalogItems(ctx, s.bareMetalItems)
-	if err != nil {
-		return nil, s.listError(ctx, "bare metal instance", err)
-	}
-
 	computeDefaults, computeDefaultErrors := loadCatalogPricingTemplateDefaults(
 		ctx, templateDefaultsReaderFrom(s.computeItems), catalogPricingTemplateReferencesFromComputeItems(computeItems),
 	)
 	clusterDefaults, clusterDefaultErrors := loadCatalogPricingTemplateDefaults(
 		ctx, templateDefaultsReaderFrom(s.clusterItems), catalogPricingTemplateReferencesFromClusterItems(clusterItems),
 	)
-	bareMetalDefaults, bareMetalDefaultErrors := loadCatalogPricingTemplateDefaults(
-		ctx, templateDefaultsReaderFrom(s.bareMetalItems), catalogPricingTemplateReferencesFromBareMetalItems(bareMetalItems),
-	)
-	if len(computeDefaultErrors) != 0 || len(clusterDefaultErrors) != 0 || len(bareMetalDefaultErrors) != 0 {
+	if len(computeDefaultErrors) != 0 || len(clusterDefaultErrors) != 0 {
 		s.logger.ErrorContext(ctx, "failed to load catalog template defaults for pricing inventory")
 		return nil, grpcstatus.Error(grpccodes.Internal, "failed to load catalog pricing inputs")
 	}
 	items := billing.CatalogPricingInputsFromCatalogWithTemplateDefaults(
 		computeItems,
 		clusterItems,
-		bareMetalItems,
+		nil,
 		billing.CatalogPricingInputTemplateDefaults{
-			ComputeInstances:   computeDefaults,
-			Clusters:           clusterDefaults,
-			BareMetalInstances: bareMetalDefaults,
+			ComputeInstances: computeDefaults,
+			Clusters:         clusterDefaults,
 		},
 	)
 	total, ok := catalogPricingInputTotal(len(items))
@@ -239,30 +218,6 @@ func listClusterCatalogItems(ctx context.Context, lister clusterCatalogItemsList
 		}
 		if response == nil {
 			return nil, errors.New("cluster catalog list returned no response")
-		}
-		items = append(items, response.GetItems()...)
-		offset += response.GetSize()
-		if response.GetSize() == 0 || offset >= response.GetTotal() {
-			return items, nil
-		}
-	}
-}
-
-func listBareMetalCatalogItems(ctx context.Context, lister bareMetalCatalogItemsLister) ([]*publicv1.BareMetalInstanceCatalogItem, error) {
-	if lister == nil {
-		return nil, nil
-	}
-	items := make([]*publicv1.BareMetalInstanceCatalogItem, 0)
-	for offset := int32(0); ; {
-		request := &publicv1.BareMetalInstanceCatalogItemsListRequest{}
-		request.SetOffset(offset)
-		request.SetLimit(catalogPricingInputSourcePageSize)
-		response, err := lister.List(ctx, request)
-		if err != nil {
-			return nil, err
-		}
-		if response == nil {
-			return nil, errors.New("bare metal catalog list returned no response")
 		}
 		items = append(items, response.GetItems()...)
 		offset += response.GetSize()

@@ -300,10 +300,7 @@ func (s *PrivateBareMetalInstancesServer) Create(ctx context.Context, request *p
 	var warnings []string
 	err = s.generic.CreateWithCandidatePreparation(ctx, request, &response, func(ctx context.Context, _ *privatev1.BareMetalInstance, candidate *privatev1.BareMetalInstance) error {
 		warnings, err = s.prepareCreate(ctx, candidate)
-		if err != nil || s.pricingResolver == nil {
-			return err
-		}
-		return coverageErrorForCreate(ctx, s.logger, s.pricingResolver.CheckCoverage(ctx, candidate.GetMetadata().GetTenant(), bareMetalInstanceCoverageRequests(candidate)))
+		return err
 	})
 	if err != nil {
 		return

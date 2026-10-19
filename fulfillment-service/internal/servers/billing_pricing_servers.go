@@ -35,12 +35,11 @@ type BillingPricingServers struct {
 }
 
 type billingPricingService struct {
-	logger         *slog.Logger
-	tenancy        auth.TenancyLogic
-	resolver       *CatalogPricingResolver
-	computeItems   ComputeCatalogItemGetter
-	clusterItems   ClusterCatalogItemGetter
-	bareMetalItems BareMetalCatalogItemGetter
+	logger       *slog.Logger
+	tenancy      auth.TenancyLogic
+	resolver     *CatalogPricingResolver
+	computeItems ComputeCatalogItemGetter
+	clusterItems ClusterCatalogItemGetter
 }
 
 type PricingQueriesServer struct {
@@ -61,10 +60,6 @@ type ClusterCatalogItemGetter interface {
 	Get(context.Context, *publicv1.ClusterCatalogItemsGetRequest) (*publicv1.ClusterCatalogItemsGetResponse, error)
 }
 
-type BareMetalCatalogItemGetter interface {
-	Get(context.Context, *publicv1.BareMetalInstanceCatalogItemsGetRequest) (*publicv1.BareMetalInstanceCatalogItemsGetResponse, error)
-}
-
 var (
 	_ publicv1.PricingQueriesServer = (*PricingQueriesServer)(nil)
 	_ publicv1.PriceEstimatesServer = (*PriceEstimatesServer)(nil)
@@ -76,7 +71,6 @@ func NewBillingPricingServers(
 	resolver *CatalogPricingResolver,
 	computeItems ComputeCatalogItemGetter,
 	clusterItems ClusterCatalogItemGetter,
-	bareMetalItems BareMetalCatalogItemGetter,
 ) (*BillingPricingServers, error) {
 	if logger == nil {
 		return nil, errors.New("logger is mandatory")
@@ -85,12 +79,11 @@ func NewBillingPricingServers(
 		return nil, errors.New("tenancy logic is mandatory")
 	}
 	service := &billingPricingService{
-		logger:         logger,
-		tenancy:        tenancy,
-		resolver:       resolver,
-		computeItems:   computeItems,
-		clusterItems:   clusterItems,
-		bareMetalItems: bareMetalItems,
+		logger:       logger,
+		tenancy:      tenancy,
+		resolver:     resolver,
+		computeItems: computeItems,
+		clusterItems: clusterItems,
 	}
 	return &BillingPricingServers{
 		PricingQueries: &PricingQueriesServer{service: service},
@@ -309,35 +302,7 @@ func (s *billingPricingService) pricingRequestsForConfiguration(
 		return requests, nil
 	}
 	if spec := configuration.GetBareMetalInstance(); spec != nil {
-		if s.bareMetalItems == nil {
-			return nil, grpcstatus.Error(grpccodes.Unimplemented, "BMaaS is not enabled")
-		}
-		if spec.GetCatalogItem().GetId() == "" {
-			return nil, grpcstatus.Error(grpccodes.InvalidArgument, "bare metal catalog item is required")
-		}
-		response, err := s.bareMetalItems.Get(ctx, publicv1.BareMetalInstanceCatalogItemsGetRequest_builder{Id: spec.GetCatalogItem().GetId()}.Build())
-		if err != nil {
-			return nil, catalogPricingItemError(err)
-		}
-		if response == nil {
-			return nil, grpcstatus.Error(grpccodes.NotFound, "catalog item was not found")
-		}
-		item := response.GetObject()
-		if item == nil {
-			return nil, grpcstatus.Error(grpccodes.NotFound, "catalog item was not found")
-		}
-		templateDefaults, err := catalogPricingDefaultsForEstimate(ctx, s.bareMetalItems, item.GetTemplate().GetId())
-		if err != nil {
-			return nil, catalogPricingItemError(err)
-		}
-		requests := bareMetalCatalogPricingRequestsWithTemplateDefaults(
-			[]*publicv1.BareMetalInstanceCatalogItem{item}, map[string]map[string]string{item.GetId(): templateDefaults},
-		)
-		request, err := billing.ApplyBareMetalPricingConfiguration(requests[0], spec, item.GetFields())
-		if err != nil {
-			return nil, grpcstatus.Error(grpccodes.InvalidArgument, "resource configuration is not allowed by the catalog item")
-		}
-		return []CatalogPricingRequest{request}, nil
+		return nil, grpcstatus.Error(grpccodes.Unimplemented, "BMaaS is not enabled")
 	}
 	return nil, grpcstatus.Error(grpccodes.InvalidArgument, "resource configuration is required")
 }

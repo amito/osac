@@ -103,22 +103,6 @@ func clusterCoverageRequests(cluster *privatev1.Cluster) []CatalogPricingRequest
 	return requests
 }
 
-func bareMetalInstanceCoverageRequests(instance *privatev1.BareMetalInstance) []CatalogPricingRequest {
-	request := CatalogPricingRequest{
-		Service:    billing.ServiceBareMetalInstance,
-		Dimensions: make(map[string]string),
-		Supported:  instance != nil && instance.GetSpec() != nil,
-	}
-	if !request.Supported {
-		return []CatalogPricingRequest{request}
-	}
-	spec := instance.GetSpec()
-	addNamedReference(request.Dimensions, "catalog_item", spec.GetCatalogItem())
-	addNamedReference(request.Dimensions, "bm_instance_type", spec.GetInstanceType())
-	addNamedReference(request.Dimensions, "image_ref", spec.GetDiskImage())
-	return []CatalogPricingRequest{request}
-}
-
 type namedResourceReference interface {
 	GetName() string
 }

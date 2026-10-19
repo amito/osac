@@ -98,20 +98,6 @@ func (s *ClusterCatalogItemsServer) templatePricingDefaults(ctx context.Context,
 	return clusterTemplatePricingDimensions(response.GetObject()), nil
 }
 
-func (s *BareMetalInstanceCatalogItemsServer) templatePricingDefaults(ctx context.Context, templateID string) (map[string]string, error) {
-	if templateID == "" || s.delegate == nil || s.delegate.templatesDao == nil {
-		return nil, errors.New("bare metal catalog template is unavailable")
-	}
-	response, err := s.delegate.templatesDao.Get().SetId(templateID).Do(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if response == nil || response.GetObject() == nil {
-		return nil, errors.New("bare metal catalog template was not found")
-	}
-	return bareMetalTemplatePricingDimensions(response.GetObject()), nil
-}
-
 func computeInstanceTemplatePricingDimensions(template *privatev1.ComputeInstanceTemplate) map[string]string {
 	if template == nil || template.GetSpecDefaults() == nil {
 		return nil
@@ -124,13 +110,6 @@ func clusterTemplatePricingDimensions(template *privatev1.ClusterTemplate) map[s
 		return nil
 	}
 	return clusterTemplatePricingDimensionsFromVersion(template.GetSpecDefaults().GetVersion().GetName())
-}
-
-func bareMetalTemplatePricingDimensions(template *privatev1.BareMetalInstanceTemplate) map[string]string {
-	if template == nil {
-		return nil
-	}
-	return bareMetalTemplatePricingDimensionsFromType(template.GetInstanceType().GetName())
 }
 
 func computeTemplatePricingDimensions(instanceType string) map[string]string {
@@ -147,13 +126,6 @@ func clusterTemplatePricingDimensionsFromVersion(version string) map[string]stri
 	return map[string]string{"release_image": version}
 }
 
-func bareMetalTemplatePricingDimensionsFromType(instanceType string) map[string]string {
-	if instanceType == "" {
-		return nil
-	}
-	return map[string]string{"bm_instance_type": instanceType}
-}
-
 func catalogPricingTemplateReferencesFromComputeItems(items []*publicv1.ComputeInstanceCatalogItem) []catalogPricingTemplateReference {
 	references := make([]catalogPricingTemplateReference, 0, len(items))
 	for _, item := range items {
@@ -166,17 +138,6 @@ func catalogPricingTemplateReferencesFromComputeItems(items []*publicv1.ComputeI
 }
 
 func catalogPricingTemplateReferencesFromClusterItems(items []*publicv1.ClusterCatalogItem) []catalogPricingTemplateReference {
-	references := make([]catalogPricingTemplateReference, 0, len(items))
-	for _, item := range items {
-		if item == nil {
-			continue
-		}
-		references = append(references, catalogPricingTemplateReference{catalogItemID: item.GetId(), templateID: item.GetTemplate().GetId()})
-	}
-	return references
-}
-
-func catalogPricingTemplateReferencesFromBareMetalItems(items []*publicv1.BareMetalInstanceCatalogItem) []catalogPricingTemplateReference {
 	references := make([]catalogPricingTemplateReference, 0, len(items))
 	for _, item := range items {
 		if item == nil {
@@ -230,25 +191,6 @@ func clusterCatalogPricingRequestsForServer(
 	}
 	defaults, failures := loadCatalogPricingTemplateDefaults(ctx, server, catalogPricingTemplateReferencesFromClusterItems(items))
 	requests = clusterCatalogPricingRequestsWithTemplateDefaults(items, defaults)
-	for i, item := range items {
-		if item != nil && failures[item.GetId()] != nil {
-			requests[i].Supported = false
-		}
-	}
-	return requests
-}
-
-func bareMetalCatalogPricingRequestsForServer(
-	ctx context.Context,
-	server *BareMetalInstanceCatalogItemsServer,
-	items []*publicv1.BareMetalInstanceCatalogItem,
-) []CatalogPricingRequest {
-	requests := bareMetalCatalogPricingRequests(items)
-	if server == nil || server.pricingResolver == nil || catalogPricingEnrichmentDisabled(ctx) {
-		return requests
-	}
-	defaults, failures := loadCatalogPricingTemplateDefaults(ctx, server, catalogPricingTemplateReferencesFromBareMetalItems(items))
-	requests = bareMetalCatalogPricingRequestsWithTemplateDefaults(items, defaults)
 	for i, item := range items {
 		if item != nil && failures[item.GetId()] != nil {
 			requests[i].Supported = false

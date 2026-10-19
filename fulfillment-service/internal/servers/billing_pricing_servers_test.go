@@ -371,7 +371,6 @@ func TestPriceEstimateFailsWhenBillingIsNotConfigured(t *testing.T) {
 		nil,
 		computeItems,
 		nil,
-		nil,
 	)
 	if err != nil {
 		t.Fatalf("NewBillingPricingServers() error = %v", err)
@@ -384,6 +383,29 @@ func TestPriceEstimateFailsWhenBillingIsNotConfigured(t *testing.T) {
 	}
 	if computeItems.calls != 0 {
 		t.Fatalf("catalog calls = %d, want no catalog reads when billing is disabled", computeItems.calls)
+	}
+}
+
+func TestBillingPricingAPIsDoNotSupportBareMetal(t *testing.T) {
+	provider := &billingPricingTestProvider{}
+	query, estimate := newBillingPricingTestServers(t, provider, nil, auth.AllTenants)
+	configuration := publicv1.BillingPricingConfiguration_builder{
+		BareMetalInstance: publicv1.BareMetalInstanceSpec_builder{
+			CatalogItem: publicv1.BareMetalInstanceCatalogItemReference_builder{Id: "baremetal-item"}.Build(),
+		}.Build(),
+	}.Build()
+	ctx := config.TenantIntoContext(context.Background(), "tenant-a")
+
+	_, queryErr := query.Create(ctx, publicv1.PricingQueriesCreateRequest_builder{Configuration: configuration}.Build())
+	if status.Code(queryErr) != codes.Unimplemented || status.Convert(queryErr).Message() != "BMaaS is not enabled" {
+		t.Fatalf("PricingQueries.Create() error = %v, want BMaaS not enabled", queryErr)
+	}
+	_, estimateErr := estimate.Create(ctx, publicv1.PriceEstimatesCreateRequest_builder{Configuration: configuration}.Build())
+	if status.Code(estimateErr) != codes.Unimplemented || status.Convert(estimateErr).Message() != "BMaaS is not enabled" {
+		t.Fatalf("PriceEstimates.Create() error = %v, want BMaaS not enabled", estimateErr)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("provider calls = %d, want no BMaaS price lookup", provider.calls)
 	}
 }
 
@@ -496,7 +518,6 @@ func newBillingPricingTestServersWithCatalogs(
 		resolver,
 		computeItems,
 		clusterItems,
-		nil,
 	)
 	if err != nil {
 		t.Fatalf("NewBillingPricingServers() error = %v", err)

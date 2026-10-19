@@ -75,7 +75,6 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 	var catalogPricingResolver *servers.CatalogPricingResolver
 	var computeCatalogItems publicv1.ComputeInstanceCatalogItemsServer
 	var clusterCatalogItems publicv1.ClusterCatalogItemsServer
-	var bareMetalCatalogItems publicv1.BareMetalInstanceCatalogItemsServer
 	if deps.BillingProvider != nil {
 		catalogPricingResolver = servers.NewCatalogPricingResolver(deps.BillingProviderKey, rateCardProvider, billingAccountStore, deps.MetricsRegisterer)
 	}
@@ -412,14 +411,11 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 			SetAttributionLogic(deps.PublicAttributionLogic).
 			SetTenancyLogic(deps.TenancyLogic).
 			SetMetricsRegisterer(deps.MetricsRegisterer).
-			SetPricingResolver(catalogPricingResolver).
 			Build()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create bare metal instance catalog items server: %w", err)
 		}
 		publicv1.RegisterBareMetalInstanceCatalogItemsServer(registrar, bareMetalInstanceCatalogItemsServer)
-		bareMetalCatalogItems = bareMetalInstanceCatalogItemsServer
-		catalogPricingInputsBuilder.SetBareMetalInstanceCatalogItems(bareMetalInstanceCatalogItemsServer)
 
 		deps.Logger.InfoContext(ctx, "Creating bare metal instances server")
 		bareMetalInstancesServer, err := servers.NewBareMetalInstancesServer().
@@ -428,7 +424,6 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 			SetTenancyLogic(deps.TenancyLogic).
 			SetMetricsRegisterer(deps.MetricsRegisterer).
 			SetSecretStore(deps.SecretStore).
-			SetPricingResolver(catalogPricingResolver).
 			Build()
 		if err != nil {
 			return nil, fmt.Errorf("failed to create bare metal instances server: %w", err)
@@ -1140,7 +1135,6 @@ func RegisterResourceServers(ctx context.Context, registrar grpc.ServiceRegistra
 		catalogPricingResolver,
 		computeCatalogItems,
 		clusterCatalogItems,
-		bareMetalCatalogItems,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create billing pricing servers: %w", err)

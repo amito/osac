@@ -41,20 +41,21 @@ type catalogPricingInputCollector struct {
 // CatalogPricingInputTemplateDefaults carries the billable defaults inherited
 // by catalog items from their referenced templates, keyed by catalog item ID.
 type CatalogPricingInputTemplateDefaults struct {
-	ComputeInstances   map[string]map[string]string
-	Clusters           map[string]map[string]string
-	BareMetalInstances map[string]map[string]string
+	ComputeInstances map[string]map[string]string
+	Clusters         map[string]map[string]string
 }
 
 // CatalogPricingInputsFromCatalog projects catalog-configured values into a
-// provider-independent inventory. Rows are grouped by service, dimension, and
-// value or open-ended selection, with contributing catalog items retained.
+// provider-independent inventory. Billing currently supports VMaaS and CaaS,
+// so bare-metal catalog items are deliberately omitted. Rows are grouped by
+// service, dimension, and value or open-ended selection, with contributing
+// catalog items retained.
 func CatalogPricingInputsFromCatalog(
 	computeItems []*publicv1.ComputeInstanceCatalogItem,
 	clusterItems []*publicv1.ClusterCatalogItem,
-	bareMetalItems []*publicv1.BareMetalInstanceCatalogItem,
+	_ []*publicv1.BareMetalInstanceCatalogItem,
 ) []*publicv1.CatalogPricingInput {
-	return CatalogPricingInputsFromCatalogWithTemplateDefaults(computeItems, clusterItems, bareMetalItems, CatalogPricingInputTemplateDefaults{})
+	return CatalogPricingInputsFromCatalogWithTemplateDefaults(computeItems, clusterItems, nil, CatalogPricingInputTemplateDefaults{})
 }
 
 // CatalogPricingInputsFromCatalogWithTemplateDefaults projects catalog policy
@@ -63,7 +64,7 @@ func CatalogPricingInputsFromCatalog(
 func CatalogPricingInputsFromCatalogWithTemplateDefaults(
 	computeItems []*publicv1.ComputeInstanceCatalogItem,
 	clusterItems []*publicv1.ClusterCatalogItem,
-	bareMetalItems []*publicv1.BareMetalInstanceCatalogItem,
+	_ []*publicv1.BareMetalInstanceCatalogItem,
 	templateDefaults CatalogPricingInputTemplateDefaults,
 ) []*publicv1.CatalogPricingInput {
 	collector := catalogPricingInputCollector{
@@ -71,7 +72,6 @@ func CatalogPricingInputsFromCatalogWithTemplateDefaults(
 	}
 	collector.addComputeItems(computeItems, templateDefaults.ComputeInstances)
 	collector.addClusterItems(clusterItems, templateDefaults.Clusters)
-	collector.addBareMetalItems(bareMetalItems, templateDefaults.BareMetalInstances)
 	return collector.items()
 }
 
@@ -183,31 +183,6 @@ func (c *catalogPricingInputCollector) addClusterItems(
 	}
 }
 
-func (c *catalogPricingInputCollector) addBareMetalItems(
-	bareMetalItems []*publicv1.BareMetalInstanceCatalogItem,
-	templateDefaults map[string]map[string]string,
-) {
-	for _, catalogItem := range bareMetalItems {
-		if catalogItem == nil {
-			continue
-		}
-		source := bareMetalCatalogSource(catalogItem)
-		c.add(ServiceBareMetalInstance, "catalog_item", source.GetName(), source)
-		fields := catalogItem.GetFields()
-		if fields != nil {
-			values, anyValue := bareMetalInstanceTypePolicyValues(fields.GetInstanceType())
-			c.addPolicy(ServiceBareMetalInstance, "bm_instance_type", values, anyValue, source)
-			values, anyValue = diskImagePolicyValues(fields.GetDiskImage())
-			c.addPolicy(ServiceBareMetalInstance, "image_ref", values, anyValue, source)
-		}
-		for dimension, value := range templateDefaults[catalogItem.GetId()] {
-			if !bareMetalCatalogPolicyOverrides(fields, dimension) {
-				c.add(ServiceBareMetalInstance, dimension, value, source)
-			}
-		}
-	}
-}
-
 func computeCatalogPolicyOverrides(fields *publicv1.ComputeInstanceCatalogItemFields, dimension string) bool {
 	if fields == nil {
 		return false
@@ -236,22 +211,6 @@ func clusterCatalogPolicyOverrides(fields *publicv1.ClusterCatalogItemFields, di
 	}
 	policy := fields.GetVersion()
 	return policy != nil && (policy.GetLocked() != nil || policy.GetEditable().GetDefaultValue() != nil)
-}
-
-func bareMetalCatalogPolicyOverrides(fields *publicv1.BareMetalInstanceCatalogItemFields, dimension string) bool {
-	if fields == nil {
-		return false
-	}
-	switch dimension {
-	case "bm_instance_type":
-		policy := fields.GetInstanceType()
-		return policy != nil && (policy.GetLocked() != nil || policy.GetEditable().GetDefaultValue() != nil)
-	case "image_ref":
-		policy := fields.GetDiskImage()
-		return policy != nil && (policy.GetLocked() != nil || policy.GetEditable().GetDefaultValue() != nil)
-	default:
-		return false
-	}
 }
 
 func (c *catalogPricingInputCollector) items() []*publicv1.CatalogPricingInput {
@@ -303,10 +262,6 @@ func clusterCatalogSource(item *publicv1.ClusterCatalogItem) *publicv1.CatalogPr
 	return catalogPricingSource(item.GetId(), item.GetMetadata().GetName(), item.GetTitle(), item.GetPublished())
 }
 
-func bareMetalCatalogSource(item *publicv1.BareMetalInstanceCatalogItem) *publicv1.CatalogPricingInputSource {
-	return catalogPricingSource(item.GetId(), item.GetMetadata().GetName(), item.GetTitle(), item.GetPublished())
-}
-
 func catalogPricingSource(id, name, title string, published bool) *publicv1.CatalogPricingInputSource {
 	return publicv1.CatalogPricingInputSource_builder{Id: id, Name: name, Title: title, Published: published}.Build()
 }
@@ -342,16 +297,6 @@ func storageTierPolicyValues(policy *publicv1.StorageTierReferenceFieldPolicy) (
 }
 
 func clusterVersionPolicyValues(policy *publicv1.ClusterVersionReferenceFieldPolicy) ([]string, bool) {
-	if policy == nil {
-		return nil, false
-	}
-	locked := policy.GetLocked()
-	editable := policy.GetEditable()
-	defaultValue := editable.GetDefaultValue()
-	return referenceFieldPolicyValues(locked.GetName(), locked != nil, defaultValue.GetName(), defaultValue != nil, editable != nil)
-}
-
-func bareMetalInstanceTypePolicyValues(policy *publicv1.BareMetalInstanceTypeReferenceFieldPolicy) ([]string, bool) {
 	if policy == nil {
 		return nil, false
 	}

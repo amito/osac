@@ -73,34 +73,6 @@ func clusterCatalogPricingRequestsWithTemplateDefaults(
 	return requests
 }
 
-func bareMetalCatalogPricingRequests(items []*publicv1.BareMetalInstanceCatalogItem) []CatalogPricingRequest {
-	return bareMetalCatalogPricingRequestsWithTemplateDefaults(items, nil)
-}
-
-func bareMetalCatalogPricingRequestsWithTemplateDefaults(
-	items []*publicv1.BareMetalInstanceCatalogItem,
-	templateDefaults map[string]map[string]string,
-) []CatalogPricingRequest {
-	requests := make([]CatalogPricingRequest, len(items))
-	for i, item := range items {
-		request := CatalogPricingRequest{
-			Service:     billing.ServiceBareMetalInstance,
-			Dimensions:  make(map[string]string),
-			Description: catalogPriceDescription(item.GetTitle(), "Bare metal instance"),
-			Supported:   true,
-		}
-		if metadata := item.GetMetadata(); metadata != nil && metadata.GetName() != "" {
-			request.Dimensions["catalog_item"] = metadata.GetName()
-		}
-		if fields := item.GetFields(); fields != nil {
-			request.PriceMayVary = addBareMetalInstanceTypePricingDimension(request.Dimensions, "bm_instance_type", fields.GetInstanceType())
-			request.PriceMayVary = addDiskImagePricingDimension(request.Dimensions, "image_ref", fields.GetDiskImage()) || request.PriceMayVary
-		}
-		requests[i] = applyTemplatePricingDefaults(request, templateDefaults[item.GetId()])
-	}
-	return requests
-}
-
 // applyTemplatePricingDefaults fills billable dimensions omitted by the
 // catalog item's field policies from its referenced template. Catalog policy
 // values take precedence because provisioning applies them before template
@@ -148,19 +120,6 @@ func applyTemplatePricingDefaults(request CatalogPricingRequest, defaults map[st
 	return request
 }
 
-func addDiskImagePricingDimension(dimensions map[string]string, dimension string, policy *publicv1.DiskImageReferenceFieldPolicy) bool {
-	if policy == nil {
-		return false
-	}
-	locked := policy.GetLocked()
-	editable := policy.GetEditable()
-	var defaultValue *publicv1.DiskImageReference
-	if editable != nil {
-		defaultValue = editable.GetDefaultValue()
-	}
-	return addReferencePricingDimension(dimensions, dimension, locked.GetName(), defaultValue.GetName(), editable != nil, defaultValue != nil)
-}
-
 func addInstanceTypePricingDimension(dimensions map[string]string, dimension string, policy *publicv1.InstanceTypeReferenceFieldPolicy) bool {
 	if policy == nil {
 		return false
@@ -168,19 +127,6 @@ func addInstanceTypePricingDimension(dimensions map[string]string, dimension str
 	locked := policy.GetLocked()
 	editable := policy.GetEditable()
 	var defaultValue *publicv1.InstanceTypeReference
-	if editable != nil {
-		defaultValue = editable.GetDefaultValue()
-	}
-	return addReferencePricingDimension(dimensions, dimension, locked.GetName(), defaultValue.GetName(), editable != nil, defaultValue != nil)
-}
-
-func addBareMetalInstanceTypePricingDimension(dimensions map[string]string, dimension string, policy *publicv1.BareMetalInstanceTypeReferenceFieldPolicy) bool {
-	if policy == nil {
-		return false
-	}
-	locked := policy.GetLocked()
-	editable := policy.GetEditable()
-	var defaultValue *publicv1.BareMetalInstanceTypeReference
 	if editable != nil {
 		defaultValue = editable.GetDefaultValue()
 	}
