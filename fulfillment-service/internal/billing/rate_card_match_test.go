@@ -79,6 +79,25 @@ func TestResolveRateCardItemReportsUncoveredConfiguration(t *testing.T) {
 	}
 }
 
+func TestResolveRateCardItemRejectsRateInDifferentCurrency(t *testing.T) {
+	rates := []RateCardItem{{
+		Service:      "compute_instance",
+		CurrencyCode: "EUR",
+		Amount:       "4.50",
+		Unit:         RateUnitHour,
+		Conditions: []RateCondition{{
+			Dimension: "instance_type",
+			Operator:  RateMatchEquals,
+			Value:     "small",
+		}},
+	}}
+
+	_, err := ResolveRateCardItem(rates, "compute_instance", "USD", map[string]string{"instance_type": "small"})
+	if !errors.Is(err, ErrRateCoverageGap) {
+		t.Fatalf("ResolveRateCardItem() error = %v, want ErrRateCoverageGap for EUR rate and USD account", err)
+	}
+}
+
 func TestResolveRateCardItemRequiresEveryRequestedDimensionCovered(t *testing.T) {
 	request := map[string]string{
 		"instance_type":            "small",
