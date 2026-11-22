@@ -301,7 +301,8 @@ func (t *task) update(ctx context.Context) error {
 	// Create or update the Kubernetes object:
 	if object == nil {
 		orderAnnotations := map[string]string{
-			annotations.Tenant: t.cluster.GetMetadata().GetTenant(),
+			annotations.Tenant:  t.cluster.GetMetadata().GetTenant(),
+			annotations.Project: t.cluster.GetMetadata().GetProject(),
 		}
 		setUpgradeAttemptAnnotations(orderAnnotations, t.cluster.GetStatus())
 		object := &osacv1alpha1.ClusterOrder{
@@ -336,6 +337,7 @@ func (t *task) update(ctx context.Context) error {
 		if update.Annotations == nil {
 			update.Annotations = map[string]string{}
 		}
+		update.Annotations[annotations.Project] = t.cluster.GetMetadata().GetProject()
 		setUpgradeAttemptAnnotations(update.Annotations, t.cluster.GetStatus())
 		err = t.hubClient.Patch(ctx, update, clnt.MergeFrom(object))
 		if err != nil {

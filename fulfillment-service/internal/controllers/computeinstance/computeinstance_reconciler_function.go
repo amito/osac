@@ -332,7 +332,8 @@ func (t *task) update(ctx context.Context) error {
 				GenerateName: objectPrefix,
 				Labels:       objectLabels,
 				Annotations: map[string]string{
-					annotations.Tenant: t.computeInstance.GetMetadata().GetTenant(),
+					annotations.Tenant:  t.computeInstance.GetMetadata().GetTenant(),
+					annotations.Project: t.computeInstance.GetMetadata().GetProject(),
 				},
 			},
 			Spec: spec,
@@ -362,6 +363,10 @@ func (t *task) update(ctx context.Context) error {
 		spec.NetworkAttachments = object.Spec.NetworkAttachments
 		update := object.DeepCopy()
 		update.Spec = spec
+		if update.Annotations == nil {
+			update.Annotations = map[string]string{}
+		}
+		update.Annotations[annotations.Project] = t.computeInstance.GetMetadata().GetProject()
 		// Keep the instance-type-name label in sync with the spec being patched so it
 		// always names the type the CR was reconciled toward. The operator's feedback
 		// controller gates the running-type stamp on this label; updating it atomically
