@@ -3290,3 +3290,135 @@ var _ = Describe("ensureClusterSecrets", func() {
 		Expect(nrs[0].NumberOfNodes).To(Equal(3))
 	})
 })
+
+var _ = Describe("project annotation", func() {
+	const (
+		clusterID    = "project-annotation-cluster"
+		tenantName   = "project-tenant"
+		projectName  = "project-one"
+		hubID        = "project-hub"
+		hubNamespace = "project-ns"
+	)
+
+	var (
+		ctx  context.Context
+		ctrl *gomock.Controller
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		ctrl = gomock.NewController(GinkgoT())
+		DeferCleanup(ctrl.Finish)
+	})
+
+	newFakeClient := func(objects ...clnt.Object) clnt.Client {
+		scheme := runtime.NewScheme()
+		Expect(osacv1alpha1.AddToScheme(scheme)).To(Succeed())
+		return fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(objects...).
+			Build()
+	}
+
+	newCluster := func(project string) *privatev1.Cluster {
+		return privatev1.Cluster_builder{
+			Id: clusterID,
+			Metadata: privatev1.Metadata_builder{
+				Finalizers: []string{finalizers.Controller},
+				Tenant:     tenantName,
+				Project:    project,
+			}.Build(),
+			Spec: privatev1.ClusterSpec_builder{
+				Template: &privatev1.ClusterTemplateReference{Name: "test-template"},
+			}.Build(),
+			Status: privatev1.ClusterStatus_builder{
+				State: privatev1.ClusterState_CLUSTER_STATE_PROGRESSING,
+				Hub:   hubID,
+			}.Build(),
+		}.Build()
+	}
+
+	newTask := func(project string, client clnt.Client) *task {
+		hubCache := controllers.NewMockHubCache(ctrl)
+		hubCache.EXPECT().
+			Get(gomock.Any(), hubID).
+			Return(&controllers.HubEntry{
+				Namespace: hubNamespace,
+				Client:    client,
+			}, nil)
+		return &task{
+			r: &function{
+				logger:         logger,
+				hubCache:       hubCache,
+				maskCalculator: nil,
+			},
+			cluster: newCluster(project),
+		}
+	}
+
+	It("stamps the project annotation when creating a ClusterOrder", func() {
+		client := newFakeClient()
+		Expect(newTask(projectName, client).update(ctx)).To(Succeed())
+
+		list := &osacv1alpha1.ClusterOrderList{}
+		Expect(client.List(ctx, list)).To(Succeed())
+		Expect(list.Items).To(HaveLen(1))
+		Expect(list.Items[0].GetAnnotations()).
+			To(HaveKeyWithValue(annotations.Project, projectName))
+	})
+
+	It("updates the project annotation when the project changes", func() {
+		existing := &osacv1alpha1.ClusterOrder{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "order-project-change",
+				Namespace: hubNamespace,
+				Labels:    map[string]string{labels.ClusterOrderUuid: clusterID},
+				Annotations: map[string]string{
+					annotations.Tenant:  tenantName,
+					annotations.Project: "old-project",
+				},
+			},
+		}
+		client := newFakeClient(existing)
+		Expect(newTask("new-project", client).update(ctx)).To(Succeed())
+
+		updated := &osacv1alpha1.ClusterOrder{}
+		Expect(client.Get(ctx, clnt.ObjectKey{
+			Name:      existing.Name,
+			Namespace: existing.Namespace,
+		}, updated)).To(Succeed())
+		Expect(updated.GetAnnotations()).
+			To(HaveKeyWithValue(annotations.Project, "new-project"))
+	})
+
+	It("adds the project annotation to an unstamped existing ClusterOrder", func() {
+		existing := &osacv1alpha1.ClusterOrder{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "order-unstamped",
+				Namespace: hubNamespace,
+				Labels:    map[string]string{labels.ClusterOrderUuid: clusterID},
+			},
+		}
+		client := newFakeClient(existing)
+		Expect(newTask(projectName, client).update(ctx)).To(Succeed())
+
+		updated := &osacv1alpha1.ClusterOrder{}
+		Expect(client.Get(ctx, clnt.ObjectKey{
+			Name:      existing.Name,
+			Namespace: existing.Namespace,
+		}, updated)).To(Succeed())
+		Expect(updated.GetAnnotations()).
+			To(HaveKeyWithValue(annotations.Project, projectName))
+	})
+
+	It("stamps an empty project annotation when the project is empty", func() {
+		client := newFakeClient()
+		Expect(newTask("", client).update(ctx)).To(Succeed())
+
+		list := &osacv1alpha1.ClusterOrderList{}
+		Expect(client.List(ctx, list)).To(Succeed())
+		Expect(list.Items).To(HaveLen(1))
+		Expect(list.Items[0].GetAnnotations()).
+			To(HaveKeyWithValue(annotations.Project, ""))
+	})
+})
