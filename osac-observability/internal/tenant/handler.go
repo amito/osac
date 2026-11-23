@@ -59,6 +59,7 @@ type HandlerConfig struct {
 	Now       func() time.Time
 	Allow     *allowlist.Matcher
 	Logger    *slog.Logger
+	Limits    *Limits
 }
 
 // Handler serves the tenant front door: it authenticates, gates on inventory
@@ -72,6 +73,7 @@ type Handler struct {
 	now       func() time.Time
 	allow     *allowlist.Matcher
 	logger    *slog.Logger
+	limits    *Limits
 }
 
 // NewHandler builds the tenant handler.
@@ -93,6 +95,10 @@ func NewHandler(config HandlerConfig) (*Handler, error) {
 		now:       config.Now,
 		allow:     config.Allow,
 		logger:    config.Logger,
+		limits:    config.Limits,
+	}
+	if handler.limits == nil {
+		handler.limits = DefaultLimits()
 	}
 	if handler.client == nil {
 		handler.client = &http.Client{Timeout: 2 * time.Minute}
@@ -170,6 +176,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		values.Set("query", rewritten)
+		// The range bound applies to the query the caller actually asked
+		// for, after rewriting, and only to query_range. Missing bounds are
+		// left to the backend's own validation; a bound that is present but
+		// not a timestamp is rejected here.
+		if r.URL.Path == "/api/v1/query_range" &&
+			values.Get("start") != "" && values.Get("end") != "" {
+			start, end, err := RangeFromValues(values)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "bad_data", err.Error())
+				return
+			}
+			if err = h.limits.CheckRange(start, end); err != nil {
+				writeError(w, http.StatusUnprocessableEntity, "bad_data", err.Error())
+				return
+			}
+		}
 	default:
 		selectors, err := h.rewriteMatch(values["match[]"], scope)
 		if err != nil {
@@ -186,7 +208,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			values.Add("match[]", selector)
 		}
 	}
-	h.forward(w, r, values)
+	// The concurrency slot is taken only once the request is known to be one
+	// this authorizer will actually forward, and it is held until the backend
+	// response is copied, including on timeout.
+	release, err := h.limits.Acquire(caller.Tenant)
+	if err != nil {
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusTooManyRequests, "too_many_requests", err.Error())
+		return
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(r.Context(), h.limits.QueryTimeout)
+	defer cancel()
+	h.forward(ctx, w, r, values)
 }
 
 func (h *Handler) rejectIdentity(w http.ResponseWriter, err error) {
@@ -218,11 +252,11 @@ func (h *Handler) rewriteMatch(values []string, scope Scope) ([]string, error) {
 	return ExpandMatch(values, scope)
 }
 
-func (h *Handler) forward(w http.ResponseWriter, r *http.Request, values url.Values) {
+func (h *Handler) forward(ctx context.Context, w http.ResponseWriter, r *http.Request, values url.Values) {
 	target := *h.upstream
 	target.Path = r.URL.Path
 	target.RawQuery = values.Encode()
-	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target.String(), nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "bad_gateway", "the query backend is unavailable")
 		return
@@ -232,7 +266,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, values url.Val
 	}
 	response, err := h.client.Do(request)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			writeError(w, http.StatusGatewayTimeout, "timeout", "the query exceeded its time limit")
 			return
 		}
