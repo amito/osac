@@ -14,8 +14,29 @@ language governing permissions and limitations under the License.
 package tenant
 
 import (
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql/parser"
 )
+
+// selectorName reports the selector's effective metric name and whether it
+// constrains __name__ at all. A name written before the braces and an equality
+// __name__ matcher both name the metric; any other __name__ matcher constrains
+// the name without naming a family.
+func selectorName(selector *parser.VectorSelector) (string, bool) {
+	if selector.Name != "" {
+		return selector.Name, true
+	}
+	for _, matcher := range selector.LabelMatchers {
+		if matcher.Name != metricNameLabel {
+			continue
+		}
+		if matcher.Type == labels.MatchEqual {
+			return matcher.Value, true
+		}
+		return "", true
+	}
+	return "", false
+}
 
 // matrixSelector returns the vector selector inside a matrix. The parser types
 // the field as Expr, but a parsed range always wraps exactly one selector.
@@ -37,7 +58,7 @@ func matrixSelector(matrix *parser.MatrixSelector) (*parser.VectorSelector, bool
 // reports ErrNoScope, so the handler answers with an empty result instead of
 // forwarding the original query.
 func Rewrite(expr parser.Expr, scope Scope) (parser.Expr, error) {
-	if len(scope.Branches) == 0 {
+	if scope.Empty() {
 		return nil, ErrNoScope
 	}
 	return rewriteExpr(expr, scope)
@@ -118,12 +139,16 @@ func rewriteExpr(expr parser.Expr, scope Scope) (parser.Expr, error) {
 // branch is merged into the existing selector; several branches need one clone
 // per branch because a selector admits one conjunction only.
 func scopeVectorSelector(selector *parser.VectorSelector, scope Scope) (parser.Expr, error) {
-	if len(scope.Branches) == 1 {
-		selector.LabelMatchers = append(selector.LabelMatchers, scope.Branches[0]...)
+	branches := scope.BranchesFor(selectorName(selector))
+	if len(branches) == 0 {
+		return nil, ErrNoScope
+	}
+	if len(branches) == 1 {
+		selector.LabelMatchers = append(selector.LabelMatchers, branches[0]...)
 		return selector, nil
 	}
-	expressions := make([]parser.Expr, 0, len(scope.Branches))
-	for _, branch := range scope.Branches {
+	expressions := make([]parser.Expr, 0, len(branches))
+	for _, branch := range branches {
 		clone, err := cloneExpr(selector)
 		if err != nil {
 			return nil, ErrUnrewritable
@@ -167,17 +192,21 @@ func rewriteCall(call *parser.Call, scope Scope) (parser.Expr, error) {
 		}
 		return call, nil
 	}
-	if len(scope.Branches) == 1 {
-		matrix := call.Args[matrixIndex].(*parser.MatrixSelector)
-		selector, ok := matrixSelector(matrix)
-		if !ok {
-			return nil, ErrUnrewritable
-		}
-		selector.LabelMatchers = append(selector.LabelMatchers, scope.Branches[0]...)
+	matrix := call.Args[matrixIndex].(*parser.MatrixSelector)
+	selector, ok := matrixSelector(matrix)
+	if !ok {
+		return nil, ErrUnrewritable
+	}
+	branches := scope.BranchesFor(selectorName(selector))
+	if len(branches) == 0 {
+		return nil, ErrNoScope
+	}
+	if len(branches) == 1 {
+		selector.LabelMatchers = append(selector.LabelMatchers, branches[0]...)
 		return call, nil
 	}
-	expressions := make([]parser.Expr, 0, len(scope.Branches))
-	for _, branch := range scope.Branches {
+	expressions := make([]parser.Expr, 0, len(branches))
+	for _, branch := range branches {
 		clone, err := cloneExpr(call)
 		if err != nil {
 			return nil, ErrUnrewritable

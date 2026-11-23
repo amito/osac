@@ -28,7 +28,7 @@ import (
 // replaced by the scope selectors. A caller selector that is not a plain
 // series selector is an error rather than a pass-through.
 func ExpandMatch(values []string, scope Scope) ([]string, error) {
-	if len(scope.Branches) == 0 {
+	if scope.Empty() {
 		return nil, ErrNoScope
 	}
 	if len(values) == 0 {
@@ -37,7 +37,7 @@ func ExpandMatch(values []string, scope Scope) ([]string, error) {
 	var result []string
 	for _, value := range values {
 		if strings.TrimSpace(value) == "" {
-			for _, branch := range scope.Branches {
+			for _, branch := range scope.BranchesFor("", false) {
 				result = append(result, (&parser.VectorSelector{
 					LabelMatchers: append([]*labels.Matcher(nil), branch...),
 				}).String())
@@ -52,7 +52,7 @@ func ExpandMatch(values []string, scope Scope) ([]string, error) {
 		if !ok {
 			return nil, fmt.Errorf("match[] must be a series selector")
 		}
-		for _, branch := range scope.Branches {
+		for _, branch := range scope.BranchesFor(selectorName(selector)) {
 			clone, err := cloneExpr(selector)
 			if err != nil {
 				return nil, ErrUnrewritable
@@ -64,6 +64,11 @@ func ExpandMatch(values []string, scope Scope) ([]string, error) {
 			clonedSelector.LabelMatchers = append(clonedSelector.LabelMatchers, branch...)
 			result = append(result, clonedSelector.String())
 		}
+	}
+	if len(result) == 0 {
+		// Every selector was unmatchable under this scope. An empty match[]
+		// list would mean "every series" to the backend, so never forward it.
+		return nil, ErrNoScope
 	}
 	return result, nil
 }

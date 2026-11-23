@@ -15,6 +15,7 @@ package tenant
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -102,6 +103,73 @@ func TestExpandMatchPreservesTheCallerNameMatcher(t *testing.T) {
 	for _, selector := range selectors {
 		if selector == "" || selector[0] != '{' {
 			t.Errorf("the caller's __name__ matcher was dropped: %s", selector)
+		}
+	}
+}
+
+func TestExpandMatchProjectScopeUnconstrained(t *testing.T) {
+	selectors, err := ExpandMatch(nil, ProjectScope(projectFixture()))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{
+		`{__name__=~"kubevirt_vmi_.*|kubevirt_vm_.*",cluster="management",` +
+			`name=~"vm-1",namespace=~"vms"}`,
+		`{__name__=~"kube_persistentvolumeclaim_.*|` +
+			`kube_pod_spec_volumes_persistentvolumeclaims_info",cluster="management",` +
+			`namespace=~"tenant-ns|vms",persistentvolumeclaim=~"vol-1"}`,
+		`{cluster="management",namespace=~"cp"}`,
+		`{cluster=~"c-1"}`,
+	}
+	if len(selectors) != len(want) {
+		t.Fatalf("want %d selectors, got %d: %v", len(want), len(selectors), selectors)
+	}
+	for index := range want {
+		if selectors[index] != want[index] {
+			t.Errorf("selector %d: want %s, got %s", index, want[index], selectors[index])
+		}
+	}
+}
+
+func TestExpandMatchProjectScopeKeepsTheCallerMetric(t *testing.T) {
+	selectors, err := ExpandMatch([]string{`{__name__="kubevirt_vmi_info"}`},
+		ProjectScope(projectFixture()))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(selectors) != 3 {
+		t.Fatalf("want the VM, hosted and cluster selectors, got %v", selectors)
+	}
+	for _, selector := range selectors {
+		if !strings.Contains(selector, `__name__="kubevirt_vmi_info"`) {
+			t.Errorf("the caller's metric was substituted: %s", selector)
+		}
+	}
+}
+
+func TestExpandMatchProjectScopeExcludesPersistentVolume(t *testing.T) {
+	if _, err := ExpandMatch([]string{"kube_persistentvolume_capacity_bytes"},
+		ProjectScope(projectFixture())); !errors.Is(err, ErrNoScope) {
+		t.Errorf("want ErrNoScope, got %v", err)
+	}
+}
+
+func TestExpandMatchProjectScopeDropsOnlyTheExcludedSelector(t *testing.T) {
+	selectors, err := ExpandMatch([]string{"kube_persistentvolume_capacity_bytes", "up"},
+		ProjectScope(projectFixture()))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{
+		`up{cluster="management",namespace=~"cp"}`,
+		`up{cluster=~"c-1"}`,
+	}
+	if len(selectors) != len(want) {
+		t.Fatalf("want %d selectors, got %v", len(want), selectors)
+	}
+	for index := range want {
+		if selectors[index] != want[index] {
+			t.Errorf("selector %d: want %s, got %s", index, want[index], selectors[index])
 		}
 	}
 }
