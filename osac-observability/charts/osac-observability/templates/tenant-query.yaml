@@ -1,0 +1,247 @@
+{{- if dig "observability" "enabled" false (.Values.global | default dict) }}
+{{- $observability := .Values.global.observability | default dict -}}
+{{- $keycloak := $observability.keycloak | default dict -}}
+{{- $services := $observability.services | default dict -}}
+{{- $metricsAuth := $services.metricsAuth | default dict -}}
+{{- $oauth2Proxy := $services.oauth2Proxy | default dict -}}
+{{- $ns := include "osac-observability.namespace" . -}}
+{{- $clusterDomain := (.Values.global | default dict).clusterDomain | default "" -}}
+{{- $queryURL := printf "http://thanos-query.%s.svc.cluster.local:9090" $ns -}}
+{{- $authorizerURL := printf "http://thanos-query-tenant-authorizer.%s.svc.cluster.local:8080" $ns -}}
+{{- /* The umbrella defaults this to a tpl string backed by
+       global.clusterDomain; validate.yaml fails the render when it is empty. */ -}}
+{{- $issuer := tpl ($keycloak.issuerUrl | default "" | toString) . -}}
+{{- $tenantClient := $keycloak.tenantClientId | default "thanos-tenant" -}}
+{{- $adminClient := $keycloak.adminClientId | default "thanos-admin" -}}
+{{- $adminRole := $keycloak.keycloakAdminRole | default "cloud-provider-admin" -}}
+{{- $audiences := $keycloak.adminAudience | default "osac-ui,osac-cli" | toString -}}
+{{- $tenantHost := printf "thanos-query-tenant-%s" $ns -}}
+{{- /* The tenant Route reaches the OAuth proxy, which forwards the caller's
+       validated login token to the authorizer, which narrows the query and
+       forwards only the five documented endpoints to Thanos Query. The
+       authorizer is a policy point, not an identity authority: it trusts the
+       claims the tenant proxy accepted and makes no second listener reachable
+       except the proxy. The two roles run as separate pods because the
+       NetworkPolicies select them by role label. */ -}}
+{{- $proxyArgs := list "--provider=keycloak-oidc"
+      (printf "--oidc-issuer-url=%s" $issuer)
+      (printf "--client-id=%s" $tenantClient)
+      "--client-secret-file=/etc/thanos-tenant-oauth2/client-secret/client-secret"
+      "--cookie-secret-file=/etc/thanos-tenant-oauth2/cookie-secret/cookie-secret"
+      "--email-domain=*"
+      "--http-address=0.0.0.0:4180"
+      (printf "--upstream=%s" $authorizerURL)
+      "--skip-provider-button"
+      "--pass-access-token"
+      "--set-authorization-header"
+      "--reverse-proxy=true"
+      "--skip-jwt-bearer-tokens=true"
+-}}
+{{- range $audience := splitList "," $audiences }}
+{{- $proxyArgs = append $proxyArgs (printf "--extra-jwt-issuers=%s=%s" $issuer (trim $audience)) -}}
+{{- end }}
+{{- if $clusterDomain }}
+{{- $proxyArgs = append $proxyArgs (printf "--redirect-url=https://%s.%s/oauth2/callback" $tenantHost $clusterDomain) -}}
+{{- end }}
+{{- /* The authorizer reads the tenant and project annotations of the
+       inventory objects cluster-wide with its own identity. No tenant
+       credential is involved in those reads. */ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: thanos-query-tenant
+  namespace: {{ $ns }}
+  labels:
+    {{- include "osac-observability.labels" . | nindent 4 }}
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: thanos-query-tenant-inventory
+  labels:
+    {{- include "osac-observability.labels" . | nindent 4 }}
+rules:
+  # Read-only: the authorizer mirrors the objects, it never changes them.
+  - apiGroups: ["osac.openshift.io"]
+    resources: ["clusterorders", "computeinstances", "volumes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: thanos-query-tenant-inventory
+  labels:
+    {{- include "osac-observability.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: thanos-query-tenant-inventory
+subjects:
+  - kind: ServiceAccount
+    name: thanos-query-tenant
+    namespace: {{ $ns }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thanos-query-tenant-authorizer
+  namespace: {{ $ns }}
+  labels:
+    {{- include "osac-observability.tenantLabels" (dict "root" . "instance" "thanos-query-tenant-authorizer" "component" "authorizer") | nindent 4 }}
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: thanos
+      app.kubernetes.io/instance: thanos-query-tenant-authorizer
+      app.kubernetes.io/component: authorizer
+  template:
+    metadata:
+      labels:
+        {{- include "osac-observability.tenantLabels" (dict "root" . "instance" "thanos-query-tenant-authorizer" "component" "authorizer") | nindent 8 }}
+        osac.openshift.io/observability-role: authorizer
+    spec:
+      serviceAccountName: thanos-query-tenant
+      automountServiceAccountToken: true
+      securityContext:
+        {{- include "osac-observability.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: authorizer
+          image: "{{ $metricsAuth.repository }}:{{ $metricsAuth.tag }}"
+          imagePullPolicy: IfNotPresent
+          command:
+            - /metrics-auth
+          args:
+            - authorizer
+            - --listen=:8080
+            - --upstream={{ $queryURL }}
+            - --issuer={{ $issuer }}
+            - --admin-client-id={{ $adminClient }}
+            - --admin-role={{ $adminRole }}
+            - --allowlist=/etc/query-allowlist/endpoints.txt
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          # Readiness is deliberately not gated on the inventory: a cold
+          # authorizer must answer its own 503, not leave the Route with no
+          # endpoint. Health endpoints share the one listener, so there is no
+          # probe port to reach around the proxy.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            {{- include "osac-observability.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: query-allowlist
+              mountPath: /etc/query-allowlist
+              readOnly: true
+      volumes:
+        - name: query-allowlist
+          configMap:
+            name: osac-observability-query-allowlist
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: thanos-query-tenant-auth
+  namespace: {{ $ns }}
+  labels:
+    {{- include "osac-observability.tenantLabels" (dict "root" . "instance" "thanos-query-tenant-auth" "component" "tenant-auth-proxy") | nindent 4 }}
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: thanos
+      app.kubernetes.io/instance: thanos-query-tenant-auth
+      app.kubernetes.io/component: tenant-auth-proxy
+  template:
+    metadata:
+      labels:
+        {{- include "osac-observability.tenantLabels" (dict "root" . "instance" "thanos-query-tenant-auth" "component" "tenant-auth-proxy") | nindent 8 }}
+        osac.openshift.io/observability-role: tenant-auth-proxy
+    spec:
+      # No Kubernetes identity: only the authorizer reads the inventory.
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "osac-observability.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: oauth2-proxy
+          image: "{{ $oauth2Proxy.repository }}:{{ $oauth2Proxy.tag }}"
+          imagePullPolicy: IfNotPresent
+          args:
+            {{- toYaml $proxyArgs | nindent 12 }}
+          ports:
+            - name: proxy
+              containerPort: 4180
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: proxy
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            {{- include "osac-observability.containerSecurityContext" . | nindent 12 }}
+          # Directory mounts, not subPath: a subPath mount keeps the old value
+          # after Keycloak rotates the client Secret.
+          volumeMounts:
+            - name: oauth2-client-secret
+              mountPath: /etc/thanos-tenant-oauth2/client-secret
+              readOnly: true
+            - name: oauth2-cookie-secret
+              mountPath: /etc/thanos-tenant-oauth2/cookie-secret
+              readOnly: true
+      volumes:
+        - name: oauth2-client-secret
+          secret:
+            secretName: thanos-tenant-client-secret
+        - name: oauth2-cookie-secret
+          secret:
+            secretName: thanos-tenant-oauth2-proxy
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: thanos-query-tenant
+  namespace: {{ $ns }}
+  labels:
+    {{- include "osac-observability.labels" . | nindent 4 }}
+spec:
+  {{- if $clusterDomain }}
+  host: {{ $tenantHost }}.{{ $clusterDomain }}
+  {{- end }}
+  to:
+    kind: Service
+    name: thanos-query-tenant
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+{{- end }}

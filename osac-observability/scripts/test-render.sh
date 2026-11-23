@@ -173,26 +173,44 @@ require "${TMP_DIR}/thanos-compactor.yaml" '--downsampling.disable'
 reject "${TMP_DIR}/thanos-compactor.yaml" '--retention.resolution-5m'
 reject "${TMP_DIR}/thanos-compactor.yaml" '--retention.resolution-1h'
 
-echo "checking six network policies gate the store pods"
+echo "checking seven network policies gate the store pods"
 policies="${TMP_DIR}/networkpolicies.yaml"
 extract_kind "${enabled}" NetworkPolicy >"${policies}"
-expect_count "${policies}" '^kind: NetworkPolicy' 6
-for policy in thanos-query thanos-authorizer thanos-store thanos-receive \
-  thanos-compactor thanos-query-auth-proxy; do
+expect_count "${policies}" '^kind: NetworkPolicy' 7
+for policy in thanos-query thanos-authorizer thanos-query-tenant-auth-proxy \
+  thanos-store thanos-receive thanos-compactor thanos-query-auth-proxy; do
   require "${policies}" "name: ${policy}"
 done
-# Only the gate port is admitted from the router. The allowlist (9091) and the
-# OAuth proxies (4180, 4181) must stay unreachable from other pods, or the
-# token check can be skipped by connecting to the proxy pod IP.
+# Only the gate port is admitted from the router on the admin pod. The
+# allowlist (9091) and the admin OAuth proxies (4180, 4181) must stay
+# unreachable from other pods, or the token check can be skipped by connecting
+# to the proxy pod IP.
 require "${policies}" 'network.openshift.io/policy-group: ingress'
 require "${policies}" 'port: 9092'
 reject "${policies}" 'port: 9091'
-reject "${policies}" 'port: 4180'
 reject "${policies}" 'port: 4181'
 require "${policies}" 'app.kubernetes.io/component: compactor'
 reject "${policies}" 'podSelector: {}'
 reject "${policies}" 'osac.openshift.io/tenant'
 reject "${policies}" 'egress:'
+# The tenant proxy admits the router on 4180; no other policy may open that
+# port, and the authorizer keeps admitting only the tenant proxy on 8080.
+tenant_policy="${TMP_DIR}/networkpolicy-tenant-auth-proxy.yaml"
+extract_kind_name "${enabled}" NetworkPolicy thanos-query-tenant-auth-proxy \
+  >"${tenant_policy}"
+require "${tenant_policy}" 'osac.openshift.io/observability-role: tenant-auth-proxy'
+require "${tenant_policy}" 'network.openshift.io/policy-group: ingress'
+expect_count "${tenant_policy}" 'port: 4180' 1
+reject "${tenant_policy}" 'port: 8080'
+reject "${tenant_policy}" 'port: 9091'
+authorizer_policy="${TMP_DIR}/networkpolicy-authorizer.yaml"
+extract_kind_name "${enabled}" NetworkPolicy thanos-authorizer \
+  >"${authorizer_policy}"
+require "${authorizer_policy}" \
+  'osac.openshift.io/observability-role: tenant-auth-proxy'
+require "${authorizer_policy}" 'port: 8080'
+expect_count "${authorizer_policy}" 'port: 8080' 1
+reject "${authorizer_policy}" 'port: 4180'
 # Query serves its own /metrics on 9090, so cluster monitoring reaches that one
 # port with the CMO Prometheus pods as the source. Admitting the namespace alone
 # would let any pod in openshift-monitoring skip the authorizer.
@@ -232,9 +250,9 @@ admin="${TMP_DIR}/admin.yaml"
   --set global.clusterDomain=apps.example.com >"${admin}"
 admin_routes="${TMP_DIR}/admin-routes.yaml"
 extract_kind_ns "${admin}" Route osac-observability >"${admin_routes}"
-# Exactly one Route per admin path: a Route to Thanos Query would expose the
-# unrestricted API beside the allowlisted one.
-expect_count "${admin_routes}" '^kind: Route' 2
+# Exactly one Route per admin path plus the tenant Route: a Route to Thanos
+# Query would expose the unrestricted API beside the allowlisted one.
+expect_count "${admin_routes}" '^kind: Route' 3
 for route in thanos-query-admin thanos-query-admin-openshift; do
   route_doc="${TMP_DIR}/route-${route}.yaml"
   extract_kind_name "${admin}" Route "${route}" >"${route_doc}"
@@ -299,6 +317,98 @@ for proxy in thanos-query-admin thanos-query-admin-openshift; do
   require "${TMP_DIR}/deployment-${proxy}.yaml" \
     'mountPath: /etc/query-allowlist'
 done
+
+echo "checking the tenant query front door"
+# One tenant Route to the OAuth proxy, never to Thanos Query or the authorizer.
+tenant_route="${TMP_DIR}/route-thanos-query-tenant.yaml"
+extract_kind_name "${admin}" Route thanos-query-tenant >"${tenant_route}"
+require "${tenant_route}" 'name: thanos-query-tenant'
+require "${tenant_route}" \
+  'host: thanos-query-tenant-osac-observability.apps.example.com'
+require "${tenant_route}" 'termination: edge'
+require "${tenant_route}" 'insecureEdgeTerminationPolicy: Redirect'
+require "${tenant_route}" 'targetPort: http'
+expect_count "${tenant_route}" "^    name: thanos-query-tenant\$" 1
+expect_count "${admin_routes}" '^    name: thanos-query$' 0
+
+# The proxy authenticates with the tenant client and forwards to the
+# authorizer, which is the only thing it can reach.
+tenant_proxy="${TMP_DIR}/deployment-thanos-query-tenant-auth.yaml"
+extract_kind_name "${admin}" Deployment thanos-query-tenant-auth >"${tenant_proxy}"
+require "${tenant_proxy}" 'osac.openshift.io/observability-role: tenant-auth-proxy'
+require "${tenant_proxy}" '--client-id=thanos-tenant'
+reject "${tenant_proxy}" '--client-id=thanos-admin'
+require "${tenant_proxy}" \
+  '--upstream=http://thanos-query-tenant-authorizer.osac-observability.svc.cluster.local:8080'
+require "${tenant_proxy}" '--skip-jwt-bearer-tokens=true'
+require "${tenant_proxy}" \
+  '--redirect-url=https://thanos-query-tenant-osac-observability.apps.example.com/oauth2/callback'
+require "${tenant_proxy}" 'secretName: thanos-tenant-client-secret'
+require "${tenant_proxy}" 'secretName: thanos-tenant-oauth2-proxy'
+# No role or group filter: the authorizer decides what an authenticated tenant
+# user may see.
+reject "${tenant_proxy}" '--allowed-role'
+reject "${tenant_proxy}" '--allowed-group'
+
+# The authorizer is the policy point: one listener on 8080, the tenant issuer,
+# the admin client it must reject as a tenant token, and the five-endpoint
+# allowlist.
+tenant_authorizer="${TMP_DIR}/deployment-thanos-query-tenant-authorizer.yaml"
+extract_kind_name "${admin}" Deployment thanos-query-tenant-authorizer \
+  >"${tenant_authorizer}"
+require "${tenant_authorizer}" 'osac.openshift.io/observability-role: authorizer'
+require "${tenant_authorizer}" '- /metrics-auth'
+require "${tenant_authorizer}" '- authorizer'
+require "${tenant_authorizer}" '--listen=:8080'
+require "${tenant_authorizer}" \
+  '--upstream=http://thanos-query.osac-observability.svc.cluster.local:9090'
+require "${tenant_authorizer}" '--issuer=https://keycloak.example.com/realms/osac'
+require "${tenant_authorizer}" '--admin-client-id=thanos-admin'
+require "${tenant_authorizer}" '--admin-role=cloud-provider-admin'
+require "${tenant_authorizer}" '--allowlist=/etc/query-allowlist/endpoints.txt'
+require "${tenant_authorizer}" 'mountPath: /etc/query-allowlist'
+require "${tenant_authorizer}" 'serviceAccountName: thanos-query-tenant'
+require "${tenant_authorizer}" 'automountServiceAccountToken: true'
+# One listener only: there is no probe port to reach around the proxy.
+expect_count "${tenant_authorizer}" 'containerPort: 8080' 1
+reject "${tenant_authorizer}" 'probe-listen'
+
+# Inventory reads are cluster-wide and read-only, bound only to the
+# authorizer's service account. No tenant credential is used for them.
+inventory_role="${TMP_DIR}/clusterrole-tenant-inventory.yaml"
+extract_kind_name "${admin}" ClusterRole thanos-query-tenant-inventory \
+  >"${inventory_role}"
+require "${inventory_role}" \
+  'resources: ["clusterorders", "computeinstances", "volumes"]'
+require "${inventory_role}" 'verbs: ["get", "list", "watch"]'
+require "${inventory_role}" 'apiGroups: ["osac.openshift.io"]'
+reject "${inventory_role}" 'verbs: ["\*"]'
+inventory_binding="${TMP_DIR}/clusterrolebinding-tenant-inventory.yaml"
+extract_kind_name "${admin}" ClusterRoleBinding thanos-query-tenant-inventory \
+  >"${inventory_binding}"
+require "${inventory_binding}" 'name: thanos-query-tenant'
+require "${inventory_binding}" 'namespace: osac-observability'
+reject "${inventory_binding}" 'namespace: ""'
+# No RoleBinding may carry a tenant data scope: inventory access is the
+# ClusterRole above, and the credentials Role only names Secrets.
+tenant_rolebindings="${TMP_DIR}/rolebindings-observability.yaml"
+extract_kind_ns "${admin}" RoleBinding osac-observability \
+  >"${tenant_rolebindings}"
+reject "${tenant_rolebindings}" 'osac.openshift.io'
+reject "${tenant_rolebindings}" 'clusterorders'
+reject "${tenant_rolebindings}" 'computeinstances'
+
+tenant_service="${TMP_DIR}/service-thanos-query-tenant.yaml"
+extract_kind_name "${admin}" Service thanos-query-tenant >"${tenant_service}"
+require "${tenant_service}" 'port: 9091'
+require "${tenant_service}" 'targetPort: proxy'
+require "${tenant_service}" 'app.kubernetes.io/component: tenant-auth-proxy'
+authorizer_service="${TMP_DIR}/service-thanos-query-tenant-authorizer.yaml"
+extract_kind_name "${admin}" Service thanos-query-tenant-authorizer \
+  >"${authorizer_service}"
+require "${authorizer_service}" 'port: 8080'
+require "${authorizer_service}" 'targetPort: http'
+require "${authorizer_service}" 'app.kubernetes.io/component: authorizer'
 
 echo "checking the managed write path"
 write_path="${TMP_DIR}/write-path.yaml"
@@ -420,9 +530,12 @@ reject "${enabled}" 'name: osac-metrics-write-revocation'
 reject "${disabled}" 'osac-metrics-write-ca'
 reject "${disabled}" 'thanos-receive-managed'
 
-echo "checking the disabled path removes the admin surface"
+echo "checking the disabled path removes the admin and tenant surfaces"
 for name in thanos-query-admin thanos-query-admin-openshift \
-  osac-observability-query-allowlist osac-observability-admin-credentials; do
+  thanos-query-tenant thanos-query-tenant-auth \
+  thanos-query-tenant-authorizer thanos-query-tenant-inventory \
+  osac-observability-query-allowlist osac-observability-admin-credentials \
+  osac-observability-tenant-credentials; do
   reject "${disabled}" "name: ${name}"
 done
 

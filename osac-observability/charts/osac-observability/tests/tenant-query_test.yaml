@@ -1,0 +1,487 @@
+suite: tenant query front door
+templates:
+  - templates/*.yaml
+release:
+  name: osac
+  namespace: osac
+capabilities:
+  apiVersions:
+    - monitoring.coreos.com/v1
+set:
+  global.observability.enabled: true
+  global.clusterDomain: apps.example.com
+  global.observability.keycloak.realm: osac
+  global.observability.keycloak.keycloakAdminRole: cloud-provider-admin
+  global.observability.keycloak.adminClientId: thanos-admin
+  global.observability.keycloak.tenantClientId: thanos-tenant
+  global.observability.keycloak.adminAudience: osac-ui,osac-cli
+  global.observability.keycloak.issuerUrl: https://keycloak.example.com/realms/osac
+  global.observability.objectStorage.secretName: thanos-object-storage
+  global.observability.objectStorage.endpoint: https://s3.example.com
+  global.observability.objectStorage.bucket: thanos
+  global.observability.objectStorage.region: us-east-1
+  global.observability.thanos.image.registry: registry.redhat.io
+  global.observability.thanos.image.repository: openshift4/ose-thanos-rhel8
+  global.observability.thanos.image.tag: test-thanos
+  global.observability.services.metricsAuth.repository: ghcr.io/osac-project/osac-observability
+  global.observability.services.metricsAuth.tag: test-metrics-auth
+  global.observability.services.oauth2Proxy.repository: quay.io/oauth2-proxy/oauth2-proxy
+  global.observability.services.oauth2Proxy.tag: test-oauth2-proxy
+  global.observability.services.openshiftOauthProxy.tag: test-ose-oauth-proxy
+
+tests:
+  - it: exposes the tenant Route only through its own proxy
+    template: templates/tenant-query.yaml
+    documentSelector:
+      path: kind
+      value: Route
+    asserts:
+      - isKind:
+          of: Route
+      - equal:
+          path: metadata.name
+          value: thanos-query-tenant
+      - equal:
+          path: metadata.namespace
+          value: osac-observability
+      - equal:
+          path: spec.host
+          value: thanos-query-tenant-osac-observability.apps.example.com
+      - equal:
+          path: spec.to.name
+          value: thanos-query-tenant
+      - equal:
+          path: spec.port.targetPort
+          value: http
+      - equal:
+          path: spec.tls.termination
+          value: edge
+      - equal:
+          path: spec.tls.insecureEdgeTerminationPolicy
+          value: Redirect
+      - notExists:
+          path: spec.path
+      - notExists:
+          path: spec.alternateBackends
+
+  - it: reaches the authorizer through the tenant OAuth proxy
+    template: templates/tenant-query.yaml
+    documentSelector:
+      path: metadata.name
+      value: thanos-query-tenant-auth
+    asserts:
+      - isKind:
+          of: Deployment
+      - equal:
+          path: spec.template.metadata.labels["osac.openshift.io/observability-role"]
+          value: tenant-auth-proxy
+      - equal:
+          path: spec.template.metadata.labels["app.kubernetes.io/component"]
+          value: tenant-auth-proxy
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: quay.io/oauth2-proxy/oauth2-proxy:test-oauth2-proxy
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --provider=keycloak-oidc
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --oidc-issuer-url=https://keycloak.example.com/realms/osac
+      # The browser login uses the tenant client, never the admin client.
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --client-id=thanos-tenant
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --client-id=thanos-admin
+      # The proxy runs in its own pod, so loopback is not a valid upstream: it
+      # reaches the authorizer Service.
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --upstream=http://thanos-query-tenant-authorizer.osac-observability.svc.cluster.local:8080
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --http-address=0.0.0.0:4180
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --client-secret-file=/etc/thanos-tenant-oauth2/client-secret/client-secret
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --cookie-secret-file=/etc/thanos-tenant-oauth2/cookie-secret/cookie-secret
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --skip-provider-button
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --pass-access-token
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --set-authorization-header
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --skip-jwt-bearer-tokens=true
+      # Tenant CLI and UI logins are issued to the OSAC clients, not to
+      # thanos-tenant, so the proxy must accept those audiences too.
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --extra-jwt-issuers=https://keycloak.example.com/realms/osac=osac-ui
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --extra-jwt-issuers=https://keycloak.example.com/realms/osac=osac-cli
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --redirect-url=https://thanos-query-tenant-osac-observability.apps.example.com/oauth2/callback
+      # No group or role filter: every authenticated tenant user is admitted
+      # and the authorizer decides what they may see.
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --allowed-role=cloud-provider-admin
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --allowed-group
+      - equal:
+          path: spec.template.spec.containers[0].ports[0].name
+          value: proxy
+      - equal:
+          path: spec.template.spec.containers[0].ports[0].containerPort
+          value: 4180
+      - equal:
+          path: spec.template.spec.volumes[0].secret.secretName
+          value: thanos-tenant-client-secret
+      - equal:
+          path: spec.template.spec.volumes[1].secret.secretName
+          value: thanos-tenant-oauth2-proxy
+      # Directory mounts, not subPath: a subPath mount keeps the old value after
+      # Keycloak rotates the client Secret.
+      - notExists:
+          path: spec.template.spec.containers[0].volumeMounts[0].subPath
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --client-secret=
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --cookie-secret=
+
+  - it: runs the authorizer in front of Thanos Query
+    template: templates/tenant-query.yaml
+    documentSelector:
+      path: metadata.name
+      value: thanos-query-tenant-authorizer
+    asserts:
+      - isKind:
+          of: Deployment
+      - equal:
+          path: spec.template.metadata.labels["osac.openshift.io/observability-role"]
+          value: authorizer
+      - equal:
+          path: spec.template.metadata.labels["app.kubernetes.io/component"]
+          value: authorizer
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: thanos-query-tenant
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: ghcr.io/osac-project/osac-observability:test-metrics-auth
+      - equal:
+          path: spec.template.spec.containers[0].command
+          value:
+            - /metrics-auth
+      - equal:
+          path: spec.template.spec.containers[0].args[0]
+          value: authorizer
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --listen=:8080
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --upstream=http://thanos-query.osac-observability.svc.cluster.local:9090
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --issuer=https://keycloak.example.com/realms/osac
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --admin-client-id=thanos-admin
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --admin-role=cloud-provider-admin
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --allowlist=/etc/query-allowlist/endpoints.txt
+      # One listener only: a probe port would be a second way to reach the
+      # authorizer around the proxy.
+      - lengthEqual:
+          path: spec.template.spec.containers
+          count: 1
+      - lengthEqual:
+          path: spec.template.spec.containers[0].ports
+          count: 1
+      - equal:
+          path: spec.template.spec.containers[0].ports[0].name
+          value: http
+      - equal:
+          path: spec.template.spec.containers[0].ports[0].containerPort
+          value: 8080
+      # Readiness is deliberately not gated on the inventory: a cold authorizer
+      # must answer its own 503 rather than leaving the Route with no endpoint.
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /readyz
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.port
+          value: http
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /livez
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].mountPath
+          value: /etc/query-allowlist
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].readOnly
+          value: true
+      - equal:
+          path: spec.template.spec.volumes[0].configMap.name
+          value: osac-observability-query-allowlist
+
+  - it: gives the authorizer read-only cluster-wide inventory access
+    template: templates/tenant-query.yaml
+    documentSelector:
+      path: kind
+      value: ClusterRole
+    asserts:
+      - equal:
+          path: metadata.name
+          value: thanos-query-tenant-inventory
+      # Exactly get/list/watch on the three inventory kinds: no tenant
+      # credential is used for these reads and no write verb is granted.
+      - equal:
+          path: rules
+          value:
+            - apiGroups: ["osac.openshift.io"]
+              resources: ["clusterorders", "computeinstances", "volumes"]
+              verbs: ["get", "list", "watch"]
+
+  - it: binds the inventory role only to the authorizer service account
+    template: templates/tenant-query.yaml
+    documentSelector:
+      path: kind
+      value: ClusterRoleBinding
+    asserts:
+      - isKind:
+          of: ClusterRoleBinding
+      - notExists:
+          path: metadata.namespace
+      - equal:
+          path: roleRef.kind
+          value: ClusterRole
+      - equal:
+          path: roleRef.name
+          value: thanos-query-tenant-inventory
+      - equal:
+          path: subjects
+          value:
+            - kind: ServiceAccount
+              name: thanos-query-tenant
+              namespace: osac-observability
+
+  - it: runs the authorizer under a dedicated service account
+    template: templates/tenant-query.yaml
+    documentSelector:
+      path: kind
+      value: ServiceAccount
+    asserts:
+      - equal:
+          path: metadata.name
+          value: thanos-query-tenant
+      - equal:
+          path: metadata.namespace
+          value: osac-observability
+      - equal:
+          path: automountServiceAccountToken
+          value: true
+
+  - it: serves the tenant Route through the proxy on 4180
+    template: templates/services.yaml
+    documentSelector:
+      path: metadata.name
+      value: thanos-query-tenant
+    asserts:
+      - isKind:
+          of: Service
+      - equal:
+          path: spec.selector["app.kubernetes.io/instance"]
+          value: thanos-query-tenant-auth
+      - equal:
+          path: spec.selector["app.kubernetes.io/component"]
+          value: tenant-auth-proxy
+      - lengthEqual:
+          path: spec.ports
+          count: 1
+      - equal:
+          path: spec.ports[0].name
+          value: http
+      - equal:
+          path: spec.ports[0].port
+          value: 9091
+      - equal:
+          path: spec.ports[0].targetPort
+          value: proxy
+
+  - it: exposes the authorizer only on its single listener
+    template: templates/services.yaml
+    documentSelector:
+      path: metadata.name
+      value: thanos-query-tenant-authorizer
+    asserts:
+      - isKind:
+          of: Service
+      - equal:
+          path: spec.selector["app.kubernetes.io/instance"]
+          value: thanos-query-tenant-authorizer
+      - equal:
+          path: spec.selector["app.kubernetes.io/component"]
+          value: authorizer
+      - lengthEqual:
+          path: spec.ports
+          count: 1
+      - equal:
+          path: spec.ports[0].port
+          value: 8080
+      - equal:
+          path: spec.ports[0].targetPort
+          value: http
+
+  - it: grants the tenant credentials job only its two proxy secrets
+    template: templates/tenant-credentials-rbac.yaml
+    documentSelector:
+      path: kind
+      value: Role
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: osac-observability
+      - equal:
+          path: rules
+          value:
+            - apiGroups:
+                - ""
+              resources:
+                - secrets
+              resourceNames:
+                - thanos-tenant-client-secret
+                - thanos-tenant-oauth2-proxy
+              verbs:
+                - get
+                - create
+                - update
+                - patch
+
+  - it: binds the tenant credentials role to its own service account
+    template: templates/tenant-credentials-rbac.yaml
+    documentSelector:
+      path: kind
+      value: RoleBinding
+    asserts:
+      - equal:
+          path: roleRef.kind
+          value: Role
+      - equal:
+          path: subjects
+          value:
+            - kind: ServiceAccount
+              name: osac-observability-tenant-credentials
+              namespace: osac-observability
+
+  - it: reads the tenant Keycloak secret under a hook role
+    template: templates/tenant-credentials-hook.yaml
+    documentSelector:
+      path: kind
+      value: Role
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: keycloak
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "29"
+      - equal:
+          path: rules
+          value:
+            - apiGroups:
+                - ""
+              resources:
+                - secrets
+              resourceNames:
+                - keycloak-client-secrets
+              verbs:
+                - get
+
+  - it: copies the tenant client secret and creates its cookie secret
+    template: templates/tenant-credentials-hook.yaml
+    documentSelector:
+      path: kind
+      value: Job
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: osac-observability
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: post-install,post-upgrade
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "30"
+      - equal:
+          path: spec.backoffLimit
+          value: 0
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: osac-observability-tenant-credentials
+      - equal:
+          path: spec.template.spec.containers[0].command
+          value:
+            - /admin-credentials
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: KEYCLOAK_SECRET_KEY
+            value: thanos-tenant
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ADMIN_CLIENT_SECRET_NAME
+            value: thanos-tenant-client-secret
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ADMIN_COOKIE_SECRET_NAMES
+            value: '["thanos-tenant-oauth2-proxy"]'
+      # The job names objects only; no secret value is ever a Helm value.
+      - notExists:
+          path: spec.template.spec.containers[0].envFrom
+
+  - it: renders no tenant objects when observability is disabled
+    template: templates/tenant-query.yaml
+    set:
+      global.observability.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders no tenant credentials when observability is disabled
+    template: templates/tenant-credentials-rbac.yaml
+    set:
+      global.observability.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders no tenant credentials hook when observability is disabled
+    template: templates/tenant-credentials-hook.yaml
+    set:
+      global.observability.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

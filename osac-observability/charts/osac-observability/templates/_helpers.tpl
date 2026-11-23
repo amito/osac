@@ -55,6 +55,18 @@ app.kubernetes.io/component: query-auth-proxy
 app.kubernetes.io/managed-by: {{ .root.Release.Service }}
 {{- end -}}
 
+{{/* The tenant front door is two workloads, the authorizer and its OAuth
+     proxy. Each carries its own instance and component label so neither
+     Deployment selects the other's pods, and each carries the role label the
+     NetworkPolicies select. */}}
+{{- define "osac-observability.tenantLabels" -}}
+helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
+app.kubernetes.io/name: thanos
+app.kubernetes.io/instance: {{ .instance }}
+app.kubernetes.io/component: {{ .component }}
+app.kubernetes.io/managed-by: {{ .root.Release.Service }}
+{{- end -}}
+
 {{- define "osac-observability.podSecurityContext" -}}
 runAsNonRoot: true
 seccompProfile:

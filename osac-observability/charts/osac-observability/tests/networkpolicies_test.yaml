@@ -245,11 +245,60 @@ tests:
       - notExists:
           path: spec.egress
 
-  - it: renders exactly six policies when cluster remote write is off
+  # The tenant proxy admits the router on 4180; the authorizer keeps admitting
+  # only that proxy on 8080, so no second way into the tenant path opens.
+  - it: admits only the router to the tenant auth proxy
+    template: templates/networkpolicies.yaml
+    documentSelector:
+      path: metadata.name
+      value: thanos-query-tenant-auth-proxy
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      - equal:
+          path: spec.podSelector.matchLabels["osac.openshift.io/observability-role"]
+          value: tenant-auth-proxy
+      - equal:
+          path: spec.policyTypes
+          value:
+            - Ingress
+      - equal:
+          path: spec.ingress
+          value:
+            - from:
+                - namespaceSelector:
+                    matchLabels:
+                      network.openshift.io/policy-group: ingress
+              ports:
+                - protocol: TCP
+                  port: 4180
+      - notExists:
+          path: spec.egress
+
+  - it: keeps the authorizer closed to everything but the tenant proxy
+    template: templates/networkpolicies.yaml
+    documentSelector:
+      path: metadata.name
+      value: thanos-authorizer
+    asserts:
+      # The whole ingress list is one pod source on one port: adding any other
+      # source, including the router or a namespace, fails this assertion.
+      - equal:
+          path: spec.ingress
+          value:
+            - from:
+                - podSelector:
+                    matchLabels:
+                      osac.openshift.io/observability-role: tenant-auth-proxy
+              ports:
+                - protocol: TCP
+                  port: 8080
+
+  - it: renders exactly seven policies when cluster remote write is off
     template: templates/networkpolicies.yaml
     asserts:
       - hasDocuments:
-          count: 6
+          count: 7
 
   # The tenant remote-write Route enters through the OpenShift router, so the
   # write proxy admits 8443 from that namespace and nothing else. Its 8080
