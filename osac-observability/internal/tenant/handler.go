@@ -22,11 +22,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
-
-	"github.com/prometheus/prometheus/model/labels"
-	"github.com/prometheus/prometheus/promql/parser"
 
 	"github.com/osac-project/osac/osac-observability/internal/allowlist"
 	"github.com/osac-project/osac/osac-observability/internal/inventory"
@@ -208,7 +204,7 @@ func (h *Handler) rewriteQuery(scope Scope, query string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid query: %w", err)
 	}
-	rewritten, err := scope.Apply(expr)
+	rewritten, err := Rewrite(expr, scope)
 	if err != nil {
 		return "", err
 	}
@@ -219,87 +215,7 @@ func (h *Handler) rewriteQuery(scope Scope, query string) (string, error) {
 // empty match[] means "every series", which is exactly the request that must
 // never be forwarded: it is replaced by the scope selectors.
 func (h *Handler) rewriteMatch(values []string, scope Scope) ([]string, error) {
-	return expandMatch(values, scope)
-}
-
-// Apply narrows an expression to the scope. An empty scope or a form this
-// version cannot narrow reports ErrNoScope or ErrUnrewritable so the handler
-// answers with an empty result instead of forwarding the original query.
-func (s Scope) Apply(expr parser.Expr) (parser.Expr, error) {
-	selector, ok := expr.(*parser.VectorSelector)
-	if !ok {
-		return nil, ErrUnrewritable
-	}
-	return s.applySelector(selector)
-}
-
-func (s Scope) applySelector(selector *parser.VectorSelector) (parser.Expr, error) {
-	if len(s.Branches) == 0 {
-		return nil, ErrNoScope
-	}
-	if len(s.Branches) == 1 {
-		selector.LabelMatchers = append(selector.LabelMatchers, s.Branches[0]...)
-		return selector, nil
-	}
-	expressions := make([]parser.Expr, 0, len(s.Branches))
-	for _, branch := range s.Branches {
-		clone, err := cloneExpr(selector)
-		if err != nil {
-			return nil, ErrUnrewritable
-		}
-		clonedSelector, ok := clone.(*parser.VectorSelector)
-		if !ok {
-			return nil, ErrUnrewritable
-		}
-		clonedSelector.LabelMatchers = append(clonedSelector.LabelMatchers, branch...)
-		expressions = append(expressions, clonedSelector)
-	}
-	return orExpr(expressions), nil
-}
-
-// expandMatch returns one selector per caller selector and scope branch. A
-// bare selector (no name and no __name__ matcher) is scoped as-is, so the
-// listing returns only the caller's series of every family.
-func expandMatch(values []string, scope Scope) ([]string, error) {
-	if len(scope.Branches) == 0 {
-		return nil, ErrNoScope
-	}
-	if len(values) == 0 {
-		values = []string{""}
-	}
-	var result []string
-	for _, value := range values {
-		if strings.TrimSpace(value) == "" {
-			// An unconstrained listing: the scope itself is the selector.
-			for _, branch := range scope.Branches {
-				result = append(result, (&parser.VectorSelector{
-					LabelMatchers: append([]*labels.Matcher(nil), branch...),
-				}).String())
-			}
-			continue
-		}
-		expr, err := parseExpr(value)
-		if err != nil {
-			return nil, fmt.Errorf("invalid match[] selector: %w", err)
-		}
-		selector, ok := expr.(*parser.VectorSelector)
-		if !ok {
-			return nil, fmt.Errorf("match[] must be a series selector")
-		}
-		for _, branch := range scope.Branches {
-			clone, err := cloneExpr(selector)
-			if err != nil {
-				return nil, ErrUnrewritable
-			}
-			clonedSelector, ok := clone.(*parser.VectorSelector)
-			if !ok {
-				return nil, ErrUnrewritable
-			}
-			clonedSelector.LabelMatchers = append(clonedSelector.LabelMatchers, branch...)
-			result = append(result, clonedSelector.String())
-		}
-	}
-	return result, nil
+	return ExpandMatch(values, scope)
 }
 
 func (h *Handler) forward(w http.ResponseWriter, r *http.Request, values url.Values) {

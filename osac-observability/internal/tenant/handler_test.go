@@ -217,7 +217,7 @@ func TestHandler503BodyIdenticalForEveryCaller(t *testing.T) {
 func TestHandlerReturns501ForUnlistedEndpoint(t *testing.T) {
 	upstream := &upstreamRecorder{}
 	handler := newTestHandler(t, availableInventory(nil), upstream)
-	for _, path := range []string{"/api/v1/status", "/api/v1/targets", "/api/v1/query_exemplars"} {
+	for _, path := range []string{"/api/v1/status", "/api/v1/targets", "/api/v1/query_exemplars", "/api/v1/label/a/b/values"} {
 		response := serve(handler, queryRequest(t, path, nil, tenantToken(t, "acme")))
 		if response.Code != http.StatusNotImplemented {
 			t.Fatalf("%s: expected 501, got %d", path, response.Code)
@@ -277,18 +277,90 @@ func TestHandlerEmptyOrganizationReturnsEmptyResult(t *testing.T) {
 	}
 }
 
-func TestHandlerUnsupportedQueryFormReturnsEmptyResult(t *testing.T) {
+func TestHandlerMatrixQueryIsScoped(t *testing.T) {
 	upstream := &upstreamRecorder{}
 	handler := newTestHandler(t, availableInventory(map[string]*inventory.Organization{
 		"acme": {Namespaces: []string{"acme-vms"}},
 	}), upstream)
 	response := serve(handler, queryRequest(t, "/api/v1/query",
 		url.Values{"query": {"rate(up[5m])"}}, tenantToken(t, "acme")))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
+	}
+	want := `rate(up{cluster="management",namespace=~"acme-vms"}[5m])`
+	if got := upstream.lastQuery(); got != want {
+		t.Errorf("want %s\ngot  %s", want, got)
+	}
+}
+
+func TestHandlerUnrewritableReturnsEmpty(t *testing.T) {
+	upstream := &upstreamRecorder{}
+	handler := newTestHandler(t, availableInventory(map[string]*inventory.Organization{
+		"acme": {Namespaces: []string{"acme-vms"}},
+	}), upstream)
+	response := serve(handler, queryRequest(t, "/api/v1/query",
+		url.Values{"query": {"up[5m]"}}, tenantToken(t, "acme")))
 	if response.Code != http.StatusOK || response.Body.String() != emptyVector {
 		t.Fatalf("expected an empty 200, got %d %s", response.Code, response.Body.String())
 	}
 	if upstream.count() != 0 {
 		t.Error("an unrewritable query must not reach the backend")
+	}
+}
+
+func TestHandlerNoScopeReturnsEmptyForEveryQueryEndpoint(t *testing.T) {
+	upstream := &upstreamRecorder{}
+	handler := newTestHandler(t, availableInventory(nil), upstream)
+	cases := map[string]string{
+		"/api/v1/query":       emptyVector,
+		"/api/v1/query_range": emptyMatrix,
+	}
+	for path, emptyBody := range cases {
+		response := serve(handler, queryRequest(t, path,
+			url.Values{"query": {"up"}}, tenantToken(t, "acme")))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d", path, response.Code)
+		}
+		if response.Body.String() != emptyBody {
+			t.Errorf("%s: unexpected body %s", path, response.Body.String())
+		}
+	}
+	if upstream.count() != 0 {
+		t.Error("a caller with no scope must not reach the backend")
+	}
+}
+
+// TestHandlerDeniedAndNonexistentAreIndistinguishable proves the authorizer
+// adds nothing for a metric its organization does not own: the same empty body
+// and the same headers come back for a nonexistent metric and for one another
+// organization owns.
+func TestHandlerDeniedAndNonexistentAreIndistinguishable(t *testing.T) {
+	emptyBody := `{"status":"success","data":{"resultType":"vector","result":[]}}`
+	upstream := &upstreamRecorder{body: emptyBody}
+	handler := newTestHandler(t, availableInventory(map[string]*inventory.Organization{
+		"acme":  {Namespaces: []string{"acme-vms"}},
+		"other": {Namespaces: []string{"other-vms"}},
+	}), upstream)
+	responses := make([]*httptest.ResponseRecorder, 0, 2)
+	for _, query := range []string{"nonexistent_metric", "other_metric"} {
+		responses = append(responses, serve(handler, queryRequest(t, "/api/v1/query",
+			url.Values{"query": {query}}, tenantToken(t, "acme"))))
+	}
+	first, second := responses[0], responses[1]
+	if first.Body.String() != second.Body.String() {
+		t.Errorf("bodies differ: %s vs %s", first.Body.String(), second.Body.String())
+	}
+	if first.Code != http.StatusOK || second.Code != http.StatusOK {
+		t.Errorf("expected 200 for both, got %d and %d", first.Code, second.Code)
+	}
+	if len(first.Header()) != len(second.Header()) {
+		t.Errorf("headers differ: %v vs %v", first.Header(), second.Header())
+	}
+	for key, firstValues := range first.Header() {
+		secondValues, ok := second.Header()[key]
+		if !ok || strings.Join(firstValues, ",") != strings.Join(secondValues, ",") {
+			t.Errorf("header %s differs: %v vs %v", key, firstValues, secondValues)
+		}
 	}
 }
 
@@ -411,6 +483,45 @@ func TestHandlerScopesCallerMatch(t *testing.T) {
 		if !strings.Contains(value, `job="x"`) {
 			t.Errorf("a caller matcher was dropped: %s", value)
 		}
+	}
+}
+
+func TestListingEmptyScopeReturnsEmpty(t *testing.T) {
+	upstream := &upstreamRecorder{}
+	handler := newTestHandler(t, availableInventory(nil), upstream)
+	for _, path := range []string{"/api/v1/labels", "/api/v1/label/__name__/values", "/api/v1/series"} {
+		response := serve(handler, queryRequest(t, path, nil, tenantToken(t, "acme")))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d", path, response.Code)
+		}
+		if response.Body.String() != emptyList {
+			t.Errorf("%s: unexpected body %s", path, response.Body.String())
+		}
+	}
+	if upstream.count() != 0 {
+		t.Error("a caller with no scope must not reach the backend")
+	}
+}
+
+func TestListingPreservesOtherParameters(t *testing.T) {
+	upstream := &upstreamRecorder{}
+	handler := newTestHandler(t, availableInventory(map[string]*inventory.Organization{
+		"acme": {Namespaces: []string{"acme-vms"}},
+	}), upstream)
+	response := serve(handler, queryRequest(t, "/api/v1/series", url.Values{
+		"match[]": {"up"}, "start": {"1"}, "end": {"2"}, "limit": {"5"},
+	}, tenantToken(t, "acme")))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", response.Code)
+	}
+	values := upstream.lastValues()
+	for _, key := range []string{"start", "end", "limit"} {
+		if values.Get(key) == "" {
+			t.Errorf("%s was not preserved: %v", key, values)
+		}
+	}
+	if len(values["match[]"]) != 1 {
+		t.Errorf("expected one scoped selector, got %v", values["match[]"])
 	}
 }
 
