@@ -86,8 +86,8 @@ func TestIdentifyTenant(t *testing.T) {
 			want:   "acme",
 		},
 		{
-			name:   "organization two entries",
-			mutate: func(c map[string]any) { c["organization"] = []any{"acme", "globex"} },
+			name:    "organization two entries",
+			mutate:  func(c map[string]any) { c["organization"] = []any{"acme", "globex"} },
 			wantErr: ErrMultipleTenants,
 		},
 		{
@@ -184,8 +184,8 @@ func TestIdentifyTenant(t *testing.T) {
 
 func TestIdentifySubjectFallsBackToUsername(t *testing.T) {
 	caller, err := identify(t, map[string]any{
-		"iss":          testIssuer,
-		"organization": "acme",
+		"iss":                testIssuer,
+		"organization":       "acme",
 		"preferred_username": "alice",
 	})
 	if err != nil {
