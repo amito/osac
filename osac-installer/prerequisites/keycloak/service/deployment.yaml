@@ -64,11 +64,12 @@ spec:
         - |
           set -e
           if ! oc get secret keycloak-client-secrets > /dev/null 2>&1; then
-            echo "generating osac-controller/osac-admin/thanos-admin/osac-csi-driver client secrets"
+            echo "generating osac-controller/osac-admin/thanos-admin/thanos-tenant/osac-csi-driver client secrets"
             oc create secret generic keycloak-client-secrets \
               --from-literal=osac-controller="$(openssl rand -base64 18)" \
               --from-literal=osac-admin="$(openssl rand -base64 18)" \
               --from-literal=thanos-admin="$(openssl rand -base64 18)" \
+              --from-literal=thanos-tenant="$(openssl rand -base64 18)" \
               --from-literal=osac-csi-driver="$(openssl rand -base64 18)"
           elif ! oc get secret keycloak-client-secrets -o jsonpath='{.data.osac-csi-driver}' | grep -q .; then
             echo "patching keycloak-client-secrets to add osac-csi-driver key"
@@ -83,11 +84,19 @@ spec:
             oc patch secret keycloak-client-secrets \
               -p "{\"data\":{\"thanos-admin\":\"$(printf '%s' "${THANOS_ADMIN_NEW}" | base64 -w0)\"}}"
           fi
+          # Upgrade path: add the thanos-tenant key if the Secret predates this client.
+          if ! oc get secret keycloak-client-secrets -o jsonpath='{.data.thanos-tenant}' | grep -q .; then
+            echo "patching keycloak-client-secrets to add thanos-tenant key"
+            THANOS_TENANT_NEW=$(openssl rand -base64 18)
+            oc patch secret keycloak-client-secrets \
+              -p "{\"data\":{\"thanos-tenant\":\"$(printf '%s' "${THANOS_TENANT_NEW}" | base64 -w0)\"}}"
+          fi
           CONTROLLER_SECRET=$(oc get secret keycloak-client-secrets -o jsonpath='{.data.osac-controller}' | base64 -d)
           ADMIN_SECRET=$(oc get secret keycloak-client-secrets -o jsonpath='{.data.osac-admin}' | base64 -d)
           THANOS_ADMIN_SECRET=$(oc get secret keycloak-client-secrets -o jsonpath='{.data.thanos-admin}' | base64 -d)
+          THANOS_TENANT_SECRET=$(oc get secret keycloak-client-secrets -o jsonpath='{.data.thanos-tenant}' | base64 -d)
           CSI_DRIVER_SECRET=$(oc get secret keycloak-client-secrets -o jsonpath='{.data.osac-csi-driver}' | base64 -d)
-          [[ -n "${CONTROLLER_SECRET}" && -n "${ADMIN_SECRET}" && -n "${THANOS_ADMIN_SECRET}" && -n "${CSI_DRIVER_SECRET}" ]] || { echo "ERROR: keycloak-client-secrets is missing osac-controller, osac-admin, thanos-admin, or osac-csi-driver" >&2; exit 1; }
+          [[ -n "${CONTROLLER_SECRET}" && -n "${ADMIN_SECRET}" && -n "${THANOS_ADMIN_SECRET}" && -n "${THANOS_TENANT_SECRET}" && -n "${CSI_DRIVER_SECRET}" ]] || { echo "ERROR: keycloak-client-secrets is missing osac-controller, osac-admin, thanos-admin, thanos-tenant, or osac-csi-driver" >&2; exit 1; }
           [[ -n "${REALM_ADMIN_USERNAME}" && -n "${REALM_ADMIN_PASSWORD}" ]] || { echo "ERROR: keycloak-admin-credentials is missing admin-username or admin-password" >&2; exit 1; }
           # OSAC-3884: Keycloak rejects an absolute browser callback when the
           # osac-ui client's redirectUris are relative, so the UI's real URL is
@@ -111,17 +120,24 @@ spec:
           # because the value is empty by default.
           THANOS_ADMIN_REDIRECT_URI="${THANOS_ADMIN_REDIRECT_URI:?THANOS_ADMIN_REDIRECT_URI must be set (https://thanos-query-admin-osac-observability.<cluster ingress domain>/oauth2/callback)}"
           [[ "${THANOS_ADMIN_REDIRECT_URI}" =~ ^https://[A-Za-z0-9.-]+/oauth2/callback$ ]] || { echo "ERROR: THANOS_ADMIN_REDIRECT_URI must be https://thanos-query-admin-osac-observability.<cluster ingress domain>/oauth2/callback" >&2; exit 1; }
+          # The thanos-tenant callback is the tenant Route host, the same shape
+          # as the admin callback on its own host, and is required for the same
+          # reason: a wildcard would hand the authorization code to any origin.
+          THANOS_TENANT_REDIRECT_URI="${THANOS_TENANT_REDIRECT_URI:?THANOS_TENANT_REDIRECT_URI must be set (https://thanos-query-tenant-osac-observability.<cluster ingress domain>/oauth2/callback)}"
+          [[ "${THANOS_TENANT_REDIRECT_URI}" =~ ^https://[A-Za-z0-9.-]+/oauth2/callback$ ]] || { echo "ERROR: THANOS_TENANT_REDIRECT_URI must be https://thanos-query-tenant-osac-observability.<cluster ingress domain>/oauth2/callback" >&2; exit 1; }
           json_escape_string() { python3 -c "import json,sys; print(json.dumps(sys.argv[1])[1:-1])" "$1"; }
           escape_sed_replacement() { printf '%s' "$1" | sed -e 's/[\&#]/\\&/g'; }
           sed \
             -e "s#__OSAC_CONTROLLER_CLIENT_SECRET__#${CONTROLLER_SECRET}#" \
             -e "s#__OSAC_ADMIN_CLIENT_SECRET__#${ADMIN_SECRET}#" \
             -e "s#__THANOS_ADMIN_CLIENT_SECRET__#${THANOS_ADMIN_SECRET}#" \
+            -e "s#__THANOS_TENANT_CLIENT_SECRET__#${THANOS_TENANT_SECRET}#" \
             -e "s#__OSAC_CSI_DRIVER_CLIENT_SECRET__#${CSI_DRIVER_SECRET}#" \
             -e "s#__OSAC_REALM_ADMIN_USERNAME__#$(escape_sed_replacement "$(json_escape_string "${REALM_ADMIN_USERNAME}")")#" \
             -e "s#__OSAC_REALM_ADMIN_PASSWORD__#$(escape_sed_replacement "$(json_escape_string "${REALM_ADMIN_PASSWORD}")")#" \
             -e "s#__OSAC_UI_URL__#$(escape_sed_replacement "${OSAC_UI_URL}")#g" \
             -e "s#__THANOS_ADMIN_REDIRECT_URI__#$(escape_sed_replacement "${THANOS_ADMIN_REDIRECT_URI}")#g" \
+            -e "s#__THANOS_TENANT_REDIRECT_URI__#$(escape_sed_replacement "${THANOS_TENANT_REDIRECT_URI}")#g" \
             /realm-raw/realm.json > /realm/realm.json
         env:
         # Browser-facing base URL of the OSAC UI Route, e.g.
@@ -138,6 +154,13 @@ spec:
         # so applying this manifest unedited fails loudly instead of importing a
         # realm whose thanos-admin client accepts any HTTPS origin.
         - name: THANOS_ADMIN_REDIRECT_URI
+          value: ""
+        # Exact callback of the thanos-tenant client, e.g.
+        # https://thanos-query-tenant-osac-observability.<cluster ingress
+        # domain>/oauth2/callback. Intentionally empty: the resolver rejects it,
+        # so applying this manifest unedited fails loudly instead of importing a
+        # realm whose thanos-tenant client accepts any HTTPS origin.
+        - name: THANOS_TENANT_REDIRECT_URI
           value: ""
         - name: REALM_ADMIN_USERNAME
           valueFrom:

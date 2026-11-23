@@ -14,6 +14,7 @@ if ! oc get secret "${SECRET_NAME}" -n "${NAMESPACE}"; then
         --from-literal=osac-controller="$(openssl rand -base64 18)" \
         --from-literal=osac-admin="$(openssl rand -base64 18)" \
         --from-literal=thanos-admin="$(openssl rand -base64 18)" \
+        --from-literal=thanos-tenant="$(openssl rand -base64 18)" \
         --from-literal=osac-csi-driver="$(openssl rand -base64 18)" \
         --from-literal=osac-ui-backend="$(openssl rand -base64 18)" \
         --from-literal=osac-mcp-exchange="$(openssl rand -base64 18)"
@@ -40,6 +41,13 @@ else
         oc patch secret "${SECRET_NAME}" -n "${NAMESPACE}" \
             -p "{\"data\":{\"thanos-admin\":\"$(printf '%s' "${THANOS_ADMIN_NEW}" | base64 -w0)\"}}"
     fi
+    # Upgrade path: add the thanos-tenant key if the Secret predates this client.
+    if ! oc get secret "${SECRET_NAME}" -n "${NAMESPACE}" -o jsonpath='{.data.thanos-tenant}' | grep -q .; then
+        echo "Patching ${SECRET_NAME} to add thanos-tenant key..."
+        THANOS_TENANT_NEW=$(openssl rand -base64 18)
+        oc patch secret "${SECRET_NAME}" -n "${NAMESPACE}" \
+            -p "{\"data\":{\"thanos-tenant\":\"$(printf '%s' "${THANOS_TENANT_NEW}" | base64 -w0)\"}}"
+    fi
     if ! oc get secret "${SECRET_NAME}" -n "${NAMESPACE}" -o jsonpath='{.data.osac-mcp-exchange}' | grep -q .; then
         echo "Patching ${SECRET_NAME} to add osac-mcp-exchange key..."
         MCP_EXCHANGE_NEW=$(openssl rand -base64 18)
@@ -51,12 +59,14 @@ fi
 CONTROLLER_SECRET=$(oc get secret "${SECRET_NAME}" -n "${NAMESPACE}" -o jsonpath='{.data.osac-controller}' | base64 -d)
 ADMIN_SECRET=$(oc get secret "${SECRET_NAME}" -n "${NAMESPACE}" -o jsonpath='{.data.osac-admin}' | base64 -d)
 THANOS_ADMIN_SECRET=$(oc get secret "${SECRET_NAME}" -n "${NAMESPACE}" -o jsonpath='{.data.thanos-admin}' | base64 -d)
+THANOS_TENANT_SECRET=$(oc get secret "${SECRET_NAME}" -n "${NAMESPACE}" -o jsonpath='{.data.thanos-tenant}' | base64 -d)
 CSI_DRIVER_SECRET=$(oc get secret "${SECRET_NAME}" -n "${NAMESPACE}" -o jsonpath='{.data.osac-csi-driver}' | base64 -d)
 UI_BACKEND_SECRET=$(oc get secret "${SECRET_NAME}" -n "${NAMESPACE}" -o jsonpath='{.data.osac-ui-backend}' | base64 -d)
 
 [[ -n "${CONTROLLER_SECRET}" ]] || { echo "ERROR: ${SECRET_NAME} missing osac-controller key" >&2; exit 1; }
 [[ -n "${ADMIN_SECRET}" ]] || { echo "ERROR: ${SECRET_NAME} missing osac-admin key" >&2; exit 1; }
 [[ -n "${THANOS_ADMIN_SECRET}" ]] || { echo "ERROR: ${SECRET_NAME} missing thanos-admin key" >&2; exit 1; }
+[[ -n "${THANOS_TENANT_SECRET}" ]] || { echo "ERROR: ${SECRET_NAME} missing thanos-tenant key" >&2; exit 1; }
 [[ -n "${CSI_DRIVER_SECRET}" ]] || { echo "ERROR: ${SECRET_NAME} missing osac-csi-driver key" >&2; exit 1; }
 [[ -n "${UI_BACKEND_SECRET}" ]] || { echo "ERROR: ${SECRET_NAME} missing osac-ui-backend key" >&2; exit 1; }
 
@@ -108,6 +118,8 @@ OBS_NAMESPACE="${OBS_NAMESPACE:-osac-observability}"
     exit 1
 }
 THANOS_ADMIN_REDIRECT_URI="https://thanos-query-admin-${OBS_NAMESPACE}.${CLUSTER_DOMAIN}/oauth2/callback"
+# The tenant Route has the same shape as the admin Route, on its own host.
+THANOS_TENANT_REDIRECT_URI="https://thanos-query-tenant-${OBS_NAMESPACE}.${CLUSTER_DOMAIN}/oauth2/callback"
 
 # REALM_ADMIN_USERNAME/PASSWORD are user-supplied Helm values (unlike the
 # auto-generated base64 client secrets above) substituted into JSON string
@@ -129,12 +141,14 @@ sed \
     -e "s#__OSAC_CONTROLLER_CLIENT_SECRET__#${CONTROLLER_SECRET}#" \
     -e "s#__OSAC_ADMIN_CLIENT_SECRET__#${ADMIN_SECRET}#" \
     -e "s#__THANOS_ADMIN_CLIENT_SECRET__#${THANOS_ADMIN_SECRET}#" \
+    -e "s#__THANOS_TENANT_CLIENT_SECRET__#${THANOS_TENANT_SECRET}#" \
     -e "s#__OSAC_CSI_DRIVER_CLIENT_SECRET__#${CSI_DRIVER_SECRET}#" \
     -e "s#__OSAC_UI_BACKEND_CLIENT_SECRET__#${UI_BACKEND_SECRET}#" \
     -e "s#__OSAC_REALM_ADMIN_USERNAME__#$(escape_sed_replacement "$(json_escape_string "${REALM_ADMIN_USERNAME}")")#" \
     -e "s#__OSAC_REALM_ADMIN_PASSWORD__#$(escape_sed_replacement "$(json_escape_string "${REALM_ADMIN_PASSWORD}")")#" \
     -e "s#__OSAC_UI_URL__#$(escape_sed_replacement "${OSAC_UI_URL}")#g" \
     -e "s#__THANOS_ADMIN_REDIRECT_URI__#$(escape_sed_replacement "${THANOS_ADMIN_REDIRECT_URI}")#g" \
+    -e "s#__THANOS_TENANT_REDIRECT_URI__#$(escape_sed_replacement "${THANOS_TENANT_REDIRECT_URI}")#g" \
     "${RAW_REALM}" > "${RESOLVED_REALM}"
 
 echo "Realm secrets resolved -> ${RESOLVED_REALM}"
