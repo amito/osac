@@ -284,6 +284,11 @@ for proxy in thanos-query-admin thanos-query-admin-openshift; do
   require "${proxy_doc}" '--upstream=http://127.0.0.1:9091'
   require "${proxy_doc}" \
     'value: http://thanos-query.osac-observability.svc.cluster.local:9090'
+  # Fair-use limits belong to the tenant front door; the admin Routes are
+  # never throttled or scoped.
+  reject "${proxy_doc}" '--max-concurrent'
+  reject "${proxy_doc}" '--max-range'
+  reject "${proxy_doc}" '--query-timeout'
 done
 require "${TMP_DIR}/deployment-thanos-query-admin.yaml" '--client-id=thanos-admin'
 require "${TMP_DIR}/deployment-thanos-query-admin.yaml" \
@@ -366,6 +371,10 @@ require "${tenant_authorizer}" '--issuer=https://keycloak.example.com/realms/osa
 require "${tenant_authorizer}" '--admin-client-id=thanos-admin'
 require "${tenant_authorizer}" '--admin-role=cloud-provider-admin'
 require "${tenant_authorizer}" '--allowlist=/etc/query-allowlist/endpoints.txt'
+# Fair-use limits are enforced here, per organization, and nowhere else.
+require "${tenant_authorizer}" '--max-concurrent=10'
+require "${tenant_authorizer}" '--max-range=24h'
+require "${tenant_authorizer}" '--query-timeout=2m'
 require "${tenant_authorizer}" 'mountPath: /etc/query-allowlist'
 require "${tenant_authorizer}" 'serviceAccountName: thanos-query-tenant'
 require "${tenant_authorizer}" 'automountServiceAccountToken: true'

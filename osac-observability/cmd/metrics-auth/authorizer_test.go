@@ -47,6 +47,41 @@ func TestLoadAuthorizerConfigDefaults(t *testing.T) {
 	if cfg.Upstream.Host != "thanos-query.osac-observability.svc.cluster.local:9090" {
 		t.Errorf("unexpected upstream %q", cfg.Upstream)
 	}
+	if cfg.Limits == nil {
+		t.Fatal("expected default limits")
+	}
+	if cfg.Limits.MaxConcurrent != 10 || cfg.Limits.MaxRange != 24*time.Hour ||
+		cfg.Limits.QueryTimeout != 2*time.Minute {
+		t.Errorf("unexpected default limits: %+v", cfg.Limits)
+	}
+}
+
+func TestLoadAuthorizerConfigAcceptsLimitOverrides(t *testing.T) {
+	cfg, err := loadAuthorizerConfig(append(validAuthorizerArgs(),
+		"--max-concurrent=3", "--max-range=6h", "--query-timeout=30s"), emptyEnv)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Limits.MaxConcurrent != 3 || cfg.Limits.MaxRange != 6*time.Hour ||
+		cfg.Limits.QueryTimeout != 30*time.Second {
+		t.Errorf("the overrides were not applied: %+v", cfg.Limits)
+	}
+}
+
+func TestLoadAuthorizerConfigRejectsBadLimits(t *testing.T) {
+	for name, args := range map[string][]string{
+		"concurrency zero":   {"--max-concurrent=0"},
+		"concurrency neg":    {"--max-concurrent=-1"},
+		"range zero":         {"--max-range=0s"},
+		"timeout zero":       {"--query-timeout=0s"},
+		"range not duration": {"--max-range=day"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := loadAuthorizerConfig(append(validAuthorizerArgs(), args...), emptyEnv); err == nil {
+				t.Fatal("expected an error")
+			}
+		})
+	}
 }
 
 func TestLoadAuthorizerConfigRequiresFlags(t *testing.T) {

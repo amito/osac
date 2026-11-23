@@ -42,6 +42,7 @@ type authorizerConfig struct {
 	AdminRole        string
 	AllowlistPath    string
 	InventoryRefresh time.Duration
+	Limits           *tenant.Limits
 }
 
 func loadAuthorizerConfig(args []string, getenv func(string) string) (authorizerConfig, error) {
@@ -53,6 +54,9 @@ func loadAuthorizerConfig(args []string, getenv func(string) string) (authorizer
 	adminRole := flags.String("admin-role", envOr(getenv, "OSAC_AUTHORIZER_ADMIN_ROLE", ""), "realm role that selects organization scope (required)")
 	allowlistPath := flags.String("allowlist", envOr(getenv, "OSAC_AUTHORIZER_ALLOWLIST", ""), "allowlist file; empty uses the built-in five endpoints")
 	refresh := flags.Duration("inventory-refresh", inventory.DefaultRefreshInterval, "inventory re-list interval; at most 30s")
+	maxConcurrent := flags.Int("max-concurrent", tenant.DefaultMaxConcurrentQueries, "maximum concurrent queries per organization")
+	maxRange := flags.Duration("max-range", tenant.DefaultMaxQueryRange, "maximum query_range span per organization")
+	queryTimeout := flags.Duration("query-timeout", tenant.DefaultQueryTimeout, "timeout of one forwarded tenant query")
 	if err := flags.Parse(args); err != nil {
 		return authorizerConfig{}, err
 	}
@@ -79,6 +83,10 @@ func loadAuthorizerConfig(args []string, getenv func(string) string) (authorizer
 		return authorizerConfig{}, fmt.Errorf("the --inventory-refresh value %s must be positive and at most %s",
 			*refresh, inventory.DefaultRefreshInterval)
 	}
+	limits, err := tenant.NewLimits(*maxConcurrent, *maxRange, *queryTimeout)
+	if err != nil {
+		return authorizerConfig{}, fmt.Errorf("invalid tenant limits: %w", err)
+	}
 	return authorizerConfig{
 		Listen:           *listen,
 		Upstream:         upstream,
@@ -87,6 +95,7 @@ func loadAuthorizerConfig(args []string, getenv func(string) string) (authorizer
 		AdminRole:        *adminRole,
 		AllowlistPath:    *allowlistPath,
 		InventoryRefresh: *refresh,
+		Limits:           limits,
 	}, nil
 }
 
@@ -129,6 +138,7 @@ func runAuthorizer(cfg authorizerConfig) error {
 		Upstream:  cfg.Upstream,
 		Allow:     matcher,
 		Logger:    logger,
+		Limits:    cfg.Limits,
 	})
 	if err != nil {
 		return err

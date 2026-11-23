@@ -210,6 +210,17 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --allowlist=/etc/query-allowlist/endpoints.txt
+      # Fair-use limits are enforced here and only here; the admin Routes
+      # never carry them.
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --max-concurrent=10
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --max-range=24h
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --query-timeout=2m
       # One listener only: a probe port would be a second way to reach the
       # authorizer around the proxy.
       - lengthEqual:
@@ -244,6 +255,77 @@ tests:
       - equal:
           path: spec.template.spec.volumes[0].configMap.name
           value: osac-observability-query-allowlist
+
+  - it: renders the fair-use limits from their own values
+    template: templates/tenant-query.yaml
+    documentSelector:
+      path: metadata.name
+      value: thanos-query-tenant-authorizer
+    set:
+      global.observability.tenant.limits.maxConcurrentQueries: 3
+      global.observability.tenant.limits.maxQueryRange: 6h
+      global.observability.tenant.limits.queryTimeout: 30s
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --max-concurrent=3
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --max-range=6h
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --query-timeout=30s
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --max-concurrent=10
+
+  - it: rejects a non-positive concurrency limit instead of disabling it
+    template: templates/tenant-query.yaml
+    set:
+      global.observability.tenant.limits.maxConcurrentQueries: 0
+    asserts:
+      - failedTemplate:
+          errorMessage: global.observability.tenant.limits.maxConcurrentQueries must be a positive integer
+
+  - it: rejects an empty range limit instead of ignoring it
+    template: templates/tenant-query.yaml
+    set:
+      global.observability.tenant.limits.maxQueryRange: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: global.observability.tenant.limits.maxQueryRange must not be empty
+
+  - it: leaves the admin query proxy unlimited
+    template: templates/admin-proxies.yaml
+    documentSelector:
+      path: metadata.name
+      value: thanos-query-admin
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[1].args
+          content: --max-concurrent=10
+      - notContains:
+          path: spec.template.spec.containers[1].args
+          content: --max-range=24h
+      - notContains:
+          path: spec.template.spec.containers[1].args
+          content: --query-timeout=2m
+
+  - it: leaves the OpenShift admin query proxy unlimited
+    template: templates/admin-proxies.yaml
+    documentSelector:
+      path: metadata.name
+      value: thanos-query-admin-openshift
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[1].args
+          content: --max-concurrent=10
+      - notContains:
+          path: spec.template.spec.containers[1].args
+          content: --max-range=24h
+      - notContains:
+          path: spec.template.spec.containers[1].args
+          content: --query-timeout=2m
 
   - it: gives the authorizer read-only cluster-wide inventory access
     template: templates/tenant-query.yaml

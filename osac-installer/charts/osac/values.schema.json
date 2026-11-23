@@ -583,7 +583,7 @@
             },
             "tenant": {
               "type": "object",
-              "description": "Per-tenant query limits. No controller enforces them in this release; admins are not limited.",
+              "description": "Per-organization query limits enforced by the tenant authorizer. The admin Routes are not limited.",
               "properties": {
                 "limits": {
                   "type": "object",

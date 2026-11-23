@@ -120,6 +120,7 @@ spec:
             - --admin-client-id={{ $adminClient }}
             - --admin-role={{ $adminRole }}
             - --allowlist=/etc/query-allowlist/endpoints.txt
+            {{- include "osac-observability.tenantLimitArgs" . | nindent 12 }}
           ports:
             - name: http
               containerPort: 8080

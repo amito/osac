@@ -107,6 +107,26 @@ osac.openshift.io/metrics-job: {{ .job }}
 {{- $total -}}
 {{- end -}}
 
+{{/* Per-organization fair-use limits, enforced by the tenant authorizer only:
+     the two admin Routes carry no limits. The defaults match the installer
+     values block; an explicitly empty or non-positive value fails the render
+     rather than silently disabling a limit. */}}
+{{- define "osac-observability.tenantLimitArgs" -}}
+{{- $limits := (((((.Values.global | default dict).observability | default dict).tenant | default dict).limits) | default dict) -}}
+{{- if and (hasKey $limits "maxConcurrentQueries") (lt (int ($limits.maxConcurrentQueries | default 0)) 1) -}}
+{{- fail "global.observability.tenant.limits.maxConcurrentQueries must be a positive integer" -}}
+{{- end -}}
+{{- if and (hasKey $limits "maxQueryRange") (not $limits.maxQueryRange) -}}
+{{- fail "global.observability.tenant.limits.maxQueryRange must not be empty" -}}
+{{- end -}}
+{{- if and (hasKey $limits "queryTimeout") (not $limits.queryTimeout) -}}
+{{- fail "global.observability.tenant.limits.queryTimeout must not be empty" -}}
+{{- end -}}
+- --max-concurrent={{ $limits.maxConcurrentQueries | default 10 }}
+- --max-range={{ $limits.maxQueryRange | default "24h" }}
+- --query-timeout={{ $limits.queryTimeout | default "2m" }}
+{{- end -}}
+
 {{/* A cluster counts as stopped when no series with its cluster label arrived
      for longer than one scrape interval of either collector plus one interval
      of tolerance. The stopped-cluster query looks back over the Thanos

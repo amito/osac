@@ -175,8 +175,8 @@ global:
         keepKubePrefix: kube_node_
         dropPrefixes: [container_, claim, mount, kserve_, vllm_, dcgm_]
     tenant:
-      # Not enforced in this release: no controller reads these yet; admins
-      # are not limited.
+      # Enforced by the tenant authorizer, per organization. The two admin
+      # Routes never carry these limits.
       limits:
         maxConcurrentQueries: 10
         maxQueryRange: 24h
