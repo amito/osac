@@ -50,7 +50,7 @@ func main() {
 
 func run(args []string, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: metrics-auth write-proxy [flags]")
+		return errors.New("usage: metrics-auth write-proxy|authorizer [flags]")
 	}
 	switch args[0] {
 	case "write-proxy":
@@ -62,8 +62,14 @@ func run(args []string, getenv func(string) string) error {
 			return err
 		}
 		return nil
+	case "authorizer":
+		cfg, err := loadAuthorizerConfig(args[1:], getenv)
+		if err != nil {
+			return err
+		}
+		return runAuthorizer(cfg)
 	default:
-		return fmt.Errorf("unknown subcommand %q; usage: metrics-auth write-proxy [flags]", args[0])
+		return fmt.Errorf("unknown subcommand %q; usage: metrics-auth write-proxy|authorizer [flags]", args[0])
 	}
 }
 
