@@ -46,6 +46,7 @@ const (
 // populated.
 type Object struct {
 	Kind Kind
+	UID  string
 
 	Tenant     string
 	Project    string
