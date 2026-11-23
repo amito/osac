@@ -107,7 +107,7 @@ func TestHandlerReturns429AtConcurrencyLimit(t *testing.T) {
 	firstDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		firstDone <- serve(handler, queryRequest(t, "/api/v1/query",
-			url.Values{"query": {"up"}}, tenantToken(t, "acme")))
+			url.Values{"query": {"up"}}, adminToken(t, "acme")))
 	}()
 	select {
 	case <-upstream.entered:
@@ -116,7 +116,7 @@ func TestHandlerReturns429AtConcurrencyLimit(t *testing.T) {
 	}
 
 	second := serve(handler, queryRequest(t, "/api/v1/query",
-		url.Values{"query": {"up"}}, tenantToken(t, "acme")))
+		url.Values{"query": {"up"}}, adminToken(t, "acme")))
 	if second.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429, got %d: %s", second.Code, second.Body.String())
 	}
@@ -139,7 +139,7 @@ func TestHandlerReturns429AtConcurrencyLimit(t *testing.T) {
 		t.Errorf("the slot was not released: %d", got)
 	}
 	third := serve(handler, queryRequest(t, "/api/v1/query",
-		url.Values{"query": {"up"}}, tenantToken(t, "acme")))
+		url.Values{"query": {"up"}}, adminToken(t, "acme")))
 	if third.Code != http.StatusOK {
 		t.Errorf("a released slot must admit the next query: %d", third.Code)
 	}
@@ -151,14 +151,14 @@ func TestHandler429AppliesToListingsToo(t *testing.T) {
 	handler := newLimitsHandler(t, limitsInventory(), upstream, limits)
 	go func() {
 		serve(handler, queryRequest(t, "/api/v1/query",
-			url.Values{"query": {"up"}}, tenantToken(t, "acme")))
+			url.Values{"query": {"up"}}, adminToken(t, "acme")))
 	}()
 	select {
 	case <-upstream.entered:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the first request never reached the backend")
 	}
-	response := serve(handler, queryRequest(t, "/api/v1/labels", nil, tenantToken(t, "acme")))
+	response := serve(handler, queryRequest(t, "/api/v1/labels", nil, adminToken(t, "acme")))
 	if response.Code != http.StatusTooManyRequests {
 		t.Errorf("expected 429 for a listing, got %d", response.Code)
 	}
@@ -171,7 +171,7 @@ func TestHandler429IsPerOrganization(t *testing.T) {
 	handler := newLimitsHandler(t, limitsInventory(), upstream, limits)
 	go func() {
 		serve(handler, queryRequest(t, "/api/v1/query",
-			url.Values{"query": {"up"}}, tenantToken(t, "acme")))
+			url.Values{"query": {"up"}}, adminToken(t, "acme")))
 	}()
 	select {
 	case <-upstream.entered:
@@ -182,7 +182,7 @@ func TestHandler429IsPerOrganization(t *testing.T) {
 	upstream.block = false
 	upstream.mu.Unlock()
 	response := serve(handler, queryRequest(t, "/api/v1/query",
-		url.Values{"query": {"up"}}, tenantToken(t, "other")))
+		url.Values{"query": {"up"}}, adminToken(t, "other")))
 	if response.Code != http.StatusOK {
 		t.Errorf("another organization must not be throttled: %d", response.Code)
 	}
@@ -195,7 +195,7 @@ func TestHandlerOverRangeReturns422(t *testing.T) {
 	handler := newLimitsHandler(t, limitsInventory(), upstream, limits)
 	response := serve(handler, queryRequest(t, "/api/v1/query_range", url.Values{
 		"query": {"up"}, "start": {"0"}, "end": {"90000"}, "step": {"60"},
-	}, tenantToken(t, "acme")))
+	}, adminToken(t, "acme")))
 	if response.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("expected 422, got %d: %s", response.Code, response.Body.String())
 	}
@@ -218,7 +218,7 @@ func TestHandlerOverRangeDoesNotOverrideAnEmptyResult(t *testing.T) {
 	// backend work happens either way.
 	response := serve(handler, queryRequest(t, "/api/v1/query_range", url.Values{
 		"query": {"up[5m]"}, "start": {"0"}, "end": {"90000"}, "step": {"60"},
-	}, tenantToken(t, "acme")))
+	}, adminToken(t, "acme")))
 	if response.Code != http.StatusOK || response.Body.String() != emptyMatrix {
 		t.Fatalf("expected an empty 200, got %d %s", response.Code, response.Body.String())
 	}
@@ -232,7 +232,7 @@ func TestHandlerRejectsMalformedRangeBounds(t *testing.T) {
 	handler := newLimitsHandler(t, limitsInventory(), upstream, newTestLimits(t, 10, 24*time.Hour, time.Minute))
 	response := serve(handler, queryRequest(t, "/api/v1/query_range", url.Values{
 		"query": {"up"}, "start": {"0"}, "end": {"later"},
-	}, tenantToken(t, "acme")))
+	}, adminToken(t, "acme")))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", response.Code, response.Body.String())
 	}
@@ -252,7 +252,7 @@ func TestHandlerTimeoutReturns504(t *testing.T) {
 	limits := newTestLimits(t, 10, 24*time.Hour, 50*time.Millisecond)
 	handler := newLimitsHandler(t, limitsInventory(), slow, limits)
 	response := serve(handler, queryRequest(t, "/api/v1/query",
-		url.Values{"query": {"up"}}, tenantToken(t, "acme")))
+		url.Values{"query": {"up"}}, adminToken(t, "acme")))
 	if response.Code != http.StatusGatewayTimeout {
 		t.Fatalf("expected 504, got %d: %s", response.Code, response.Body.String())
 	}
@@ -274,7 +274,7 @@ func TestHandlerSlowRequestDoesNotLeakSlot(t *testing.T) {
 	limits := newTestLimits(t, 1, 24*time.Hour, 50*time.Millisecond)
 	handler := newLimitsHandler(t, limitsInventory(), slow, limits)
 	response := serve(handler, queryRequest(t, "/api/v1/query",
-		url.Values{"query": {"up"}}, tenantToken(t, "acme")))
+		url.Values{"query": {"up"}}, adminToken(t, "acme")))
 	if response.Code != http.StatusGatewayTimeout {
 		t.Fatalf("expected 504, got %d", response.Code)
 	}

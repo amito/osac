@@ -35,14 +35,16 @@ import (
 const defaultAuthorizerListen = ":8080"
 
 type authorizerConfig struct {
-	Listen           string
-	Upstream         *url.URL
-	Issuer           string
-	AdminClientID    string
-	AdminRole        string
-	AllowlistPath    string
-	InventoryRefresh time.Duration
-	Limits           *tenant.Limits
+	Listen            string
+	Upstream          *url.URL
+	Issuer            string
+	AdminClientID     string
+	AdminRole         string
+	AllowlistPath     string
+	InventoryRefresh  time.Duration
+	Limits            *tenant.Limits
+	FulfillmentURL    string
+	FulfillmentCAFile string
 }
 
 func loadAuthorizerConfig(args []string, getenv func(string) string) (authorizerConfig, error) {
@@ -57,6 +59,8 @@ func loadAuthorizerConfig(args []string, getenv func(string) string) (authorizer
 	maxConcurrent := flags.Int("max-concurrent", tenant.DefaultMaxConcurrentQueries, "maximum concurrent queries per organization")
 	maxRange := flags.Duration("max-range", tenant.DefaultMaxQueryRange, "maximum query_range span per organization")
 	queryTimeout := flags.Duration("query-timeout", tenant.DefaultQueryTimeout, "timeout of one forwarded tenant query")
+	fulfillmentURL := flags.String("fulfillment-url", envOr(getenv, "OSAC_AUTHORIZER_FULFILLMENT_URL", ""), "fulfillment public API URL for project memberships; empty disables project scope")
+	fulfillmentCA := flags.String("fulfillment-ca-file", envOr(getenv, "OSAC_AUTHORIZER_FULFILLMENT_CA_FILE", ""), "CA bundle that verifies the fulfillment endpoint")
 	if err := flags.Parse(args); err != nil {
 		return authorizerConfig{}, err
 	}
@@ -83,19 +87,28 @@ func loadAuthorizerConfig(args []string, getenv func(string) string) (authorizer
 		return authorizerConfig{}, fmt.Errorf("the --inventory-refresh value %s must be positive and at most %s",
 			*refresh, inventory.DefaultRefreshInterval)
 	}
+	if *fulfillmentURL != "" {
+		parsed, err := url.Parse(*fulfillmentURL)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+			return authorizerConfig{}, fmt.Errorf("the --fulfillment-url value %q must be an absolute https URL",
+				*fulfillmentURL)
+		}
+	}
 	limits, err := tenant.NewLimits(*maxConcurrent, *maxRange, *queryTimeout)
 	if err != nil {
 		return authorizerConfig{}, fmt.Errorf("invalid tenant limits: %w", err)
 	}
 	return authorizerConfig{
-		Listen:           *listen,
-		Upstream:         upstream,
-		Issuer:           *issuer,
-		AdminClientID:    *adminClient,
-		AdminRole:        *adminRole,
-		AllowlistPath:    *allowlistPath,
-		InventoryRefresh: *refresh,
-		Limits:           limits,
+		Listen:            *listen,
+		Upstream:          upstream,
+		Issuer:            *issuer,
+		AdminClientID:     *adminClient,
+		AdminRole:         *adminRole,
+		AllowlistPath:     *allowlistPath,
+		InventoryRefresh:  *refresh,
+		Limits:            limits,
+		FulfillmentURL:    *fulfillmentURL,
+		FulfillmentCAFile: *fulfillmentCA,
 	}, nil
 }
 
@@ -128,17 +141,33 @@ func runAuthorizer(cfg authorizerConfig) error {
 		}
 	}
 
+	memberships, closeMemberships, membershipErr := membershipCache(
+		cfg.FulfillmentURL, cfg.FulfillmentCAFile)
+	if membershipErr != nil {
+		// A resolution outage narrows Tenant Users to their default project; it
+		// must not take the Route down.
+		logger.Warn("project membership resolution is disabled", "error", membershipErr)
+	}
+	if closeMemberships != nil {
+		defer func() {
+			if err := closeMemberships(); err != nil {
+				logger.Warn("closing the fulfillment client failed", "error", err)
+			}
+		}()
+	}
+
 	handler, err := tenant.NewHandler(tenant.HandlerConfig{
 		Identity: tenant.Config{
 			Issuer:        cfg.Issuer,
 			AdminClientID: cfg.AdminClientID,
 			AdminRole:     cfg.AdminRole,
 		},
-		Inventory: store,
-		Upstream:  cfg.Upstream,
-		Allow:     matcher,
-		Logger:    logger,
-		Limits:    cfg.Limits,
+		Inventory:   store,
+		Upstream:    cfg.Upstream,
+		Allow:       matcher,
+		Logger:      logger,
+		Limits:      cfg.Limits,
+		Memberships: memberships,
 	})
 	if err != nil {
 		return err

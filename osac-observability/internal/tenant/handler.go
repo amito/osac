@@ -15,7 +15,6 @@ package tenant
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +25,7 @@ import (
 
 	"github.com/osac-project/osac/osac-observability/internal/allowlist"
 	"github.com/osac-project/osac/osac-observability/internal/inventory"
+	"github.com/osac-project/osac/osac-observability/internal/membership"
 )
 
 // ErrNoScope reports a caller whose scope admits nothing.
@@ -60,20 +60,24 @@ type HandlerConfig struct {
 	Allow     *allowlist.Matcher
 	Logger    *slog.Logger
 	Limits    *Limits
+	// Memberships resolves a Tenant User's projects. Nil means "not
+	// configured": the caller falls back to the default project only.
+	Memberships *membership.Cache
 }
 
 // Handler serves the tenant front door: it authenticates, gates on inventory
 // freshness, narrows the query to the caller's scope and forwards only the
 // five documented endpoints.
 type Handler struct {
-	identity  Config
-	inventory Inventory
-	upstream  *url.URL
-	client    *http.Client
-	now       func() time.Time
-	allow     *allowlist.Matcher
-	logger    *slog.Logger
-	limits    *Limits
+	identity    Config
+	inventory   Inventory
+	upstream    *url.URL
+	client      *http.Client
+	now         func() time.Time
+	allow       *allowlist.Matcher
+	logger      *slog.Logger
+	limits      *Limits
+	memberships *membership.Cache
 }
 
 // NewHandler builds the tenant handler.
@@ -88,14 +92,15 @@ func NewHandler(config HandlerConfig) (*Handler, error) {
 		return nil, errors.New("inventory is required")
 	}
 	handler := &Handler{
-		identity:  config.Identity,
-		inventory: config.Inventory,
-		upstream:  config.Upstream,
-		client:    config.Client,
-		now:       config.Now,
-		allow:     config.Allow,
-		logger:    config.Logger,
-		limits:    config.Limits,
+		identity:    config.Identity,
+		inventory:   config.Inventory,
+		upstream:    config.Upstream,
+		client:      config.Client,
+		now:         config.Now,
+		allow:       config.Allow,
+		logger:      config.Logger,
+		limits:      config.Limits,
+		memberships: config.Memberships,
 	}
 	if handler.limits == nil {
 		handler.limits = DefaultLimits()
@@ -140,7 +145,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(inventoryUnavailable))
 		return
 	}
-	scope := OrganizationScope(snapshot.Organizations[caller.Tenant])
+	scope := h.scopeFor(r.Context(), caller, snapshot.Organizations[caller.Tenant])
 
 	// A POST body is a form, not something to stream: parse it so the
 	// rewritten parameters can be forwarded as a GET.
@@ -283,30 +288,4 @@ func (h *Handler) forward(ctx context.Context, w http.ResponseWriter, r *http.Re
 	}
 	w.WriteHeader(response.StatusCode)
 	_, _ = io.Copy(w, response.Body)
-}
-
-type errorBody struct {
-	Status    string `json:"status"`
-	ErrorType string `json:"errorType"`
-	Error     string `json:"error"`
-}
-
-func writeError(w http.ResponseWriter, status int, errorType, message string) {
-	payload, err := json.Marshal(errorBody{Status: "error", ErrorType: errorType, Error: message})
-	if err != nil {
-		http.Error(w, http.StatusText(status), status)
-		return
-	}
-	writeRaw(w, status, string(payload))
-}
-
-func writeNotImplemented(w http.ResponseWriter, path string) {
-	writeError(w, http.StatusNotImplemented, "not_implemented",
-		fmt.Sprintf("the endpoint %s is not supported by this proxy", path))
-}
-
-func writeRaw(w http.ResponseWriter, status int, body string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write([]byte(body))
 }

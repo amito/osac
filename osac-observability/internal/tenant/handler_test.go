@@ -118,6 +118,17 @@ func tenantToken(t *testing.T, tenant string) string {
 	return token(t, map[string]any{"iss": testIssuer, "sub": "user-1", "organization": tenant})
 }
 
+// adminToken is a Tenant Admin login: it selects organization scope.
+func adminToken(t *testing.T, tenant string) string {
+	t.Helper()
+	return token(t, map[string]any{
+		"iss":          testIssuer,
+		"sub":          "admin-1",
+		"organization": tenant,
+		"realm_access": map[string]any{"roles": []any{"tenant-admin"}},
+	})
+}
+
 func queryRequest(t *testing.T, path string, params url.Values, bearer string) *http.Request {
 	t.Helper()
 	request, err := http.NewRequest(http.MethodGet, "http://authorizer"+path+"?"+params.Encode(), nil)
@@ -250,7 +261,7 @@ func TestHandlerRewritesOrganizationScope(t *testing.T) {
 		"acme": {Namespaces: []string{"acme-vms"}, Clusters: []string{"acme-1"}},
 	}), upstream)
 	response := serve(handler, queryRequest(t, "/api/v1/query",
-		url.Values{"query": {"kubevirt_vmi_cpu_usage_seconds_total"}}, tenantToken(t, "acme")))
+		url.Values{"query": {"kubevirt_vmi_cpu_usage_seconds_total"}}, adminToken(t, "acme")))
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
@@ -265,7 +276,7 @@ func TestHandlerEmptyOrganizationReturnsEmptyResult(t *testing.T) {
 	upstream := &upstreamRecorder{}
 	handler := newTestHandler(t, availableInventory(nil), upstream)
 	response := serve(handler, queryRequest(t, "/api/v1/query",
-		url.Values{"query": {"up"}}, tenantToken(t, "acme")))
+		url.Values{"query": {"up"}}, adminToken(t, "acme")))
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", response.Code)
 	}
@@ -283,7 +294,7 @@ func TestHandlerMatrixQueryIsScoped(t *testing.T) {
 		"acme": {Namespaces: []string{"acme-vms"}},
 	}), upstream)
 	response := serve(handler, queryRequest(t, "/api/v1/query",
-		url.Values{"query": {"rate(up[5m])"}}, tenantToken(t, "acme")))
+		url.Values{"query": {"rate(up[5m])"}}, adminToken(t, "acme")))
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
 	}
@@ -299,7 +310,7 @@ func TestHandlerUnrewritableReturnsEmpty(t *testing.T) {
 		"acme": {Namespaces: []string{"acme-vms"}},
 	}), upstream)
 	response := serve(handler, queryRequest(t, "/api/v1/query",
-		url.Values{"query": {"up[5m]"}}, tenantToken(t, "acme")))
+		url.Values{"query": {"up[5m]"}}, adminToken(t, "acme")))
 	if response.Code != http.StatusOK || response.Body.String() != emptyVector {
 		t.Fatalf("expected an empty 200, got %d %s", response.Code, response.Body.String())
 	}
@@ -344,7 +355,7 @@ func TestHandlerDeniedAndNonexistentAreIndistinguishable(t *testing.T) {
 	responses := make([]*httptest.ResponseRecorder, 0, 2)
 	for _, query := range []string{"nonexistent_metric", "other_metric"} {
 		responses = append(responses, serve(handler, queryRequest(t, "/api/v1/query",
-			url.Values{"query": {query}}, tenantToken(t, "acme"))))
+			url.Values{"query": {query}}, adminToken(t, "acme"))))
 	}
 	first, second := responses[0], responses[1]
 	if first.Body.String() != second.Body.String() {
@@ -371,7 +382,7 @@ func TestHandlerPreservesOtherParameters(t *testing.T) {
 	}), upstream)
 	response := serve(handler, queryRequest(t, "/api/v1/query_range", url.Values{
 		"query": {"up"}, "start": {"1"}, "end": {"2"}, "step": {"15s"}, "timeout": {"1m"},
-	}, tenantToken(t, "acme")))
+	}, adminToken(t, "acme")))
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", response.Code)
 	}
@@ -397,7 +408,7 @@ func TestHandlerPOSTFormIsAccepted(t *testing.T) {
 		t.Fatalf("failed to build request: %v", err)
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	request.Header.Set("Authorization", "Bearer "+tenantToken(t, "acme"))
+	request.Header.Set("Authorization", "Bearer "+adminToken(t, "acme"))
 	response := serve(handler, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", response.Code, response.Body.String())
@@ -416,7 +427,7 @@ func TestHandlerForwardsUpstreamResponseVerbatim(t *testing.T) {
 		"acme": {Namespaces: []string{"acme-vms"}},
 	}), upstream)
 	response := serve(handler, queryRequest(t, "/api/v1/query",
-		url.Values{"query": {"up"}}, tenantToken(t, "acme")))
+		url.Values{"query": {"up"}}, adminToken(t, "acme")))
 	if response.Body.String() != upstream.body {
 		t.Errorf("expected the upstream body verbatim, got %s", response.Body.String())
 	}
@@ -435,7 +446,7 @@ func TestHandlerReturns502WhenUpstreamFails(t *testing.T) {
 		t.Fatalf("failed to build handler: %v", err)
 	}
 	response := serve(handler, queryRequest(t, "/api/v1/query",
-		url.Values{"query": {"up"}}, tenantToken(t, "acme")))
+		url.Values{"query": {"up"}}, adminToken(t, "acme")))
 	if response.Code != http.StatusBadGateway {
 		t.Fatalf("expected 502, got %d", response.Code)
 	}
@@ -447,7 +458,7 @@ func TestHandlerScopesAbsentMatch(t *testing.T) {
 		"acme": {Namespaces: []string{"acme-vms"}, Clusters: []string{"acme-1"}},
 	}), upstream)
 	for _, path := range []string{"/api/v1/labels", "/api/v1/label/__name__/values", "/api/v1/series"} {
-		response := serve(handler, queryRequest(t, path, nil, tenantToken(t, "acme")))
+		response := serve(handler, queryRequest(t, path, nil, adminToken(t, "acme")))
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s: expected 200, got %d", path, response.Code)
 		}
@@ -471,7 +482,7 @@ func TestHandlerScopesCallerMatch(t *testing.T) {
 		"acme": {Namespaces: []string{"acme-vms"}, Clusters: []string{"acme-1"}},
 	}), upstream)
 	response := serve(handler, queryRequest(t, "/api/v1/series",
-		url.Values{"match[]": {`up{job="x"}`}}, tenantToken(t, "acme")))
+		url.Values{"match[]": {`up{job="x"}`}}, adminToken(t, "acme")))
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", response.Code)
 	}
@@ -510,7 +521,7 @@ func TestListingPreservesOtherParameters(t *testing.T) {
 	}), upstream)
 	response := serve(handler, queryRequest(t, "/api/v1/series", url.Values{
 		"match[]": {"up"}, "start": {"1"}, "end": {"2"}, "limit": {"5"},
-	}, tenantToken(t, "acme")))
+	}, adminToken(t, "acme")))
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", response.Code)
 	}
@@ -531,7 +542,7 @@ func TestHandlerRejectsBadMatchSelector(t *testing.T) {
 		"acme": {Namespaces: []string{"acme-vms"}},
 	}), upstream)
 	response := serve(handler, queryRequest(t, "/api/v1/series",
-		url.Values{"match[]": {"up{"}}, tenantToken(t, "acme")))
+		url.Values{"match[]": {"up{"}}, adminToken(t, "acme")))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", response.Code)
 	}

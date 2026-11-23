@@ -54,6 +54,38 @@ func TestLoadAuthorizerConfigDefaults(t *testing.T) {
 		cfg.Limits.QueryTimeout != 2*time.Minute {
 		t.Errorf("unexpected default limits: %+v", cfg.Limits)
 	}
+	if cfg.FulfillmentURL != "" || cfg.FulfillmentCAFile != "" {
+		t.Errorf("project resolution must be off by default: %+v", cfg)
+	}
+}
+
+func TestLoadAuthorizerConfigAcceptsFulfillmentFlags(t *testing.T) {
+	cfg, err := loadAuthorizerConfig(append(validAuthorizerArgs(),
+		"--fulfillment-url=https://fulfillment-internal-api:8001",
+		"--fulfillment-ca-file=/etc/fulfillment-ca/ca.crt"), emptyEnv)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.FulfillmentURL != "https://fulfillment-internal-api:8001" {
+		t.Errorf("unexpected fulfillment URL %q", cfg.FulfillmentURL)
+	}
+	if cfg.FulfillmentCAFile != "/etc/fulfillment-ca/ca.crt" {
+		t.Errorf("unexpected fulfillment CA %q", cfg.FulfillmentCAFile)
+	}
+}
+
+func TestLoadAuthorizerConfigRejectsBadFulfillmentURL(t *testing.T) {
+	for name, value := range map[string]string{
+		"relative":  "fulfillment-internal-api:8001",
+		"plaintext": "http://fulfillment-internal-api:8001",
+	} {
+		t.Run(name, func(t *testing.T) {
+			args := append(validAuthorizerArgs(), "--fulfillment-url="+value)
+			if _, err := loadAuthorizerConfig(args, emptyEnv); err == nil {
+				t.Fatal("expected an error")
+			}
+		})
+	}
 }
 
 func TestLoadAuthorizerConfigAcceptsLimitOverrides(t *testing.T) {
