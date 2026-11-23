@@ -583,8 +583,40 @@
             },
             "tenant": {
               "type": "object",
-              "description": "Per-organization query limits enforced by the tenant authorizer. The admin Routes are not limited.",
+              "description": "Tenant query front door: per-organization limits and project membership resolution. The admin Routes are neither limited nor scoped.",
               "properties": {
+                "fulfillment": {
+                  "type": "object",
+                  "description": "Fulfillment public API the authorizer queries for a Tenant User's project memberships, forwarding the caller's own token. An empty URL disables project scope.",
+                  "properties": {
+                    "url": {
+                      "type": "string",
+                      "description": "Absolute https URL of the fulfillment public API; empty disables project scope",
+                      "default": "https://fulfillment-internal-api:8001",
+                      "format": "uri"
+                    },
+                    "certs": {
+                      "type": "object",
+                      "description": "CA the authorizer uses to verify the fulfillment endpoint",
+                      "properties": {
+                        "caBundle": {
+                          "type": "object",
+                          "properties": {
+                            "configMap": {
+                              "type": "string",
+                              "description": "ConfigMap whose bundle.pem key carries the fulfillment CA",
+                              "default": "ca-bundle",
+                              "minLength": 1
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
+                },
                 "limits": {
                   "type": "object",
                   "description": "Per-tenant query limits",

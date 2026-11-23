@@ -375,6 +375,21 @@ require "${tenant_authorizer}" '--allowlist=/etc/query-allowlist/endpoints.txt'
 require "${tenant_authorizer}" '--max-concurrent=10'
 require "${tenant_authorizer}" '--max-range=24h'
 require "${tenant_authorizer}" '--query-timeout=2m'
+# Project memberships come from fulfillment with the caller's own token, so
+# the CA is the only thing mounted for it: no client credential, no
+# service-account token and no second Secret volume.
+require "${tenant_authorizer}" \
+  '--fulfillment-url=https://fulfillment-internal-api:8001'
+require "${tenant_authorizer}" \
+  '--fulfillment-ca-file=/etc/fulfillment-ca/ca.crt'
+require "${tenant_authorizer}" 'mountPath: /etc/fulfillment-ca'
+require "${tenant_authorizer}" 'name: fulfillment-ca'
+require "${tenant_authorizer}" 'name: ca-bundle'
+require "${tenant_authorizer}" 'key: bundle.pem'
+require "${tenant_authorizer}" 'path: ca.crt'
+require "${tenant_authorizer}" '--admin-client-id=thanos-admin'
+reject "${tenant_authorizer}" '--client-id=thanos-tenant'
+reject "${tenant_authorizer}" 'client-secret'
 require "${tenant_authorizer}" 'mountPath: /etc/query-allowlist'
 require "${tenant_authorizer}" 'serviceAccountName: thanos-query-tenant'
 require "${tenant_authorizer}" 'automountServiceAccountToken: true'

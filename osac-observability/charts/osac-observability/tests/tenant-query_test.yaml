@@ -28,6 +28,7 @@ set:
   global.observability.services.oauth2Proxy.repository: quay.io/oauth2-proxy/oauth2-proxy
   global.observability.services.oauth2Proxy.tag: test-oauth2-proxy
   global.observability.services.openshiftOauthProxy.tag: test-ose-oauth-proxy
+  global.observability.tenant.fulfillment.url: https://fulfillment-internal-api:8001
 
 tests:
   - it: exposes the tenant Route only through its own proxy
@@ -221,6 +222,44 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --query-timeout=2m
+      # Project membership resolution: the authorizer calls fulfillment with
+      # the caller's own token and verifies it against the mounted CA.
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --fulfillment-url=https://fulfillment-internal-api:8001
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --fulfillment-ca-file=/etc/fulfillment-ca/ca.crt
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: fulfillment-ca
+            mountPath: /etc/fulfillment-ca
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: fulfillment-ca
+            configMap:
+              name: ca-bundle
+              items:
+                - key: bundle.pem
+                  path: ca.crt
+      # No credential for the membership call: the caller's token is forwarded,
+      # so the allowlist and the CA are the only mounts and no client secret
+      # is passed to the authorizer.
+      - lengthEqual:
+          path: spec.template.spec.containers[0].volumeMounts
+          count: 2
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 2
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --fulfillment-client-secret
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --fulfillment-client-id
       # One listener only: a probe port would be a second way to reach the
       # authorizer around the proxy.
       - lengthEqual:
@@ -255,6 +294,47 @@ tests:
       - equal:
           path: spec.template.spec.volumes[0].configMap.name
           value: osac-observability-query-allowlist
+
+  - it: mounts the fulfillment CA from the configured ConfigMap
+    template: templates/tenant-query.yaml
+    set:
+      global.observability.tenant.fulfillment.certs.caBundle.configMap: fulfillment-ca
+    documentSelector:
+      path: metadata.name
+      value: thanos-query-tenant-authorizer
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: fulfillment-ca
+            configMap:
+              name: fulfillment-ca
+              items:
+                - key: bundle.pem
+                  path: ca.crt
+
+  - it: leaves fulfillment unwired when no URL is configured
+    template: templates/tenant-query.yaml
+    set:
+      global.observability.tenant.fulfillment.url: ""
+    documentSelector:
+      path: metadata.name
+      value: thanos-query-tenant-authorizer
+    asserts:
+      # Without a URL the authorizer narrows every Tenant User to the default
+      # project, so it needs neither the flag nor the CA mount.
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --fulfillment-url=
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --fulfillment-ca-file=
+      - lengthEqual:
+          path: spec.template.spec.containers[0].volumeMounts
+          count: 1
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 1
 
   - it: renders the fair-use limits from their own values
     template: templates/tenant-query.yaml

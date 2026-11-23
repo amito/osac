@@ -16,6 +16,11 @@
 {{- $adminRole := $keycloak.keycloakAdminRole | default "cloud-provider-admin" -}}
 {{- $audiences := $keycloak.adminAudience | default "osac-ui,osac-cli" | toString -}}
 {{- $tenantHost := printf "thanos-query-tenant-%s" $ns -}}
+{{- $tenant := $observability.tenant | default dict -}}
+{{- $fulfillment := $tenant.fulfillment | default dict -}}
+{{- $fulfillmentURL := $fulfillment.url | default "" | toString -}}
+{{- $fulfillmentCA := ((($fulfillment.certs | default dict).caBundle | default dict).configMap)
+      | default "ca-bundle" -}}
 {{- /* The tenant Route reaches the OAuth proxy, which forwards the caller's
        validated login token to the authorizer, which narrows the query and
        forwards only the five documented endpoints to Thanos Query. The
@@ -121,6 +126,13 @@ spec:
             - --admin-role={{ $adminRole }}
             - --allowlist=/etc/query-allowlist/endpoints.txt
             {{- include "osac-observability.tenantLimitArgs" . | nindent 12 }}
+            {{- if $fulfillmentURL }}
+            # Project membership resolution. The authorizer sends the caller's
+            # own login token, so only the CA is mounted here: no client
+            # credential and no service-account token belong to this call.
+            - --fulfillment-url={{ $fulfillmentURL }}
+            - --fulfillment-ca-file=/etc/fulfillment-ca/ca.crt
+            {{- end }}
           ports:
             - name: http
               containerPort: 8080
@@ -154,10 +166,23 @@ spec:
             - name: query-allowlist
               mountPath: /etc/query-allowlist
               readOnly: true
+            {{- if $fulfillmentURL }}
+            - name: fulfillment-ca
+              mountPath: /etc/fulfillment-ca
+              readOnly: true
+            {{- end }}
       volumes:
         - name: query-allowlist
           configMap:
             name: osac-observability-query-allowlist
+        {{- if $fulfillmentURL }}
+        - name: fulfillment-ca
+          configMap:
+            name: {{ $fulfillmentCA }}
+            items:
+              - key: bundle.pem
+                path: ca.crt
+        {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
