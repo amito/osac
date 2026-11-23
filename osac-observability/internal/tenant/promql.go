@@ -40,6 +40,11 @@ func orExpr(exprs []parser.Expr) parser.Expr {
 	if len(exprs) == 0 {
 		return nil
 	}
+	if len(exprs) == 1 {
+		// A single branch needs no disjunction: returning the expression
+		// unchanged keeps the caller's query as written.
+		return exprs[0]
+	}
 	result := exprs[0]
 	for _, expr := range exprs[1:] {
 		result = &parser.BinaryExpr{Op: parser.LOR, LHS: result, RHS: expr}
